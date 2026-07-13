@@ -1,8 +1,8 @@
-startup-begin = Hover Translate Wordbook加载中
-startup-finish = Hover Translate Wordbook已就绪
+startup-begin = Hover Translate Eudic加载中
+startup-finish = Hover Translate Eudic已就绪
 
 # 偏好面板注册标签（侧栏显示名）
-prefs-title = Hover Translate Wordbook
+prefs-title = Hover Translate Eudic
 
 # 生词本按钮
 wordbtn-add = +生词本

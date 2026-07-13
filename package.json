@@ -1,10 +1,10 @@
 {
-  "name": "zotero-hover-translate-wordbook",
+  "name": "zotero-hover-translate-eudic",
   "type": "module",
   "version": "0.1.0",
-  "description": "Hover Translate Wordbook：鼠标悬停单词即翻译，复用 Translate for Zotero 引擎，一键同步欧路云端生词本。",
+  "description": "Hover Translate Eudic：鼠标悬停单词即翻译，复用 Translate for Zotero 引擎，一键同步欧路云端生词本。",
   "config": {
-    "addonName": "Hover Translate Wordbook",
+    "addonName": "Hover Translate Eudic",
     "addonID": "hover-translate-eudic@zotero-plugins.dev",
     "addonRef": "hovertranslateeudic",
     "addonInstance": "HoverTranslateEudic",
@@ -12,13 +12,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SHANGKAIJIE/zotero-hover-translate-wordbook.git"
+    "url": "git+https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic.git"
   },
   "author": "WorkBuddy",
   "bugs": {
-    "url": "https://github.com/SHANGKAIJIE/zotero-hover-translate-wordbook/issues"
+    "url": "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/issues"
   },
-  "homepage": "https://github.com/SHANGKAIJIE/zotero-hover-translate-wordbook#readme",
+  "homepage": "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic#readme",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "start": "zotero-plugin serve",

@@ -276,11 +276,11 @@ function bindPrefEvents(win: Window) {
     helpLink.addEventListener("click", () => {
       try {
         Zotero.launchURL(
-          "https://github.com/SHANGKAIJIE/zotero-hover-translate-wordbook#readme",
+          "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic#readme",
         );
       } catch {
         win.open(
-          "https://github.com/SHANGKAIJIE/zotero-hover-translate-wordbook#readme",
+          "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic#readme",
           "_blank",
         );
       }
@@ -310,13 +310,13 @@ let refreshInProgress = false;
 async function refreshCategories(win: Window, silent: boolean) {
   // Guard against concurrent calls (auto-fetch + button click may overlap).
   if (refreshInProgress) {
-    try { Zotero.debug("[hover-translate-wordbook/prefs] refreshCategories already in progress, skipping"); } catch { /* ignore */ }
+    try { Zotero.debug("[hover-translate-eudic/prefs] refreshCategories already in progress, skipping"); } catch { /* ignore */ }
     return;
   }
   refreshInProgress = true;
   const pdbg = (m: string) => {
     try {
-      Zotero.debug(`[hover-translate-wordbook/prefs] ${m}`);
+      Zotero.debug(`[hover-translate-eudic/prefs] ${m}`);
     } catch {
       /* ignore */
     }

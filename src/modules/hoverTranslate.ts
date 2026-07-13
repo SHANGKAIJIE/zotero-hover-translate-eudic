@@ -451,7 +451,7 @@ function safeHref(win: any): string {
 /** Diagnostic logger that bypasses ztoolkit's production console disable. */
 function dbg(msg: string) {
   try {
-    Zotero.debug(`[hover-translate-wordbook] ${msg}`);
+    Zotero.debug(`[hover-translate-eudic] ${msg}`);
   } catch {
     /* ignore */
   }

@@ -1,4 +1,4 @@
-pref-title = Hover Translate Wordbook
+pref-title = Hover Translate Eudic
 
 pref-section-basic = 基础功能设置
 pref-enableHoverTranslate =
