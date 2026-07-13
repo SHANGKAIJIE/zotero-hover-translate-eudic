@@ -1,0 +1,56 @@
+{
+  "name": "zotero-hover-translate-eudic",
+  "type": "module",
+  "version": "0.1.0",
+  "description": "悬停翻译助手：鼠标悬停单词即翻译，复用 Translate for Zotero 引擎，一键同步欧路云端生词本。",
+  "config": {
+    "addonName": "悬停翻译助手",
+    "addonID": "hover-translate-eudic@zotero-plugins.dev",
+    "addonRef": "hovertranslateeudic",
+    "addonInstance": "HoverTranslateEudic",
+    "prefsPrefix": "extensions.zotero.hovertranslateeudic"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zotero-plugins/zotero-hover-translate-eudic.git"
+  },
+  "author": "WorkBuddy",
+  "bugs": {
+    "url": "https://github.com/zotero-plugins/zotero-hover-translate-eudic/issues"
+  },
+  "homepage": "https://github.com/zotero-plugins/zotero-hover-translate-eudic#readme",
+  "license": "AGPL-3.0-or-later",
+  "scripts": {
+    "start": "zotero-plugin serve",
+    "build": "zotero-plugin build && tsc --noEmit",
+    "lint:check": "prettier --check . && eslint .",
+    "lint:fix": "prettier --write . && eslint . --fix",
+    "release": "zotero-plugin release",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "update-deps": "npm update --save"
+  },
+  "dependencies": {
+    "zotero-plugin-toolkit": "^5.0.0-0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.23.0",
+    "@types/node": "^22.13.13",
+    "eslint": "^9.23.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.28.0",
+    "zotero-plugin-scaffold": "^0.4.1",
+    "zotero-types": "^4.0.0-beta.3"
+  },
+  "prettier": {
+    "printWidth": 80,
+    "tabWidth": 2,
+    "endOfLine": "lf",
+    "overrides": [
+      {
+        "files": ["*.xhtml"],
+        "options": { "htmlWhitespaceSensitivity": "css" }
+      }
+    ]
+  }
+}

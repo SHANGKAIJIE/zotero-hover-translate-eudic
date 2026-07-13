@@ -1,0 +1,75 @@
+/* 悬停翻译助手 - 样式 */
+
+/* 悬停翻译弹窗：跟随 Translate for Zotero 弹窗风格 */
+.__addonRef__-hover-popup {
+  position: fixed;
+  z-index: 2147483647;
+  min-width: 200px;
+  max-width: 420px;
+  background: var(--color-sidepane, #ffffff);
+  border: 1px solid var(--color-border, #d4d4d4);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  padding: 6px 8px;
+  font-family: inherit;
+  pointer-events: auto;
+}
+
+.__addonRef__-hover-popup .__addonRef__-popup-raw {
+  color: var(--fill-secondary, #666666);
+  font-size: 12px;
+  margin-bottom: 2px;
+  word-break: break-word;
+}
+
+.__addonRef__-hover-popup .__addonRef__-popup-result {
+  color: var(--fill-primary, #1a1a1a);
+  word-break: break-word;
+  white-space: pre-wrap;
+  background: transparent;
+  border: none;
+  width: 100%;
+  resize: none;
+  padding: 2px 0;
+}
+
+.__addonRef__-hover-popup .__addonRef__-popup-status {
+  color: var(--fill-secondary, #888888);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.__addonRef__-hover-popup .__addonRef__-popup-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+  gap: 4px;
+}
+
+.__addonRef__-wordbtn {
+  -moz-appearance: none;
+  appearance: none;
+  background: var(--color-sidepane, #f5f5f5);
+  border: 1px solid var(--color-border, #d4d4d4);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--fill-primary, #1a1a1a);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.__addonRef__-wordbtn:hover {
+  background: var(--color-quaternary, #e8e8e8);
+}
+
+.__addonRef__-wordbtn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* 取词高亮：使用 CSS Custom Highlight API，非破坏性 */
+::__addonRef__-hover-highlight {
+  background-color: rgba(255, 213, 79, 0.55);
+  border-radius: 2px;
+}

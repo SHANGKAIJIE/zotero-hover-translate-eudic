@@ -1,0 +1,294 @@
+<linkset>
+  <html:link rel="localization" href="__addonRef__-preferences.ftl" />
+</linkset>
+<groupbox
+  onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window });"
+>
+  <label><html:h2 data-l10n-id="pref-title"></html:h2></label>
+
+  <!-- ============ 3.1 基础功能设置 ============ -->
+  <groupbox>
+    <label><html:h3 data-l10n-id="pref-section-basic"></html:h3></label>
+
+    <checkbox
+      id="zotero-prefpane-__addonRef__-enableHighlight"
+      preference="enableHighlight"
+      data-l10n-id="pref-enableHighlight"
+    />
+
+    <hbox align="center">
+      <label data-l10n-id="pref-highlightColor" style="width: 120px" />
+      <html:input
+        type="color"
+        id="zotero-prefpane-__addonRef__-highlightColorPicker"
+        style="width: 40px; height: 24px;"
+      />
+      <label data-l10n-id="pref-highlightColorR" style="margin-left: 8px; width: 12px" />
+      <html:input
+        type="number"
+        min="0"
+        max="255"
+        id="zotero-prefpane-__addonRef__-highlightColorR"
+        style="width: 50px; margin-left: 2px;"
+      />
+      <label data-l10n-id="pref-highlightColorG" style="margin-left: 6px; width: 12px" />
+      <html:input
+        type="number"
+        min="0"
+        max="255"
+        id="zotero-prefpane-__addonRef__-highlightColorG"
+        style="width: 50px; margin-left: 2px;"
+      />
+      <label data-l10n-id="pref-highlightColorB" style="margin-left: 6px; width: 12px" />
+      <html:input
+        type="number"
+        min="0"
+        max="255"
+        id="zotero-prefpane-__addonRef__-highlightColorB"
+        style="width: 50px; margin-left: 2px;"
+      />
+      <label data-l10n-id="pref-highlightColorA" style="margin-left: 6px; width: 12px" />
+      <html:input
+        type="number"
+        min="0"
+        max="100"
+        id="zotero-prefpane-__addonRef__-highlightColorA"
+        style="width: 50px; margin-left: 2px;"
+      />
+      <label data-l10n-id="pref-highlightColorA-unit" style="margin-left: 2px" />
+      <html:input
+        type="hidden"
+        id="zotero-prefpane-__addonRef__-highlightColor"
+        preference="highlightColor"
+      />
+    </hbox>
+
+    <checkbox
+      id="zotero-prefpane-__addonRef__-enableHoverTranslate"
+      preference="enableHoverTranslate"
+      data-l10n-id="pref-enableHoverTranslate"
+    />
+
+    <hbox align="center">
+      <label data-l10n-id="pref-triggerMode" style="width: 120px" />
+      <menulist
+        id="zotero-prefpane-__addonRef__-triggerMode"
+        preference="triggerMode"
+      >
+        <menupopup>
+          <menuitem value="hover" data-l10n-id="pref-triggerMode-hover" />
+          <menuitem
+            value="modifier"
+            data-l10n-id="pref-triggerMode-modifier"
+          />
+          <menuitem value="click" data-l10n-id="pref-triggerMode-click" />
+        </menupopup>
+      </menulist>
+    </hbox>
+
+    <hbox align="center" id="__addonRef__-modifierRow">
+      <label data-l10n-id="pref-modifierKeys" />
+      <checkbox
+        id="zotero-prefpane-__addonRef__-modifierCtrl"
+        preference="modifierCtrl"
+        data-l10n-id="pref-modifierCtrl"
+      />
+      <checkbox
+        id="zotero-prefpane-__addonRef__-modifierAlt"
+        preference="modifierAlt"
+        data-l10n-id="pref-modifierAlt"
+      />
+      <checkbox
+        id="zotero-prefpane-__addonRef__-modifierShift"
+        preference="modifierShift"
+        data-l10n-id="pref-modifierShift"
+      />
+    </hbox>
+
+    <hbox align="center">
+      <label data-l10n-id="pref-hoverDelay" style="width: 120px" />
+      <html:input
+        type="number"
+        min="0"
+        max="5000"
+        step="50"
+        id="zotero-prefpane-__addonRef__-hoverDelay"
+        preference="hoverDelay"
+        style="width: 80px"
+      />
+      <label data-l10n-id="pref-hoverDelay-unit" />
+    </hbox>
+
+    <hbox align="center">
+      <label data-l10n-id="pref-popupAutoCloseDelay" style="width: 120px" />
+      <html:input
+        type="number"
+        min="0"
+        max="120"
+        step="1"
+        id="zotero-prefpane-__addonRef__-popupAutoCloseDelay"
+        preference="popupAutoCloseDelay"
+        style="width: 80px"
+      />
+      <label data-l10n-id="pref-popupAutoCloseDelay-unit" />
+    </hbox>
+
+    <hbox align="center">
+      <label data-l10n-id="pref-translateDisplayMode" style="width: 120px" />
+      <menulist
+        id="zotero-prefpane-__addonRef__-translateDisplayMode"
+        preference="translateDisplayMode"
+      >
+        <menupopup>
+          <menuitem value="simple" data-l10n-id="pref-translateDisplayMode-simple" />
+          <menuitem value="full" data-l10n-id="pref-translateDisplayMode-full" />
+        </menupopup>
+      </menulist>
+    </hbox>
+
+    <checkbox
+      id="zotero-prefpane-__addonRef__-disableOnSelection"
+      preference="disableOnSelection"
+      data-l10n-id="pref-disableOnSelection"
+    />
+
+    <hbox align="center">
+      <label data-l10n-id="pref-effectiveScope" />
+      <menulist
+        id="zotero-prefpane-__addonRef__-effectiveScope"
+        preference="effectiveScope"
+      >
+        <menupopup>
+          <menuitem value="pdf" data-l10n-id="pref-scope-pdf" />
+        </menupopup>
+      </menulist>
+    </hbox>
+  </groupbox>
+
+  <!-- ============ 3.2 欧路词典生词本设置 ============ -->
+  <groupbox>
+    <label><html:h3 data-l10n-id="pref-section-eudic"></html:h3></label>
+
+    <checkbox
+      id="zotero-prefpane-__addonRef__-enableEudicSync"
+      preference="enableEudicSync"
+      data-l10n-id="pref-enableEudicSync"
+    />
+
+    <vbox id="__addonRef__-eudicConfigBox" style="margin-left: 16px">
+      <hbox align="center">
+        <label data-l10n-id="pref-eudicToken" style="width: 120px" />
+        <html:input
+          type="password"
+          id="zotero-prefpane-__addonRef__-eudicToken"
+          preference="eudicToken"
+          style="flex: 1; min-width: 240px"
+        />
+      </hbox>
+      <hbox>
+        <label
+          class="text-link"
+          href="https://my.eudic.net/OpenAPI/Doc_Index"
+          data-l10n-id="pref-eudicToken-apply"
+        />
+      </hbox>
+
+      <hbox align="center">
+        <label data-l10n-id="pref-eudicCategory" style="width: 120px" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-eudicCategoryId"
+          preference="eudicCategoryId"
+          style="min-width: 200px"
+        >
+          <menupopup id="__addonRef__-eudicCategoryPopup">
+            <menuitem
+              value="0"
+              label="默认生词本"
+            />
+          </menupopup>
+        </menulist>
+        <button
+          id="__addonRef__-refreshCategoryBtn"
+          data-l10n-id="pref-eudicCategory-refresh"
+        />
+      </hbox>
+
+      <hbox align="center">
+        <label data-l10n-id="pref-eudicLanguage" style="width: 120px" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-eudicLanguage"
+          preference="eudicLanguage"
+        >
+          <menupopup>
+            <menuitem value="en" label="English (en)" />
+            <menuitem value="fr" label="Français (fr)" />
+            <menuitem value="de" label="Deutsch (de)" />
+            <menuitem value="es" label="Español (es)" />
+          </menupopup>
+        </menulist>
+      </hbox>
+
+      <hbox align="center">
+        <label data-l10n-id="pref-buttonShowScene" style="width: 120px" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-buttonShowScene"
+          preference="buttonShowScene"
+        >
+          <menupopup>
+            <menuitem
+              value="both"
+              data-l10n-id="pref-buttonShowScene-both"
+            />
+            <menuitem
+              value="hover"
+              data-l10n-id="pref-buttonShowScene-hover"
+            />
+            <menuitem
+              value="selection"
+              data-l10n-id="pref-buttonShowScene-selection"
+            />
+          </menupopup>
+        </menulist>
+      </hbox>
+
+      <hbox align="center">
+        <label data-l10n-id="pref-addWordMode" style="width: 120px" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-addWordMode"
+          preference="addWordMode"
+        >
+          <menupopup>
+            <menuitem
+              value="manual"
+              data-l10n-id="pref-addWordMode-manual"
+            />
+            <menuitem
+              value="auto"
+              data-l10n-id="pref-addWordMode-auto"
+            />
+          </menupopup>
+        </menulist>
+      </hbox>
+    </vbox>
+  </groupbox>
+
+  <!-- ============ 3.3 其他设置 ============ -->
+  <groupbox>
+    <label><html:h3 data-l10n-id="pref-section-other"></html:h3></label>
+    <hbox>
+      <button
+        id="__addonRef__-resetBtn"
+        data-l10n-id="pref-resetBtn"
+      />
+      <label
+        class="text-link"
+        href="https://my.eudic.net/OpenAPI/doc_api_study"
+        data-l10n-id="pref-help-link"
+      />
+    </hbox>
+    <html:label
+      data-l10n-id="pref-help"
+      data-l10n-args='{"time": "__buildTime__","name": "__addonName__","version":"__buildVersion__"}'
+    ></html:label>
+  </groupbox>
+</groupbox>
