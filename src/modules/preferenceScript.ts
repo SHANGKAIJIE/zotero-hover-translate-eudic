@@ -267,7 +267,7 @@ function bindPrefEvents(win: Window) {
     resetDefaults(win);
   });
 
-  // help link — text-link class doesn't auto-open in Zotero 7+, need handler
+  // help link & apply-token link — text-link class doesn't auto-open in Zotero 7+, need explicit handlers
   const helpLink = win.document.querySelector(
     `label[data-l10n-id="${ref}-pref-help-link"]`,
   ) as any;
@@ -275,12 +275,29 @@ function bindPrefEvents(win: Window) {
     helpLink.style.cursor = "pointer";
     helpLink.addEventListener("click", () => {
       try {
-        Zotero.launchURL("https://my.eudic.net/OpenAPI/doc_api_study");
+        Zotero.launchURL(
+          "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic#readme",
+        );
       } catch {
         win.open(
-          "https://my.eudic.net/OpenAPI/doc_api_study",
+          "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic#readme",
           "_blank",
         );
+      }
+    });
+  }
+
+  // apply-token link → Eudic OpenAPI Authorization page (NIS token)
+  const applyLink = win.document.querySelector(
+    `label[data-l10n-id="${ref}-pref-eudicToken-apply"]`,
+  ) as any;
+  if (applyLink) {
+    applyLink.style.cursor = "pointer";
+    applyLink.addEventListener("click", () => {
+      try {
+        Zotero.launchURL("https://my.eudic.net/OpenAPI/Authorization");
+      } catch {
+        win.open("https://my.eudic.net/OpenAPI/Authorization", "_blank");
       }
     });
   }
