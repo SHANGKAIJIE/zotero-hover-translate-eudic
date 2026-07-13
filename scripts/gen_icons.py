@@ -1,4 +1,4 @@
-"""Generate favicon icons for the Zotero hover-translate-eudic plugin.
+"""Generate favicon icons for the Zotero hover-translate-wordbook plugin.
 
 Pure stdlib (struct + zlib) PNG writer. Produces:
   - favicon.png        (96x96)

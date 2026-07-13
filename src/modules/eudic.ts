@@ -94,7 +94,7 @@ export class EudicClient {
       resp.responseText ??
       (typeof resp.response === "string" ? resp.response : "");
     try {
-      Zotero.debug(`[hover-translate-eudic/eudic] ${method} ${path} status=${status} bodyLen=${txt.length} body=${txt.slice(0, 300)}`);
+      Zotero.debug(`[hover-translate-wordbook/eudic] ${method} ${path} status=${status} bodyLen=${txt.length} body=${txt.slice(0, 300)}`);
     } catch { /* ignore */ }
     try {
       data = txt ? JSON.parse(txt) : {};
@@ -128,7 +128,7 @@ export class EudicClient {
     );
     // Log raw response for debugging.
     try {
-      Zotero.debug(`[hover-translate-eudic/eudic] getCategories raw: ${JSON.stringify(data).slice(0, 500)}`);
+      Zotero.debug(`[hover-translate-wordbook/eudic] getCategories raw: ${JSON.stringify(data).slice(0, 500)}`);
     } catch { /* ignore */ }
     // API may return { data: [...] } or an array directly.
     const list = Array.isArray(data) ? data : (data.data || []);

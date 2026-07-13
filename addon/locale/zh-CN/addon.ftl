@@ -1,8 +1,8 @@
-startup-begin = 悬停翻译助手加载中
-startup-finish = 悬停翻译助手已就绪
+startup-begin = Hover Translate Wordbook加载中
+startup-finish = Hover Translate Wordbook已就绪
 
 # 偏好面板注册标签（侧栏显示名）
-prefs-title = 悬停翻译助手
+prefs-title = Hover Translate Wordbook
 
 # 生词本按钮
 wordbtn-add = +生词本

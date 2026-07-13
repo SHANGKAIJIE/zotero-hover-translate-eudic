@@ -1,4 +1,4 @@
-pref-title = 悬停翻译助手
+pref-title = Hover Translate Wordbook
 
 pref-section-basic = 基础功能设置
 pref-enableHoverTranslate =

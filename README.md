@@ -1,10 +1,10 @@
-# 悬停翻译助手 (Hover Translate Eudic)
+# Hover Translate Wordbook
 
 > 鼠标悬停 / 单击 PDF 中的单词即可翻译，复用 **Translate for Zotero** 的翻译引擎，并支持一键将生词同步到 **欧路词典 (Eudic)** 云端生词本。
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-orange)](https://github.com/zotero-plugins/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-wordbook/releases)
 
 ---
 
@@ -26,8 +26,8 @@
 
 ### 方式一：下载 Release 安装（推荐）
 
-1. 前往 [Releases](https://github.com/zotero-plugins/zotero-hover-translate-eudic/releases) 页面。
-2. 下载最新版本的 `悬停翻译助手.xpi` 文件。
+1. 前往 [Releases](https://github.com/SHANGKAIJIE/zotero-hover-translate-wordbook/releases) 页面。
+2. 下载最新版本的 `zotero-hover-translate-wordbook.xpi` 文件。
 3. 在 Zotero 中：`工具` → `插件` → 右上角齿轮 → `Install Add-on From File...` → 选择下载的 `.xpi`。
 4. 重启 Zotero。
 
@@ -46,13 +46,13 @@ npm run build
 npm start
 ```
 
-构建产物位于 `.scaffold/build/`，其中的 `悬停翻译助手.xpi` 即为可安装的插件包。
+构建产物位于 `.scaffold/build/`，其中的 `zotero-hover-translate-wordbook.xpi` 即为可安装的插件包。
 
 ---
 
 ## ⚙️ 配置说明
 
-打开 Zotero：`编辑` → `首选项` → `悬停翻译助手`（或在 macOS 上为 `Zotero` → `设置` → `悬停翻译助手`）。
+打开 Zotero：`编辑` → `首选项` → `Hover Translate Wordbook`（或在 macOS 上为 `Zotero` → `设置` → `Hover Translate Wordbook`）。
 
 ### 1. 欧路词典 Token
 
@@ -81,7 +81,7 @@ npm start
 插件 `update_url` 指向 GitHub Releases：
 
 ```
-https://github.com/zotero-plugins/zotero-hover-translate-eudic/releases/download/release/update.json
+https://github.com/SHANGKAIJIE/zotero-hover-translate-wordbook/releases/download/release/update.json
 ```
 
 发布时需在 Releases 中创建名为 `release` 的标签，并附带 `update.json` 与最新的 `.xpi`，Zotero 即可自动检测更新。
@@ -91,7 +91,7 @@ https://github.com/zotero-plugins/zotero-hover-translate-eudic/releases/download
 ## 🗂️ 目录结构
 
 ```
-zotero-hover-translate-eudic/
+zotero-hover-translate-wordbook/
 ├── src/                      # TypeScript 源码
 │   ├── index.ts              # 插件入口
 │   ├── hooks.ts              # Zotero 生命周期钩子
