@@ -1,0 +1,12 @@
+{
+  "addons": {
+    "hover-translate-eudic@zotero-plugins.dev": {
+      "updates": [
+        {
+          "version": "0.1.0",
+          "update_link": "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases/download/release/hover-translate-eudic.xpi"
+        }
+      ]
+    }
+  }
+}
