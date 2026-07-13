@@ -36,12 +36,69 @@ const attached: Map<
   { innerWin: Window; cleanup: () => void }
 > = new Map();
 
+// --- D2: promise-based translation cache ---
+// key = word|service|langfrom|langto; value = pending or resolved promise
+const translateCache: Map<
+  string,
+  Promise<{ ok: boolean; result: string; error?: string; task?: any }>
+> = new Map();
+
+function makeCacheKey(
+  word: string,
+  service: string,
+  langfrom: string,
+  langto: string,
+): string {
+  return `${word}|${service}|${langfrom}|${langto}`;
+}
+
+// --- D4: explicit language helpers ---
+function getPdfTranslateSource(): string {
+  try {
+    return (Zotero.Prefs.get(
+      "extensions.zotero.ZoteroPDFTranslate.translateSource",
+      true,
+    ) as string) || "";
+  } catch {
+    return "";
+  }
+}
+
+function getPdfTranslateTargetLang(): string {
+  try {
+    return (Zotero.Prefs.get(
+      "extensions.zotero.ZoteroPDFTranslate.targetLanguage",
+      true,
+    ) as string) || "zh-CN";
+  } catch {
+    return "zh-CN";
+  }
+}
+
+// --- D5: cached dark-mode detection ---
+let _cachedDark: boolean | null = null;
+
+function initThemeWatcher() {
+  try {
+    const mainWin = Zotero.getMainWindow();
+    const mql = mainWin.matchMedia("(prefers-color-scheme: dark)");
+    if (mql) {
+      mql.addEventListener("change", () => {
+        _cachedDark = null;
+      });
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 let pollTimer: number | null = null;
 
 /* ----------------------------- public API ----------------------------- */
 
 export function initHoverTranslate() {
   dbg("initHoverTranslate called");
+  initThemeWatcher();
   // Attach to any readers already open at startup.
   attachToAllReaders();
   // Poll every 2s for newly opened readers (reliable fallback that does not
@@ -128,7 +185,9 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       targets.map((t) => safeHref(t)).join(" | "),
   );
 
-  let hoverTimer: number | null = null;
+  // --- D3: dual-timer decoupling ---
+  let hoverTimer: number | null = null; // popup gate (hoverDelay ms)
+  let preheatTimer: number | null = null; // preheat request (shorter debounce)
   let lastWord = "";
   const lastWordRef = { get: () => lastWord, set: (v: string) => (lastWord = v) };
   // Track the last hit (word + range) so the keydown handler can trigger
@@ -144,9 +203,28 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
   // inner pdf.js iframe would render the popup invisible/occluded.
   const activeWinRef = { win: innerWin };
 
+  // D3 preheat: shorter debounce starts a background translation that
+  // writes into D2 cache. The popup gate (hoverDelay) fires later and
+  // reads from cache — so the popup shows the translation immediately.
+  const PREHEAT_DELAY = 300; // ms, enough to filter quick sweeps
   const schedule = (word: string) => {
     const win = activeWinRef.win;
+
+    // Cancel both timers on every new word / re-schedule.
     if (hoverTimer) win.clearTimeout(hoverTimer);
+    if (preheatTimer) win.clearTimeout(preheatTimer);
+
+    // Short-debounce background preheat (D3: no popup, just cache fill).
+    preheatTimer = win.setTimeout(() => {
+      preheatTimer = null;
+      translateWord(word, reader).then(() => {
+        dbg(`preheat done for "${word}"`);
+      }).catch(() => { /* ignore */ });
+    }, PREHEAT_DELAY);
+
+    // Popup gate — the user's familiar hoverDelay (default 900 ms).
+    // doTranslate will first check D2 cache; if preheat already finished,
+    // the popup shows the translation instantly.
     hoverTimer = win.setTimeout(() => {
       hoverTimer = null;
       doTranslate(activeWinRef.win, reader, word, lastWordRef);
@@ -157,6 +235,9 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     // The window that actually generated the event (may be a nested iframe).
     const win = (ev.view as Window) || activeWinRef.win;
     activeWinRef.win = win;
+    // D6: update last pointer pos here (merged from injectPopupStyle's
+    // extra mousemove listener — one listener instead of two per window).
+    (win as any).__hoverLastPos = { x: ev.clientX, y: ev.clientY };
     onReaderMouseMove(ev, win, reader, lastWordRef, lastHitRef, schedule);
     if (++moveCount % 50 === 0) {
       dbg(`mousemove#${moveCount} on ${safeHref(win)}`);
@@ -257,6 +338,10 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
         activeWinRef.win.clearTimeout(hoverTimer);
         hoverTimer = null;
       }
+      if (preheatTimer) {
+        activeWinRef.win.clearTimeout(preheatTimer);
+        preheatTimer = null;
+      }
       clearHighlight(activeWinRef.win);
     } catch {
       /* suppress */
@@ -300,7 +385,13 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     } catch {
       /* ignore */
     }
+    try {
+      if (preheatTimer) activeWinRef.win.clearTimeout(preheatTimer);
+    } catch {
+      /* ignore */
+    }
     hoverTimer = null;
+    preheatTimer = null;
     for (const win of targets) {
       try {
         win.removeEventListener("mousemove", onMouseMove as any, true);
@@ -609,6 +700,12 @@ async function doTranslate(
   // can drive the same button state as a manual click.
   const wordBtn = maybeAddWordButton(innerWin, popup, word, "hover");
 
+  // Start the auto-close timer BEFORE auto-add so that the async
+  // autoAddWordWithButton can cancel it.  Otherwise the timer is set
+  // after the auto-add kicks off and auto-add's _cancelAutoClose runs
+  // before any timer exists — the popup closes mid-request.
+  schedulePopupAutoClose(innerWin);
+
   // Auto-add mode: drive the button through the same states as a click.
   if (
     getPref("enableEudicSync") &&
@@ -618,9 +715,6 @@ async function doTranslate(
   ) {
     void autoAddWordWithButton(word, wordBtn);
   }
-
-  // Auto-close after a period so the popup doesn't linger forever.
-  schedulePopupAutoClose(innerWin);
 }
 
 /** Run an auto-add and reflect the result on the button (mirrors manual click). */
@@ -629,12 +723,16 @@ async function autoAddWordWithButton(
   btn: HTMLButtonElement,
 ) {
   try {
+    const win = btn.ownerDocument?.defaultView as Window | null;
+    if (win) _cancelAutoClose(win);
     btn.textContent = getString("wordbtn-adding");
     btn.setAttribute("disabled", "true");
     const ok = await addWordToEudic(word);
     btn.textContent = ok
       ? getString("wordbtn-added")
       : getString("wordbtn-failed");
+    // Resume the paused auto-close timer (original expiry).
+    if (win) _resumeAutoClose(win);
     setTimeout(() => {
       btn.textContent = getString("wordbtn-add");
       btn.removeAttribute("disabled");
@@ -644,19 +742,73 @@ async function autoAddWordWithButton(
   }
 }
 
-/** Auto-close the hover popup after a delay (keeps it clickable meanwhile). */
+/** Auto-close the hover popup after a delay (keeps it clickable meanwhile).
+ *  Stores the expiry timestamp so the timer can be paused & resumed
+ *  later (e.g. while a button feedback cycle is in progress). */
 function schedulePopupAutoClose(innerWin: Window) {
   const win = innerWin;
   const delay = Number(getPref("popupAutoCloseDelay")) || 0;
   if (delay <= 0) return; // 0 = never auto-close
+  const expiry = Date.now() + delay * 1000;
+  (win as any).__hoverCloseExpiry = expiry;
   try {
     win.clearTimeout((win as any).__hoverCloseTimer);
   } catch {
     /* ignore */
   }
+  _armCloseTimer(win, expiry);
+}
+
+/** Internal: arm a setTimeout that fires at `expiry` (absolute ms).
+ *  Before closing the popup it checks whether the word-button is still
+ *  in a feedback cycle (\"添加中\" / \"已加/失败\").  If so it re-arms
+ *  instead of closing — this guarantees the popup survives the full
+ *  button cycle regardless of timer-cancellation timing edge cases. */
+function _armCloseTimer(win: Window, expiry: number) {
+  const remaining = Math.max(0, expiry - Date.now());
   (win as any).__hoverCloseTimer = win.setTimeout(() => {
+    const popup = win.document.getElementById(POPUP_ID);
+    if (!popup) return;
+    const btn = popup.querySelector("button") as HTMLButtonElement | null;
+    // If a word-button exists and is NOT in its default state, the
+    // button cycle is still in progress — re-arm instead of closing.
+    if (btn && btn.textContent !== getString("wordbtn-add")) {
+      // Button cycle still in progress — keep popup alive 1 more
+      // second, then close regardless to prevent a runaway loop.
+      (win as any).__hoverCloseTimer = win.setTimeout(() => {
+        clearPopup(win);
+      }, 1000);
+      return;
+    }
     clearPopup(win);
-  }, delay * 1000);
+  }, remaining);
+}
+
+/** Pause the auto-close timer (clear the timeout but keep the expiry
+ *  so it can be resumed later). */
+function _cancelAutoClose(innerWin: Window) {
+  try {
+    innerWin.clearTimeout((innerWin as any).__hoverCloseTimer);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Resume a paused auto-close timer. Uses the original expiry; the
+ *  button-state guard inside _armCloseTimer may keep the popup alive
+ *  even if the original deadline has passed. */
+function _resumeAutoClose(innerWin: Window) {
+  const win = innerWin;
+  const expiry = (win as any).__hoverCloseExpiry as number | undefined;
+  if (expiry == null) return;
+  try {
+    win.clearTimeout((win as any).__hoverCloseTimer);
+  } catch {
+    /* ignore */
+  }
+  // Always re-arm — the button-state guard inside _armCloseTimer
+  // will handle the case where the timer has already expired.
+  _armCloseTimer(win, expiry);
 }
 
 /** Append an extra result block (dictionary entry, etc.) to the popup. */
@@ -724,23 +876,52 @@ async function translateWord(
     dbg("translate: PDFTranslate.api not available");
     return { ok: false, result: "", error: "no-engine" };
   }
-  try {
-    const task = await pdf.api.translate(word, {
-      pluginID: config.addonID,
-      itemID: reader.itemID,
-    });
-    dbg(
-      `translate result status=${task.status} len=${(task.result || "").length} extra=${(task.extraTasks || []).length}`,
-    );
-    return {
-      ok: task.status === "success",
-      result: task.result || "",
-      task,
-    };
-  } catch (e: any) {
-    dbg(`translate error: ${e?.message || e}`);
-    return { ok: false, result: "", error: String(e?.message || e) };
+
+  // D4: explicitly set langfrom/langto. Hover targets are always
+  // single English words, so langfrom is deterministic. This skips
+  // auto-detect and stabilises the cache key.
+  const langfrom = "en";
+  const langto = getPdfTranslateTargetLang();
+  // D1/D2: use pdf-translate's current translateSource (the engine
+  // the user selected). This is already the default in api.translate;
+  // we pass it explicitly so the cache key is deterministic.
+  const service = getPdfTranslateSource() || "";
+  const cacheKey = makeCacheKey(word, service, langfrom, langto);
+
+  // D2: dedup concurrent requests by caching the promise itself.
+  const cached = translateCache.get(cacheKey);
+  if (cached) {
+    dbg(`translate cache hit for "${word}"`);
+    return cached;
   }
+
+  const promise = (async () => {
+    try {
+      const task = await pdf.api.translate(word, {
+        pluginID: config.addonID,
+        itemID: reader.itemID,
+        service: service || undefined,
+        langfrom,
+        langto,
+      });
+      dbg(
+        `translate result status=${task.status} len=${(task.result || "").length} extra=${(task.extraTasks || []).length}`,
+      );
+      return {
+        ok: task.status === "success",
+        result: task.result || "",
+        task,
+      };
+    } catch (e: any) {
+      dbg(`translate error: ${e?.message || e}`);
+      // Remove failed entry so retries go fresh.
+      translateCache.delete(cacheKey);
+      return { ok: false, result: "", error: String(e?.message || e) };
+    }
+  })();
+
+  translateCache.set(cacheKey, promise);
+  return promise;
 }
 
 function positionPopup(innerWin: Window, popup: HTMLElement) {
@@ -802,12 +983,19 @@ function maybeAddWordButton(
   ].join(";");
 
   btn.addEventListener("click", async () => {
+    // Cancel auto-close while API runs so the popup doesn't vanish
+    // before the user sees the outcome.
+    _cancelAutoClose(innerWin);
     btn.textContent = getString("wordbtn-adding");
     btn.setAttribute("disabled", "true");
     const ok = await addWordToEudic(word);
     btn.textContent = ok
       ? getString("wordbtn-added")
       : getString("wordbtn-failed");
+    // Resume the paused auto-close timer (original expiry).
+    // If the timer already expired while the API was running,
+    // the popup closes immediately.
+    _resumeAutoClose(innerWin);
     setTimeout(() => {
       btn.textContent = getString("wordbtn-add");
       btn.removeAttribute("disabled");
@@ -885,9 +1073,12 @@ function isDarkMode(innerWin?: Window): boolean {
   return false;
 }
 
-/** Return theme-aware color set for the popup. */
+/** Return theme-aware color set for the popup. Caches dark-mode result (D5). */
 function getThemeColors(innerWin?: Window) {
-  const dark = isDarkMode(innerWin);
+  if (_cachedDark === null) {
+    _cachedDark = isDarkMode(innerWin);
+  }
+  const dark = _cachedDark;
   if (dark) {
     return {
       bg: "#2c323e",
@@ -939,10 +1130,8 @@ function injectPopupStyle(innerWin: Window) {
   const doc = innerWin.document;
   if ((doc as any)[STYLE_INJECTED_FLAG]) return;
   (doc as any)[STYLE_INJECTED_FLAG] = true;
-  // Update last pointer position on mousemove for popup placement.
-  innerWin.addEventListener("mousemove", (e: MouseEvent) => {
-    (innerWin as any).__hoverLastPos = { x: e.clientX, y: e.clientY };
-  });
+  // D6: last-pointer tracking merged into the capture-phase onMouseMove
+  // (one listener per window instead of two). No extra listener here.
 }
 
 function clearHover(innerWin: Window) {
