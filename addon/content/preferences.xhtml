@@ -4,7 +4,7 @@
 <html:style>
   /* Section headings */
   html|h3 {
-    font-size: 20px !important;
+    font-size: 24px !important;
     font-weight: 700 !important;
     margin: 0 0 6px 0 !important;
   }
@@ -144,18 +144,6 @@
       </menulist>
     </hbox>
 
-    <hbox align="center">
-      <label class="pref-label" data-l10n-id="pref-effectiveScope" />
-      <menulist
-        id="zotero-prefpane-__addonRef__-effectiveScope"
-        preference="effectiveScope"
-      >
-        <menupopup>
-          <menuitem value="pdf" data-l10n-id="pref-scope-pdf" />
-        </menupopup>
-      </menulist>
-    </hbox>
-
     <checkbox
       id="zotero-prefpane-__addonRef__-disableOnSelection"
       preference="disableOnSelection"
@@ -202,10 +190,8 @@
             <menuitem value="0" label="默认生词本" />
           </menupopup>
         </menulist>
-        <button
-          id="__addonRef__-refreshCategoryBtn"
-          data-l10n-id="pref-eudicCategory-refresh"
-        />
+        <button id="__addonRef__-refreshCategoryBtn" data-l10n-id="pref-eudicCategory-refresh" />
+        <button id="__addonRef__-editCategoryBtn" data-l10n-id="pref-eudicCategory-edit" style="margin-left: 6px" />
       </hbox>
 
       <hbox align="center">
@@ -255,16 +241,6 @@
   <!-- ============ 3.3 导出生词本 ============ -->
   <groupbox>
     <label><html:h3 data-l10n-id="pref-section-export"></html:h3></label>
-
-    <hbox align="center">
-      <label class="pref-label" data-l10n-id="pref-export-category" />
-      <menulist id="__addonRef__-exportCategoryId" style="min-width: 200px">
-        <menupopup id="__addonRef__-exportCategoryPopup">
-          <menuitem value="0" label="默认生词本" />
-        </menupopup>
-      </menulist>
-      <button id="__addonRef__-exportRefreshCategoryBtn" data-l10n-id="pref-export-category-refresh" />
-    </hbox>
 
     <hbox align="center">
       <label class="pref-label" data-l10n-id="pref-export-format" />

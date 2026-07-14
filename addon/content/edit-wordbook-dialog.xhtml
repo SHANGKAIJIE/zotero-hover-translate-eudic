@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet href="chrome://global/skin/" type="text/css"?>
+<window id="__addonRef__-editWordbookDialog"
+  xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+  xmlns:html="http://www.w3.org/1999/xhtml"
+  title="编辑生词本"
+  width="520"
+  minwidth="400" minheight="260"
+>
+  <script>
+  <![CDATA[
+    // Globals passed via window.arguments[0]
+    var _args = window.arguments[0];
+    var api = _args.api;
+    var initCats = _args.categories;
+
+    var HTML_NS = "http://www.w3.org/1999/xhtml";
+    var ITEM_H = 32;
+
+    function $(sel, ctx) { return (ctx || document).querySelector(sel); }
+
+    function adjustHeight() {
+      var count = (window._cats || []).length;
+      var listH = Math.max(count * ITEM_H + 4, 40);
+      var selVis = $("#selected-info").style.display !== "none" ? 40 : 0;
+      var totalH = 8 + 30 + 4 + listH + 4 + selVis + 4 + 34 + 10;
+      window.resizeTo(520, Math.min(Math.max(totalH, 260), 520));
+    }
+
+    function renderList() {
+      var ul = $("#wordbook-list");
+      while (ul.firstChild) ul.removeChild(ul.firstChild);
+      var cats = window._cats || [];
+      if (cats.length === 0) {
+        var li = document.createElementNS(HTML_NS, "li");
+        li.textContent = "(暂无生词本)";
+        li.style.cssText = "color:#888;font-style:italic;padding:8px;";
+        ul.appendChild(li);
+        adjustHeight();
+        return;
+      }
+      cats.forEach(function(c, i) {
+        var li = document.createElementNS(HTML_NS, "li");
+        li.textContent = c.name;
+        li.dataset.index = i;
+        li.style.cssText = "padding:6px 10px;cursor:pointer;border-bottom:1px solid rgba(128,128,128,0.15);font-size:13px;";
+        li.addEventListener("click", function() {
+          document.querySelectorAll("#wordbook-list li").forEach(function(el) { el.style.background = ""; });
+          this.style.background = "rgba(0,120,215,0.15)";
+          $("#selected-id").textContent = c.id;
+          $("#selected-name").textContent = c.name;
+          $("#selected-info").style.display = "";
+          adjustHeight();
+        });
+        ul.appendChild(li);
+      });
+      adjustHeight();
+    }
+
+    function getSelected() {
+      var id = $("#selected-id").textContent;
+      var name = $("#selected-name").textContent;
+      if (!id && !name) return null;
+      var idx = (window._cats || []).findIndex(function(c) { return c.id === id && c.name === name; });
+      return idx >= 0 ? window._cats[idx] : null;
+    }
+
+    async function refreshList() {
+      try {
+        window._cats = await api.getCategories();
+      } catch (e) {
+        window._cats = [];
+      }
+      renderList();
+      $("#selected-info").style.display = "none";
+      adjustHeight();
+    }
+
+    async function addWordbook() {
+      var name = prompt("请输入新生词本的名称：", "");
+      if (!name) return;
+      try {
+        await api.createCategory(name);
+        alert("已添加：" + name);
+        await refreshList();
+      } catch (e) {
+        alert("添加失败：" + (e.message || "未知错误"));
+      }
+    }
+
+    async function renameWordbook() {
+      var sel = getSelected();
+      if (!sel) { alert("请先点击选择要重命名的生词本。"); return; }
+      var newName = prompt("请输入「" + sel.name + "」的新名称：", sel.name);
+      if (!newName || newName === sel.name) return;
+      try {
+        await api.renameCategory(sel.id, sel.name, newName);
+        alert("已重命名为：" + newName);
+        await refreshList();
+      } catch (e) {
+        alert("重命名失败：" + (e.message || "未知错误"));
+      }
+    }
+
+    async function deleteWordbook() {
+      var sel = getSelected();
+      if (!sel) { alert("请先点击选择要删除的生词本。"); return; }
+      if (!confirm("确认删除生词本「" + sel.name + "」？")) return;
+      try {
+        await api.deleteCategory(sel.id, sel.name);
+        alert("已删除：" + sel.name);
+        await refreshList();
+      } catch (e) {
+        alert("删除失败：" + (e.message || "未知错误"));
+      }
+    }
+
+    function closeDialog() { window.close(); }
+
+    // Init
+    window._cats = initCats.map(function(c) { return { id: c.id, name: c.name, language: c.language }; });
+    renderList();
+  ]]>
+  </script>
+
+  <vbox style="padding:8px">
+    <hbox align="center" style="margin-bottom:6px">
+      <label value="生词本列表：" style="font-weight:bold;font-size:14px" />
+      <spacer flex="1" />
+      <button label="刷新" oncommand="refreshList()" />
+    </hbox>
+    <html:ul id="wordbook-list"
+      style="list-style:none;padding:0;margin:0;overflow-y:auto;border:1px solid rgba(128,128,128,0.25);border-radius:4px;">
+    </html:ul>
+
+    <vbox id="selected-info" style="display:none;margin-top:8px;padding:6px;border:1px solid rgba(128,128,128,0.2);border-radius:4px;">
+      <hbox align="center">
+        <label value="已选择：" />
+        <label id="selected-name" style="font-weight:bold" />
+        <spacer flex="1" />
+        <label id="selected-id" style="color:#888;font-size:11px" />
+      </hbox>
+    </vbox>
+
+    <hbox align="center" style="margin-top:10px">
+      <button label="添加" oncommand="addWordbook()" style="flex:1;margin-right:4px" />
+      <button label="重命名" oncommand="renameWordbook()" style="flex:1;margin-right:4px" />
+      <button label="删除" oncommand="deleteWordbook()" style="flex:1;margin-right:4px" />
+      <button label="关闭" oncommand="closeDialog()" />
+    </hbox>
+  </vbox>
+</window>

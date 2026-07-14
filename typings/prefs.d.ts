@@ -16,7 +16,6 @@ declare namespace _ZoteroTypes {
       "highlightColor": string;
       "hoverDelay": number;
       "disableOnSelection": boolean;
-      "effectiveScope": string;
       "popupAutoCloseDelay": number;
       "translateDisplayMode": string;
       "enableEudicSync": boolean;

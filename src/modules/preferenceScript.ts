@@ -29,7 +29,6 @@ const DEFAULTS: Record<string, any> = {
   highlightColor: "rgba(255,213,79,0.45)",
   hoverDelay: 900,
   disableOnSelection: true,
-  effectiveScope: "pdf",
   popupAutoCloseDelay: 30,
   translateDisplayMode: "simple",
   enableEudicSync: false,
@@ -54,13 +53,6 @@ export async function registerPrefsScripts(win: Window) {
   const autoFetch = getPref("enableEudicSync") && getPref("eudicToken");
   if (autoFetch) {
     win.setTimeout(() => void refreshCategories(win, true), 200);
-  }
-  // If categories are already cached, populate export list without a new API call.
-  if (addon.data.eudic?.categories?.length) {
-    // Short delay to ensure DOM is settled, then force label display.
-    win.setTimeout(() => {
-      populateExportCategoryList(win, addon.data.eudic.categories, ref);
-    }, 50);
   }
   // Defer: let Zotero's preference binding + Fluent localization settle,
   // then force menulist labels to refresh from current pref values.
@@ -312,12 +304,13 @@ function bindPrefEvents(win: Window) {
     });
   }
 
-  // export refresh category button
-  const exportRefreshBtn = $(`${ref}-exportRefreshCategoryBtn`, win);
-  if (exportRefreshBtn) {
-    exportRefreshBtn.addEventListener("command", () => void refreshExportCategories(win));
-  }
+  // export button
 
+  // edit category button
+  const editBtn = $(`${ref}-editCategoryBtn`, win);
+  if (editBtn) {
+    editBtn.addEventListener("command", () => void handleEditWordbooks(win));
+  }
   // export button
   const exportBtn = $(`${ref}-exportBtn`, win);
   if (exportBtn) {
@@ -329,7 +322,7 @@ function bindPrefEvents(win: Window) {
 
 const EXPORT_NAME = "eudic-wordbook";
 
-/** Handle the export button click. */
+/** Handle the export button click.  Uses the main wordbook category. */
 async function handleExport(win: Window) {
   const token = getPref("eudicToken") as string;
   if (!token) {
@@ -340,10 +333,8 @@ async function handleExport(win: Window) {
   const formatEl = $(`${ref}-exportFormat`, win) as any;
   const format: string = formatEl?.value || "csv";
 
-  const catEl = $(`${ref}-exportCategoryId`, win) as any;
-  // Read directly from selectedItem — most reliable in XUL menulist.
-  const si = catEl?.selectedItem;
-  const categoryId = si ? si.getAttribute("value") || "0" : "0";
+  // Use the main "选择生词本" setting directly.
+  const categoryId = (getPref("eudicCategoryId") as string) || "0";
   const language = getPref("eudicLanguage") as string;
   const autoReveal = getPref("exportAutoReveal") as boolean;
   const savePath = (getPref("exportSavePath") as string || "").trim();
@@ -391,6 +382,68 @@ async function handleExport(win: Window) {
   } catch (e: any) {
     win.alert(`导出失败：${e?.message || "未知错误"}`);
   }
+}
+
+/* ----------------------- edit wordbooks dialog ----------------------- */
+
+/** Open a dialog to list/add/rename/delete wordbooks. */
+async function handleEditWordbooks(win: Window) {
+  const token = getPref("eudicToken") as string;
+  if (!token) {
+    win.alert(getString("hint-token-invalid"));
+    return;
+  }
+  const language = getPref("eudicLanguage") as string;
+  const client = new EudicClient(token, language);
+
+  // Fetch current list from the cached data or from API.
+  let categories: { id: string; name: string; language: string }[];
+  try {
+    categories = addon.data.eudic?.categories?.length
+      ? addon.data.eudic.categories
+      : await client.getCategories();
+  } catch (e: any) {
+    const msg = `获取生词本失败：${(e as any)?.message || "网络错误"}`;
+    win.alert(msg);
+    return;
+  }
+
+  // Build API proxy functions using the EudicClient (which uses Zotero.HTTP).
+  const api = {
+    getCategories: async () => {
+      const cats = await client.getCategories();
+      return cats.map(c => ({ id: c.id, name: c.name, language: c.language }));
+    },
+    createCategory: async (name: string) => { await client.createCategory(name); },
+    renameCategory: async (id: string, currentName: string, newName: string) => {
+      await client.renameCategory(id, currentName, newName);
+    },
+    deleteCategory: async (id: string, name: string) => { await client.deleteCategory(id, name); },
+  };
+  const args = { api, categories };
+
+  try {
+    const mainWin = Zotero.getMainWindow() as any;
+    mainWin.openDialog(
+      "chrome://hovertranslateeudic/content/edit-wordbook-dialog.xhtml",
+      "edit-wordbook",
+      "centerscreen,resizable,width=520,height=400",
+      args,
+    );
+  } catch {
+    win.alert("无法打开编辑窗口，请确认插件已正确安装。");
+  }
+  // After the dialog closes, refresh the category list in the preferences.
+  // Use a polling check since the dialog is non-modal.
+  const checkClosed = () => {
+    const existing = (Zotero.getMainWindow() as any).document?.getElementById?.("hovertranslateeudic-editWordbookDialog");
+    if (!existing) {
+      void refreshCategories(win, true);
+    } else {
+      win.setTimeout(checkClosed, 500);
+    }
+  };
+  win.setTimeout(checkClosed, 500);
 }
 
 /* ----------------------------- category refresh ----------------------------- */
@@ -509,98 +562,12 @@ async function refreshCategories(win: Window, silent: boolean) {
   setPref("eudicCategoryId", String(targetId));
   setPref("eudicCategoryName", String(targetLabel));
   pdbg(`selected idx=${targetIdx} id=${targetId} label=${targetLabel}`);
-
-  // Sync export category list with the same categories.
-  populateExportCategoryList(win, categories, ref);
   refreshInProgress = false;
 }
 
 /* ----------------------------- export helpers ----------------------------- */
 
 /** Fill the export category menulist. Default selection follows main category. */
-function populateExportCategoryList(
-  win: Window,
-  categories: { id: string; name: string; language: string }[],
-  _ref: string,
-) {
-  const menu = $(`${_ref}-exportCategoryId`, win);
-  if (!menu) return;
-  let popup = menu.menupopup || menu.querySelector("menupopup");
-  if (!popup) {
-    if (menu) {
-      popup = (win.document as any).createXULElement("menupopup");
-      menu.appendChild(popup);
-    }
-  }
-  if (!popup) return;
-
-  // Preserve current selection across repopulations.
-  let prevId: string | null = null;
-  try {
-    const cur = menu.selectedItem;
-    if (cur) prevId = cur.getAttribute("value");
-  } catch { /* ignore */ }
-
-  while (popup.firstChild) popup.removeChild(popup.firstChild);
-
-  if (categories.length === 0) {
-    const def = (win.document as any).createXULElement("menuitem") as any;
-    def.setAttribute("value", "0");
-    def.setAttribute("label", "默认生词本");
-    popup.appendChild(def);
-  } else {
-    for (const c of categories) {
-      const item = (win.document as any).createXULElement("menuitem") as any;
-      item.setAttribute("value", c.id);
-      item.setAttribute("label", c.name || c.id);
-      popup.appendChild(item);
-    }
-  }
-  // Default to the same category as the main setting.  Only preserve a
-  // previous user selection if it differs from the main category (i.e. the
-  // user intentionally switched the export dropdown).  This prevents the
-  // XHTML default menuitem (value="0") from overriding the real mainId.
-  const mainId = (getPref("eudicCategoryId") as string) || "0";
-  const restoreId = (prevId && prevId !== mainId) ? prevId : mainId;
-  const idx = Array.from(popup.querySelectorAll("menuitem")).findIndex(
-    (it: any) => it.getAttribute("value") === restoreId,
-  );
-  try {
-    const targetIdx = idx >= 0 ? idx : 0;
-    menu.selectedIndex = targetIdx;
-    // Explicitly set the value so catEl.value reads correctly.
-    // Ensure both value and visible label are updated.
-    const targetItem = popup.querySelectorAll("menuitem")[targetIdx];
-    if (targetItem) {
-      menu.value = targetItem.getAttribute("value");
-      const lbl = targetItem.getAttribute("label") || targetItem.label || "";
-      if (lbl) {
-        try { menu.label = lbl; } catch { /* ignore */ }
-      }
-    }
-  } catch { /* ignore */ }
-}
-
-/** Refresh the export category list from Eudic API. */
-async function refreshExportCategories(win: Window) {
-  const token = getPref("eudicToken") as string;
-  if (!token) { win.alert(getString("hint-token-invalid")); return; }
-  const language = getPref("eudicLanguage") as string;
-  const client = new EudicClient(token, language);
-  try {
-    const categories = await client.getCategories();
-    addon.data.eudic.categories = categories;
-    addon.data.eudic.client = client;
-    populateExportCategoryList(win, categories, ref);
-  } catch (e: any) {
-    const status = (e as any)?.status;
-    const msg = status === 401 ? getString("hint-token-invalid")
-      : status === 0 ? `网络错误：${e?.message || "无法连接欧路服务"}`
-      : `刷新失败：${e?.message || `HTTP ${status}`}`;
-    win.alert(msg);
-  }
-}
-
 /* ----------------------------- reset ----------------------------- */
 
 function resetDefaults(win: Window) {

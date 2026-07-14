@@ -149,6 +149,48 @@ export class EudicClient {
   }
 
   /**
+   * 1.4 Create a new wordbook.
+   * POST /studylist/category
+   */
+  async createCategory(name: string): Promise<EudicCategory> {
+    const data = await this.request(
+      "POST",
+      "/api/open/v1/studylist/category",
+      { language: this.language, name },
+    );
+    const c = data?.data || {};
+    return {
+      id: String(c.id ?? ""),
+      name: c.name ?? name,
+      language: c.language ?? this.language,
+    };
+  }
+
+  /**
+   * 1.5 Rename a wordbook.
+   * PATCH /studylist/category
+   */
+  async renameCategory(categoryId: string, currentName: string, newName: string): Promise<void> {
+    await this.request("PATCH", "/api/open/v1/studylist/category", {
+      id: categoryId,
+      language: this.language,
+      name: newName,
+    });
+  }
+
+  /**
+   * 1.6 Delete a wordbook.
+   * DELETE /studylist/category
+   */
+  async deleteCategory(categoryId: string, name: string): Promise<void> {
+    await this.request("DELETE", "/api/open/v1/studylist/category", {
+      id: categoryId,
+      language: this.language,
+      name,
+    });
+  }
+
+  /**
    * 1.? Get all words from a wordbook (paginated).
    * @param categoryId target wordbook id
    * @param maxPages max pages to fetch (default 50 → up to 5000 words)

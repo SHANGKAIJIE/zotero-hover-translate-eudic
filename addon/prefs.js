@@ -12,7 +12,6 @@ pref("enableHighlight", false);
 pref("highlightColor", "rgba(255,213,79,0.45)");
 pref("hoverDelay", 900);
 pref("disableOnSelection", true);
-pref("effectiveScope", "pdf"); // 暂仅 PDF 阅读器
 pref("popupAutoCloseDelay", 30); // 秒
 pref("translateDisplayMode", "simple"); // simple | full
 
