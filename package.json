@@ -1,7 +1,7 @@
 {
   "name": "zotero-hover-translate-eudic",
   "type": "module",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Hover Translate Eudic：鼠标悬停单词即翻译，复用 Translate for Zotero 引擎，一键同步欧路云端生词本。",
   "config": {
     "addonName": "Hover Translate Eudic",

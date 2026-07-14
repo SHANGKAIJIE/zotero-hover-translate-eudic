@@ -188,6 +188,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
   // --- D3: dual-timer decoupling ---
   let hoverTimer: number | null = null; // popup gate (hoverDelay ms)
   let preheatTimer: number | null = null; // preheat request (shorter debounce)
+  let sweepPreheatTimer: number | null = null; // shared click/modifier preheat
   let lastWord = "";
   const lastWordRef = { get: () => lastWord, set: (v: string) => (lastWord = v) };
   // Track the last hit (word + range) so the keydown handler can trigger
@@ -231,6 +232,17 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     }, Math.max(0, getPref("hoverDelay") | 0));
   };
 
+  // Shared preheat for click & modifier modes: debounce so sweeping past
+  // many words only fires one background translation on the last word.
+  const sweepPreheat = (word: string) => {
+    const win = activeWinRef.win;
+    if (sweepPreheatTimer) win.clearTimeout(sweepPreheatTimer);
+    sweepPreheatTimer = win.setTimeout(() => {
+      sweepPreheatTimer = null;
+      void translateWord(word, reader).catch(() => { /* ignore */ });
+    }, PREHEAT_DELAY);
+  };
+
   const onMouseMove = (ev: MouseEvent) => {
     // The window that actually generated the event (may be a nested iframe).
     const win = (ev.view as Window) || activeWinRef.win;
@@ -238,7 +250,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     // D6: update last pointer pos here (merged from injectPopupStyle's
     // extra mousemove listener — one listener instead of two per window).
     (win as any).__hoverLastPos = { x: ev.clientX, y: ev.clientY };
-    onReaderMouseMove(ev, win, reader, lastWordRef, lastHitRef, schedule);
+    onReaderMouseMove(ev, win, reader, lastWordRef, lastHitRef, schedule, sweepPreheat);
     if (++moveCount % 50 === 0) {
       dbg(`mousemove#${moveCount} on ${safeHref(win)}`);
     }
@@ -341,6 +353,10 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       if (preheatTimer) {
         activeWinRef.win.clearTimeout(preheatTimer);
         preheatTimer = null;
+      }
+      if (sweepPreheatTimer) {
+        activeWinRef.win.clearTimeout(sweepPreheatTimer);
+        sweepPreheatTimer = null;
       }
       clearHighlight(activeWinRef.win);
     } catch {
@@ -466,6 +482,7 @@ function onReaderMouseMove(
   lastWordRef: { get: () => string; set: (v: string) => void },
   lastHitRef: { get: () => { word: string; range: Range } | null; set: (v: { word: string; range: Range } | null) => void },
   schedule: (word: string) => void,
+  sweepPreheat: ((word: string) => void) | null,
 ) {
   // Never let an error in hover handling propagate to the reader's event
   // pipeline (could affect other listeners / pdf.js internals).
@@ -516,7 +533,10 @@ function onReaderMouseMove(
     // click mode: do not translate on hover — wait for a click instead.
     // IMPORTANT: do NOT clear popup here; click-mode popups should survive
     // mouse movement. The popup is cleared on next click or via auto-close.
+    // D3 preheat for click mode: shared debounce — sweeping past many words
+    // only fires one preheat on the last paused word.
     if (mode === "click") {
+      sweepPreheat?.(hit.word);
       return;
     }
     if (mode === "modifier") {
@@ -528,9 +548,10 @@ function onReaderMouseMove(
         (needAlt && !ev.altKey) ||
         (needShift && !ev.shiftKey)
       ) {
-        // Modifiers not pressed — track the word (already done above) but
-        // don't translate. The keydown listener will trigger translation
-        // when the user presses the modifier while hovering.
+        // Modifiers not pressed — start a D3 background preheat with shared
+        // debounce. When the user presses the modifier later, the result is
+        // already in cache.
+        sweepPreheat?.(hit.word);
         return;
       }
     }
