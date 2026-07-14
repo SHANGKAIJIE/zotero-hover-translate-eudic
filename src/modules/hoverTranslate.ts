@@ -636,7 +636,7 @@ async function doTranslate(
   popup.style.cssText = [
     "position:fixed",
     "z-index:2147483647",
-    "min-width:180px",
+    "min-width:120px",
     "max-width:380px",
     `background:${tc.bg}`,
     `border:1px solid ${tc.border}`,

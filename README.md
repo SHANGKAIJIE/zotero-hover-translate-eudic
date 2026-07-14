@@ -1,4 +1,4 @@
-# Hover Translate Eudic
+# 悬停翻译助手（Hover Translate Eudic）
 
 > 鼠标悬停 / 单击 PDF 中的单词即可翻译，复用 **Translate for Zotero** 的翻译引擎，并支持一键将生词同步到 **欧路词典 (Eudic)** 云端生词本。
 
