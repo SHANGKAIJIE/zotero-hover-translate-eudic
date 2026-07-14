@@ -62,6 +62,26 @@ pref-addWordMode-manual =
 pref-addWordMode-auto =
     .label = 翻译后自动加入生词本
 
+pref-section-export = 导出生词本
+pref-export-format = 导出格式：
+pref-export-format-csv =
+    .label = CSV（逗号分隔，Excel 可用）
+pref-export-format-tsv =
+    .label = TSV（制表符分隔，Anki 可用）
+pref-export-format-txt =
+    .label = TXT（纯文本）
+pref-export-format-json =
+    .label = JSON（完整数据结构）
+pref-export-autoReveal =
+    .label = 导出后自动打开文件管理器定位到文件
+pref-export-category = 选择生词本：
+pref-export-category-refresh =
+    .label = 刷新列表
+pref-export-savePath = 保存位置：
+pref-export-savePath-placeholder = 留空则保存在 Zotero 配置目录
+pref-export-btn =
+    .label = 导出
+
 pref-section-other = 其他设置
 pref-resetBtn =
     .label = 恢复默认设置

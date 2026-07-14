@@ -62,6 +62,25 @@ pref-addWordMode-manual =
 pref-addWordMode-auto =
     .label = Auto add after translation
 
+pref-section-export = Export Wordbook
+pref-export-format = Export format:
+pref-export-format-csv =
+    .label = CSV (comma separated, Excel-compatible)
+pref-export-format-tsv =
+    .label = TSV (tab separated, Anki-compatible)
+pref-export-format-txt =
+    .label = TXT (plain text)
+pref-export-format-json =
+    .label = JSON (full data structure)
+pref-export-autoReveal =
+    .label = Reveal file in file manager after export
+pref-export-category = Wordbook:
+pref-export-category-refresh =
+    .label = Refresh
+pref-export-savePath = Save path:
+pref-export-btn =
+    .label = Export
+
 pref-section-other = Other
 pref-resetBtn =
     .label = Reset to default

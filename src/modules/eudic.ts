@@ -24,6 +24,15 @@ export interface EudicAddWordResult {
   message: string;
 }
 
+export interface EudicWordEntry {
+  word: string;
+  phon?: string;
+  exp?: string;
+  add_time?: string;
+  star?: number;
+  context_line?: string;
+}
+
 export class EudicClient {
   private token: string;
   private language: string;
@@ -137,6 +146,45 @@ export class EudicClient {
       name: c.name ?? c.title ?? c.category_name ?? String(c.id ?? ""),
       language: c.language ?? this.language,
     }));
+  }
+
+  /**
+   * 1.? Get all words from a wordbook (paginated).
+   * @param categoryId target wordbook id
+   * @param maxPages max pages to fetch (default 50 → up to 5000 words)
+   */
+  async getWords(
+    categoryId: string,
+    maxPages: number = 50,
+  ): Promise<EudicWordEntry[]> {
+    const all: EudicWordEntry[] = [];
+    for (let page = 0; page < maxPages; page++) {
+      const data = await this.request(
+        "GET",
+        "/api/open/v1/studylist/words",
+        undefined,
+        {
+          language: this.language,
+          category_id: categoryId,
+          page: String(page),
+          page_size: "100",
+        },
+      );
+      const list: any[] = Array.isArray(data) ? data : (data.data || []);
+      for (const item of list) {
+        all.push({
+          word: item.word ?? "",
+          phon: item.phon,
+          exp: item.exp,
+          add_time: item.add_time,
+          star: item.star,
+          context_line: item.context_line,
+        });
+      }
+      // If less than 100 returned, we've reached the last page.
+      if (list.length < 100) break;
+    }
+    return all;
   }
 
   /**

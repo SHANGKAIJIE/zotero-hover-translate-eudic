@@ -26,6 +26,8 @@ declare namespace _ZoteroTypes {
       "eudicLanguage": string;
       "buttonShowScene": string;
       "addWordMode": string;
+      "exportAutoReveal": boolean;
+      "exportSavePath": string;
     };
   }
 }

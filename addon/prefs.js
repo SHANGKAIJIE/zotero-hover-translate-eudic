@@ -24,3 +24,7 @@ pref("eudicCategoryName", "默认生词本");
 pref("eudicLanguage", "en"); // en | fr | de | es
 pref("buttonShowScene", "both"); // both | hover | selection
 pref("addWordMode", "manual"); // manual | auto
+
+// ---- 3.3 导出生词本 ----
+pref("exportAutoReveal", true);
+pref("exportSavePath", "");

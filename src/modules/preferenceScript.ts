@@ -13,6 +13,7 @@ import { config } from "../../package.json";
 import { getPref, setPref, clearPref } from "../utils/prefs";
 import { getString } from "../utils/locale";
 import { EudicClient, createEudicClientFromPrefs } from "./eudic";
+import { exportWordbook } from "./eudicExport";
 
 const ref = config.addonRef;
 const $ = (id: string, win: Window) =>
@@ -38,6 +39,8 @@ const DEFAULTS: Record<string, any> = {
   eudicLanguage: "en",
   buttonShowScene: "both",
   addWordMode: "manual",
+  exportAutoReveal: true,
+  exportSavePath: "",
 };
 
 export async function registerPrefsScripts(win: Window) {
@@ -47,10 +50,17 @@ export async function registerPrefsScripts(win: Window) {
   syncCategorySelectionUI(win);
   initColorPicker(win);
   bindPrefEvents(win);
-  // If a token is already configured, auto-fetch categories on panel open so
-  // the user doesn't have to click "refresh" manually.
-  if (getPref("enableEudicSync") && getPref("eudicToken")) {
+  // Auto-fetch categories on panel open if token is configured.
+  const autoFetch = getPref("enableEudicSync") && getPref("eudicToken");
+  if (autoFetch) {
     win.setTimeout(() => void refreshCategories(win, true), 200);
+  }
+  // If categories are already cached, populate export list without a new API call.
+  if (addon.data.eudic?.categories?.length) {
+    // Short delay to ensure DOM is settled, then force label display.
+    win.setTimeout(() => {
+      populateExportCategoryList(win, addon.data.eudic.categories, ref);
+    }, 50);
   }
   // Defer: let Zotero's preference binding + Fluent localization settle,
   // then force menulist labels to refresh from current pref values.
@@ -301,6 +311,86 @@ function bindPrefEvents(win: Window) {
       }
     });
   }
+
+  // export refresh category button
+  const exportRefreshBtn = $(`${ref}-exportRefreshCategoryBtn`, win);
+  if (exportRefreshBtn) {
+    exportRefreshBtn.addEventListener("command", () => void refreshExportCategories(win));
+  }
+
+  // export button
+  const exportBtn = $(`${ref}-exportBtn`, win);
+  if (exportBtn) {
+    exportBtn.addEventListener("command", () => void handleExport(win));
+  }
+}
+
+/* ----------------------------- export ----------------------------- */
+
+const EXPORT_NAME = "eudic-wordbook";
+
+/** Handle the export button click. */
+async function handleExport(win: Window) {
+  const token = getPref("eudicToken") as string;
+  if (!token) {
+    win.alert(getString("hint-token-invalid"));
+    return;
+  }
+
+  const formatEl = $(`${ref}-exportFormat`, win) as any;
+  const format: string = formatEl?.value || "csv";
+
+  const catEl = $(`${ref}-exportCategoryId`, win) as any;
+  // Read directly from selectedItem — most reliable in XUL menulist.
+  const si = catEl?.selectedItem;
+  const categoryId = si ? si.getAttribute("value") || "0" : "0";
+  const language = getPref("eudicLanguage") as string;
+  const autoReveal = getPref("exportAutoReveal") as boolean;
+  const savePath = (getPref("exportSavePath") as string || "").trim();
+
+  const extMap: Record<string, string> = {
+    csv: "csv", tsv: "tsv", txt: "txt", json: "json",
+  };
+  const ext = extMap[format] || "csv";
+
+  const client = new EudicClient(token, language);
+
+  // Build nsIFile: use user-configured path, or fall back to Zotero profile.
+  let outFile: any = null;
+  if (savePath) {
+    try {
+      const nsIFile = (Components as any).interfaces.nsIFile;
+      const file = (Components as any).classes["@mozilla.org/file/local;1"]
+        .createInstance(nsIFile);
+      file.initWithPath(savePath);
+      if (file.exists() && !file.isDirectory()) {
+        // Path points to a file — use its parent dir
+        const parent = file.parent;
+        if (parent) {
+          parent.append(`${EXPORT_NAME}.${ext}`);
+          outFile = parent;
+        }
+      } else {
+        if (!file.exists()) {
+          file.create((Components as any).interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
+        }
+        file.append(`${EXPORT_NAME}.${ext}`);
+        outFile = file;
+      }
+    } catch {
+      // Invalid path — fall through to default
+    }
+  }
+
+  try {
+    const msg = await exportWordbook(client, categoryId, format as any, {
+      outFile: outFile || undefined,
+      autoReveal,
+    });
+    win.alert(msg);
+  } catch (e: any) {
+    win.alert(`导出失败：${e?.message || "未知错误"}`);
+  }
 }
 
 /* ----------------------------- category refresh ----------------------------- */
@@ -419,7 +509,96 @@ async function refreshCategories(win: Window, silent: boolean) {
   setPref("eudicCategoryId", String(targetId));
   setPref("eudicCategoryName", String(targetLabel));
   pdbg(`selected idx=${targetIdx} id=${targetId} label=${targetLabel}`);
+
+  // Sync export category list with the same categories.
+  populateExportCategoryList(win, categories, ref);
   refreshInProgress = false;
+}
+
+/* ----------------------------- export helpers ----------------------------- */
+
+/** Fill the export category menulist. Default selection follows main category. */
+function populateExportCategoryList(
+  win: Window,
+  categories: { id: string; name: string; language: string }[],
+  _ref: string,
+) {
+  const menu = $(`${_ref}-exportCategoryId`, win);
+  if (!menu) return;
+  let popup = menu.menupopup || menu.querySelector("menupopup");
+  if (!popup) {
+    if (menu) {
+      popup = (win.document as any).createXULElement("menupopup");
+      menu.appendChild(popup);
+    }
+  }
+  if (!popup) return;
+
+  // Preserve current selection across repopulations.
+  let prevId: string | null = null;
+  try {
+    const cur = menu.selectedItem;
+    if (cur) prevId = cur.getAttribute("value");
+  } catch { /* ignore */ }
+
+  while (popup.firstChild) popup.removeChild(popup.firstChild);
+
+  if (categories.length === 0) {
+    const def = (win.document as any).createXULElement("menuitem") as any;
+    def.setAttribute("value", "0");
+    def.setAttribute("label", "默认生词本");
+    popup.appendChild(def);
+  } else {
+    for (const c of categories) {
+      const item = (win.document as any).createXULElement("menuitem") as any;
+      item.setAttribute("value", c.id);
+      item.setAttribute("label", c.name || c.id);
+      popup.appendChild(item);
+    }
+  }
+  // Default to the same category as the main setting.  Only preserve a
+  // previous user selection if it differs from the main category (i.e. the
+  // user intentionally switched the export dropdown).  This prevents the
+  // XHTML default menuitem (value="0") from overriding the real mainId.
+  const mainId = (getPref("eudicCategoryId") as string) || "0";
+  const restoreId = (prevId && prevId !== mainId) ? prevId : mainId;
+  const idx = Array.from(popup.querySelectorAll("menuitem")).findIndex(
+    (it: any) => it.getAttribute("value") === restoreId,
+  );
+  try {
+    const targetIdx = idx >= 0 ? idx : 0;
+    menu.selectedIndex = targetIdx;
+    // Explicitly set the value so catEl.value reads correctly.
+    // Ensure both value and visible label are updated.
+    const targetItem = popup.querySelectorAll("menuitem")[targetIdx];
+    if (targetItem) {
+      menu.value = targetItem.getAttribute("value");
+      const lbl = targetItem.getAttribute("label") || targetItem.label || "";
+      if (lbl) {
+        try { menu.label = lbl; } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+/** Refresh the export category list from Eudic API. */
+async function refreshExportCategories(win: Window) {
+  const token = getPref("eudicToken") as string;
+  if (!token) { win.alert(getString("hint-token-invalid")); return; }
+  const language = getPref("eudicLanguage") as string;
+  const client = new EudicClient(token, language);
+  try {
+    const categories = await client.getCategories();
+    addon.data.eudic.categories = categories;
+    addon.data.eudic.client = client;
+    populateExportCategoryList(win, categories, ref);
+  } catch (e: any) {
+    const status = (e as any)?.status;
+    const msg = status === 401 ? getString("hint-token-invalid")
+      : status === 0 ? `网络错误：${e?.message || "无法连接欧路服务"}`
+      : `刷新失败：${e?.message || `HTTP ${status}`}`;
+    win.alert(msg);
+  }
 }
 
 /* ----------------------------- reset ----------------------------- */
