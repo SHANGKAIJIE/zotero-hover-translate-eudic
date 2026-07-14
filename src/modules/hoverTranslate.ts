@@ -207,7 +207,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
   // D3 preheat: shorter debounce starts a background translation that
   // writes into D2 cache. The popup gate (hoverDelay) fires later and
   // reads from cache — so the popup shows the translation immediately.
-  const PREHEAT_DELAY = 300; // ms, enough to filter quick sweeps
+  const PREHEAT_DELAY = 250; // ms, enough to filter quick sweeps
   const schedule = (word: string) => {
     const win = activeWinRef.win;
 
