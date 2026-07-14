@@ -24,16 +24,22 @@
 
 ## 📦 安装
 
-### 方式一：下载 Release 安装（推荐）
+### 方式一：插件市场安装（推荐）
+
+1. 在 Zotero 中：`工具` → `插件` → 右上角齿轮 → `Install Add-on from Zotero-CN Plugin Market`
+2. 搜索 **Hover Translate Eudic**，点击安装。
+3. 重启 Zotero。
+
+### 方式二：下载 Release 安装
 
 1. 前往 [Releases](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases) 页面。
-2. 下载最新版本的 `zotero-hover-translate-eudic.xpi` 文件。
+2. 下载最新版本的 `hover-translate-eudic.xpi` 文件。
 3. 在 Zotero 中：`工具` → `插件` → 右上角齿轮 → `Install Add-on From File...` → 选择下载的 `.xpi`。
 4. 重启 Zotero。
 
 > ⚠️ 若浏览器将 `.xpi` 当作压缩包下载，请右键「链接另存为」并确保后缀为 `.xpi`。
 
-### 方式二：从源码编译
+### 方式三：从源码编译
 
 ```bash
 # 1. 安装依赖
