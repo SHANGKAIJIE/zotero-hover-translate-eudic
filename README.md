@@ -88,7 +88,7 @@ npm start
 #### 欧路词典
 
 插件通过欧路 OpenAPI 同步生词本，需要一个 **NIS Token**：
-1. 登录欧路词典网页版，按 [欧路 OpenAPI 开发指南](https://my.eudic.net/OpenAPI/doc_api_study) 申请 Token。
+1. 登录[欧路 OpenAPI 获取授权](https://my.eudic.net/OpenAPI/Authorization)。
 2. 在插件设置中填入 Token（格式为 `NIS <你的token>`，支持带或不带前缀）。
 3. 点击「刷新列表」拉取你的生词本。
 
@@ -184,4 +184,4 @@ zotero-hover-translate-eudic/
 - [windingwind/zotero-pdf-translate](https://github.com/windingwind/zotero-pdf-translate) — PDF 翻译引擎复用
 - [bulletproof-system/zotero-maimemo-sync](https://github.com/bulletproof-system/zotero-maimemo-sync) — 墨墨背单词同步参考
 - [墨墨开放 API](https://open.maimemo.com/) — 墨墨背单词云词本接口
-- [欧路 OpenAPI 开发指南](https://my.eudic.net/OpenAPI/doc_api_study) — 欧路词典 OpenAPI 接口文档
+- [欧路 OpenAPI 获取授权](https://my.eudic.net/OpenAPI/Authorization) — 欧路词典 OpenAPI 授权获取
