@@ -95,7 +95,7 @@ npm start
 #### 墨墨背单词
 
 插件通过墨墨开放 API 同步云词本，需要一个 **Access Token**：
-1. 通过墨墨背单词 App（我的 → 更多设置 → 实验功能 → 开放 API）获取，或点击设置中的链接跳转网页获取。
+1. 登录[墨墨开放平台](https://open.maimemo.com/open/api/v1/tokens/openapi)，申请 Access Token。
 2. 在插件设置中填入 Token。
 3. 点击「刷新列表」拉取你的云词本。
 
@@ -119,6 +119,9 @@ npm start
 **导出格式**：支持 CSV / TSV / TXT / JSON 四种格式。
 **保存路径**：自定义导出文件保存位置。
 **自动定位文件**：勾选后导出完成自动打开文件管理器定位导出文件。
+**导出说明**：
+- 若导出文件内容有问题，可尝试再导出一次。
+- 墨墨背单词只能导出单词列表，不含音标/释义，因此导出文件只包含单词列。
 
 ### 其他设置
 
@@ -181,3 +184,4 @@ zotero-hover-translate-eudic/
 - [windingwind/zotero-pdf-translate](https://github.com/windingwind/zotero-pdf-translate) — PDF 翻译引擎复用
 - [bulletproof-system/zotero-maimemo-sync](https://github.com/bulletproof-system/zotero-maimemo-sync) — 墨墨背单词同步参考
 - [墨墨开放 API](https://open.maimemo.com/) — 墨墨背单词云词本接口
+- [欧路 OpenAPI 开发指南](https://my.eudic.net/OpenAPI/doc_api_study) — 欧路词典 OpenAPI 接口文档
