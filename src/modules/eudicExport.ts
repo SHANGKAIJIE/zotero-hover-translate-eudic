@@ -168,6 +168,39 @@ const CONVERTERS: Record<ExportFormat, (w: EudicWordEntry[]) => string> = {
   json: toJson,
 };
 
+/** Words-only converter: only the word field, no empty phon/exp/etc. */
+function wordsOnlyConverter(format: ExportFormat, words: EudicWordEntry[]): string {
+  const simpleWords = words.map((w) => ({ word: w.word }));
+  switch (format) {
+    case "csv":
+      return toCsvSimple(simpleWords);
+    case "tsv":
+      return toTsvSimple(simpleWords);
+    case "json":
+      return toJsonSimple(simpleWords);
+    default: // txt
+      return words.map((w) => w.word).join("\n");
+  }
+}
+
+function toCsvSimple(rows: { word: string }[]): string {
+  const csvRows = rows.map((r) => `"${(r.word || "").replace(/"/g, '""')}"`);
+  return `"word"\n${csvRows.join("\n")}`;
+}
+
+function toTsvSimple(rows: { word: string }[]): string {
+  return `word\n${rows.map((r) => r.word || "").join("\n")}`;
+}
+
+function toJsonSimple(rows: { word: string }[]): string {
+  return JSON.stringify({
+    export_time: new Date().toISOString(),
+    total: rows.length,
+    note: "墨墨背单词 — 仅支持导出单词列表",
+    words: rows,
+  }, null, 2);
+}
+
 /**
  * Fetch all words from a wordbook and save to file.
  *
@@ -250,5 +283,69 @@ export async function exportWordbook(
   Zotero.debug(
     `[hover-translate-eudic/export] Saved ${count} words to ${outFile.path} (${format})`,
   );
-  return `已导出生词本，共 ${count} 个单词\n\n文件保存至：${outFile.path}`;
+  return `已导出词本，共 ${count} 个单词\n\n文件保存至：${outFile.path}`;
+}
+
+/**
+ * Export raw word entries (without needing an EudicClient).
+ * Used for Maimemo and other non-Eudic sources.
+ */
+export async function exportWordEntries(
+  words: EudicWordEntry[],
+  format: ExportFormat,
+  opts?: {
+    outFile?: any;
+    autoReveal?: boolean;
+    /** If true, only export the word column (no empty phon/exp/etc.). */
+    wordsOnly?: boolean;
+  },
+): Promise<string> {
+  const meta = FORMAT_META[format];
+  let content: string;
+
+  if (opts?.wordsOnly) {
+    // Words-only mode: strip empty fields, output only the word column.
+    content = wordsOnlyConverter(format, words);
+  } else {
+    const converter = CONVERTERS[format];
+    content = converter(words);
+  }
+
+  let outFile: any;
+  if (opts?.outFile) {
+    outFile = opts.outFile;
+  } else {
+    const dirSvc = (Components as any).classes["@mozilla.org/file/directory_service;1"]
+      .getService((Components as any).interfaces.nsIProperties);
+    const profileDir = dirSvc.get("ProfD", (Components as any).interfaces.nsIFile);
+    const exportDir = profileDir.clone();
+    exportDir.append("zotero-export");
+    if (!exportDir.exists()) {
+      exportDir.create((Components as any).interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
+    }
+    outFile = exportDir.clone();
+    outFile.append(`${EXPORT_FILENAME}.${meta.ext}`);
+  }
+
+  ensureWritable(outFile);
+
+  const bom = "\uFEFF";
+  await Zotero.File.putContentsAsync(outFile, bom + content, "UTF-8");
+
+  if (opts?.autoReveal) {
+    try {
+      outFile.reveal();
+    } catch {
+      try {
+        const parentDir = outFile.parent;
+        if (parentDir) (parentDir as any).launch();
+      } catch { /* ignore */ }
+    }
+  }
+
+  const count = words.length;
+  Zotero.debug(
+    `[hover-translate-eudic/export] Saved ${count} words to ${outFile.path} (${format})`,
+  );
+  return `已导出词本，共 ${count} 个单词\n\n文件保存至：${outFile.path}`;
 }

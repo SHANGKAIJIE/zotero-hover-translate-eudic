@@ -1,10 +1,10 @@
 # Hover Translate Eudic
 
-> 鼠标悬停 / 单击 PDF 中的单词即可翻译，复用 **Translate for Zotero** 的翻译引擎，并支持一键将生词同步到 **欧路词典 (Eudic)** 云端生词本。
+> 鼠标悬停 / 单击 PDF 中的单词即可翻译，复用 **Translate for Zotero** 的翻译引擎，并支持一键同步生词本到 **欧路词典 (Eudic)** 或 **墨墨背单词 (Maimemo)** 云端。
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.4-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.1.5-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 
 ---
 
@@ -15,7 +15,7 @@
   - `修饰键 + 悬停`：按住 `Ctrl` / `Alt` / `Shift`（可组合）悬停即翻译；也支持**先悬停再按下修饰键**。
   - `鼠标左键单击`：单击单词即翻译，无需保持按键。
 - **复用 Translate for Zotero 引擎**：翻译结果、字典释义、多语种翻译服务直接复用已安装的 Translate 插件。
-- **一键同步欧路生词本**：翻译弹窗内点击 `+生词本`，将当前单词加入欧路云端指定生词本（生词本列表可在设置中刷新选择）。
+- **一键同步欧路 / 墨墨生词本**：翻译弹窗内点击 `+生词本`，将当前单词加入云端指定生词本。支持**欧路词典**与**墨墨背单词**双平台切换。
 - **编辑云端生词本**：设置面板中直接浏览所有生词本，支持添加、重命名、删除操作。
 - **独立高亮**：取词时可选对单词施加高亮，颜色（R/G/B/A 四通道）与开关完全独立配置，不依赖翻译开关。
 - **深色模式自适应**：翻译弹窗跟随 Zotero（含 zotero-style 等主题插件）的深色 / 浅色模式自动切换配色。
@@ -81,13 +81,23 @@ npm start
 
 **启用高亮**：勾选后，鼠标取词时对单词施加高亮标记。
 
-### 欧路词典生词本设置
+### 生词本设置
+
+**生词本平台**：选择同步目标平台 — **欧路词典** 或 **墨墨背单词**。
+
+#### 欧路词典
 
 插件通过欧路 OpenAPI 同步生词本，需要一个 **NIS Token**：
-
 1. 登录欧路词典网页版，按 [欧路 OpenAPI 开发指南](https://my.eudic.net/OpenAPI/doc_api_study) 申请 Token。
-2. 在插件设置中填入 Token（格式为 `NIS <你的token>`）。
+2. 在插件设置中填入 Token（格式为 `NIS <你的token>`，支持带或不带前缀）。
 3. 点击「刷新列表」拉取你的生词本。
+
+#### 墨墨背单词
+
+插件通过墨墨开放 API 同步云词本，需要一个 **Access Token**：
+1. 通过墨墨背单词 App（我的 → 更多设置 → 实验功能 → 开放 API）获取，或点击设置中的链接跳转网页获取。
+2. 在插件设置中填入 Token。
+3. 点击「刷新列表」拉取你的云词本。
 
 **选择生词本**：从拉取的生词本列表中选择目标词本，翻译弹窗点击 `+生词本` 时加入该词本。
 
@@ -160,3 +170,14 @@ zotero-hover-translate-eudic/
 ## 📄 开源协议
 
 本项目基于 [AGPL-3.0-or-later](./LICENSE) 开源。
+
+---
+
+## 🙏 感谢
+
+本项目基于以下仓库或 API 实现：
+
+- [windingwind/zotero-plugin-template](https://github.com/windingwind/zotero-plugin-template) — Zotero 插件模板
+- [windingwind/zotero-pdf-translate](https://github.com/windingwind/zotero-pdf-translate) — PDF 翻译引擎复用
+- [bulletproof-system/zotero-maimemo-sync](https://github.com/bulletproof-system/zotero-maimemo-sync) — 墨墨背单词同步参考
+- [墨墨开放 API](https://open.maimemo.com/) — 墨墨背单词云词本接口

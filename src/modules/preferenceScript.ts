@@ -13,7 +13,8 @@ import { config } from "../../package.json";
 import { getPref, setPref, clearPref } from "../utils/prefs";
 import { getString } from "../utils/locale";
 import { EudicClient, createEudicClientFromPrefs } from "./eudic";
-import { exportWordbook } from "./eudicExport";
+import { MaimemoClient, createMaimemoClientFromPrefs } from "./maimemo";
+import { exportWordbook, exportWordEntries } from "./eudicExport";
 
 const ref = config.addonRef;
 const $ = (id: string, win: Window) =>
@@ -32,9 +33,13 @@ const DEFAULTS: Record<string, any> = {
   popupAutoCloseDelay: 30,
   translateDisplayMode: "simple",
   enableEudicSync: false,
+  wordbookPlatform: "eudic",
   eudicToken: "",
   eudicCategoryId: "0",
   eudicCategoryName: "默认生词本",
+  maimemoToken: "",
+  maimemoCategoryId: "",
+  maimemoCategoryName: "",
   eudicLanguage: "en",
   buttonShowScene: "both",
   addWordMode: "manual",
@@ -46,11 +51,16 @@ export async function registerPrefsScripts(win: Window) {
   addon.data.prefs = { window: win };
   updateModifierRowState(win);
   updateEudicBoxState(win);
+  updateTokenVisibility(win);
   syncCategorySelectionUI(win);
   initColorPicker(win);
   bindPrefEvents(win);
-  // Auto-fetch categories on panel open if token is configured.
-  const autoFetch = getPref("enableEudicSync") && getPref("eudicToken");
+  // Auto-fetch categories on panel open if token is configured for the active platform.
+  const platform = getPref("wordbookPlatform") as string;
+  const token = platform === "maimemo"
+    ? getPref("maimemoToken") as string
+    : getPref("eudicToken") as string;
+  const autoFetch = getPref("enableEudicSync") && !!token;
   if (autoFetch) {
     win.setTimeout(() => void refreshCategories(win, true), 200);
   }
@@ -58,6 +68,7 @@ export async function registerPrefsScripts(win: Window) {
   // then force menulist labels to refresh from current pref values.
   win.setTimeout(() => {
     updateModifierRowState(win);
+    updateTokenVisibility(win);
     syncAllMenulists(win);
   }, 100);
   win.setTimeout(() => syncAllMenulists(win), 500);
@@ -164,16 +175,23 @@ function syncAllMenulists(win: Window) {
 
 function updateModifierRowState(win: Window) {
   const mode = getPref("triggerMode");
-  const row = $(`${ref}-modifierRow`, win);
-  if (!row) return;
-  const enable = mode === "modifier";
+  const modifierBox = $(`${ref}-modifierKeysBox`, win);
+  if (modifierBox) {
+    modifierBox.style.opacity = mode === "modifier" ? "1" : "0.45";
+    modifierBox.style.pointerEvents = mode === "modifier" ? "auto" : "none";
+  }
   ["modifierCtrl", "modifierAlt", "modifierShift"].forEach((k) => {
     const el = $(`zotero-prefpane-${ref}-${k}`, win);
-    if (el) el.disabled = !enable;
+    if (el) el.disabled = mode !== "modifier";
   });
-  // When triggerMode is "click", hover delay is irrelevant — disable it.
+  // When triggerMode is "click", hover delay is irrelevant — gray it out.
   const delayInput = $(`zotero-prefpane-${ref}-hoverDelay`, win);
   if (delayInput) delayInput.disabled = mode !== "hover";
+  const delayRow = $(`${ref}-hoverDelayRow`, win);
+  if (delayRow) {
+    delayRow.style.opacity = mode === "hover" ? "1" : "0.45";
+    delayRow.style.pointerEvents = mode === "hover" ? "auto" : "none";
+  }
 }
 
 function updateEudicBoxState(win: Window) {
@@ -183,6 +201,17 @@ function updateEudicBoxState(win: Window) {
   // Toggle a visual disabled state on the config box.
   box.style.opacity = enabled ? "1" : "0.5";
   box.style.pointerEvents = enabled ? "auto" : "none";
+}
+
+/** Show/hide Eudic vs Maimemo token boxes based on selected platform. */
+function updateTokenVisibility(win: Window) {
+  const platform = getPref("wordbookPlatform") as string;
+  const eudicBox = $(`${ref}-eudicTokenBox`, win);
+  const maimemoBox = $(`${ref}-maimemoTokenBox`, win);
+  if (eudicBox) eudicBox.hidden = platform !== "eudic";
+  if (maimemoBox) maimemoBox.hidden = platform !== "maimemo";
+  const hint = $(`${ref}-maimemoExportHint`, win);
+  if (hint) hint.hidden = platform !== "maimemo";
 }
 
 /** Reflect the currently saved eudicCategoryId in the menulist UI. */
@@ -230,6 +259,15 @@ function bindPrefEvents(win: Window) {
   const enableSync = $(`zotero-prefpane-${ref}-enableEudicSync`, win);
   enableSync?.addEventListener("command", () => {
     setTimeout(() => updateEudicBoxState(win), 0);
+  });
+
+  // wordbookPlatform -> toggle token boxes + auto-refresh wordbook list
+  const platformSel = $(`zotero-prefpane-${ref}-wordbookPlatform`, win);
+  platformSel?.addEventListener("command", () => {
+    setTimeout(() => {
+      updateTokenVisibility(win);
+      void refreshCategories(win, true);
+    }, 0);
   });
 
   // language change -> refresh category list
@@ -304,6 +342,21 @@ function bindPrefEvents(win: Window) {
     });
   }
 
+  // apply-token link → Maimemo OpenAPI Access Token page
+  const maimemoApplyLink = win.document.querySelector(
+    `label[data-l10n-id="${ref}-pref-maimemoToken-apply"]`,
+  ) as any;
+  if (maimemoApplyLink) {
+    maimemoApplyLink.style.cursor = "pointer";
+    maimemoApplyLink.addEventListener("click", () => {
+      try {
+        Zotero.launchURL("https://open.maimemo.com/open/api/v1/tokens/openapi");
+      } catch {
+        win.open("https://open.maimemo.com/open/api/v1/tokens/openapi", "_blank");
+      }
+    });
+  }
+
   // export button
 
   // edit category button
@@ -322,20 +375,33 @@ function bindPrefEvents(win: Window) {
 
 const EXPORT_NAME = "eudic-wordbook";
 
-/** Handle the export button click.  Uses the main wordbook category. */
+/** Handle the export button click. Uses the main wordbook category. */
 async function handleExport(win: Window) {
-  const token = getPref("eudicToken") as string;
+  const platform = getPref("wordbookPlatform") as string;
+
+  let token: string;
+  let categoryId: string;
+
+  if (platform === "maimemo") {
+    token = getPref("maimemoToken") as string;
+    categoryId = (getPref("maimemoCategoryId") as string) || "";
+  } else {
+    token = getPref("eudicToken") as string;
+    categoryId = (getPref("eudicCategoryId") as string) || "0";
+  }
+
   if (!token) {
     win.alert(getString("hint-token-invalid"));
     return;
   }
 
+  if (platform === "maimemo" && !categoryId) {
+    win.alert("请先选择要导出的墨墨云词本");
+    return;
+  }
+
   const formatEl = $(`${ref}-exportFormat`, win) as any;
   const format: string = formatEl?.value || "csv";
-
-  // Use the main "选择生词本" setting directly.
-  const categoryId = (getPref("eudicCategoryId") as string) || "0";
-  const language = getPref("eudicLanguage") as string;
   const autoReveal = getPref("exportAutoReveal") as boolean;
   const savePath = (getPref("exportSavePath") as string || "").trim();
 
@@ -344,9 +410,7 @@ async function handleExport(win: Window) {
   };
   const ext = extMap[format] || "csv";
 
-  const client = new EudicClient(token, language);
-
-  // Build nsIFile: use user-configured path, or fall back to Zotero profile.
+  // Build nsIFile
   let outFile: any = null;
   if (savePath) {
     try {
@@ -355,7 +419,6 @@ async function handleExport(win: Window) {
         .createInstance(nsIFile);
       file.initWithPath(savePath);
       if (file.exists() && !file.isDirectory()) {
-        // Path points to a file — use its parent dir
         const parent = file.parent;
         if (parent) {
           parent.append(`${EXPORT_NAME}.${ext}`);
@@ -369,15 +432,31 @@ async function handleExport(win: Window) {
         outFile = file;
       }
     } catch {
-      // Invalid path — fall through to default
+      /* fall through */
     }
   }
 
   try {
-    const msg = await exportWordbook(client, categoryId, format as any, {
-      outFile: outFile || undefined,
-      autoReveal,
-    });
+    let msg: string;
+    if (platform === "maimemo") {
+      const mClient = new MaimemoClient(token);
+      const words = await mClient.getWords(categoryId);
+      if (words.length === 0) {
+        throw new Error("该云词本中没有任何单词");
+      }
+      msg = await exportWordEntries(words, format as any, {
+        outFile: outFile || undefined,
+        autoReveal,
+        wordsOnly: true,
+      });
+    } else {
+      const language = getPref("eudicLanguage") as string;
+      const client = new EudicClient(token, language);
+      msg = await exportWordbook(client, categoryId, format as any, {
+        outFile: outFile || undefined,
+        autoReveal,
+      });
+    }
     win.alert(msg);
   } catch (e: any) {
     win.alert(`导出失败：${e?.message || "未知错误"}`);
@@ -388,53 +467,83 @@ async function handleExport(win: Window) {
 
 /** Open a dialog to list/add/rename/delete wordbooks. */
 async function handleEditWordbooks(win: Window) {
-  const token = getPref("eudicToken") as string;
-  if (!token) {
-    win.alert(getString("hint-token-invalid"));
-    return;
-  }
-  const language = getPref("eudicLanguage") as string;
-  const client = new EudicClient(token, language);
+  const platform = getPref("wordbookPlatform") as string;
 
-  // Fetch current list from the cached data or from API.
-  let categories: { id: string; name: string; language: string }[];
-  try {
-    categories = addon.data.eudic?.categories?.length
-      ? addon.data.eudic.categories
-      : await client.getCategories();
-  } catch (e: any) {
-    const msg = `获取生词本失败：${(e as any)?.message || "网络错误"}`;
-    win.alert(msg);
-    return;
-  }
-
-  // Build API proxy functions using the EudicClient (which uses Zotero.HTTP).
-  const api = {
-    getCategories: async () => {
-      const cats = await client.getCategories();
-      return cats.map(c => ({ id: c.id, name: c.name, language: c.language }));
-    },
-    createCategory: async (name: string) => { await client.createCategory(name); },
-    renameCategory: async (id: string, currentName: string, newName: string) => {
-      await client.renameCategory(id, currentName, newName);
-    },
-    deleteCategory: async (id: string, name: string) => { await client.deleteCategory(id, name); },
-  };
-  const args = { api, categories };
-
-  try {
+  if (platform === "maimemo") {
+    const token = getPref("maimemoToken") as string;
+    if (!token) {
+      win.alert(getString("hint-token-invalid"));
+      return;
+    }
+    const client = new MaimemoClient(token);
+    const api = {
+      getCategories: async () => {
+        const cats = await client.getCategories();
+        return cats.map(c => ({ id: c.id, name: c.name, language: c.language }));
+      },
+      createCategory: async (name: string) => { await client.createCategory(name); },
+      renameCategory: async (id: string, currentName: string, newName: string) => {
+        await client.renameCategory(id, currentName, newName);
+      },
+      deleteCategory: async (id: string, name: string) => { await client.deleteCategory(id, name); },
+    };
+    const args = { api, categories: [] };
     const mainWin = Zotero.getMainWindow() as any;
-    mainWin.openDialog(
-      "chrome://hovertranslateeudic/content/edit-wordbook-dialog.xhtml",
-      "edit-wordbook",
-      "centerscreen,resizable,width=520,height=400",
-      args,
-    );
-  } catch {
-    win.alert("无法打开编辑窗口，请确认插件已正确安装。");
+    try {
+      mainWin.openDialog(
+        "chrome://hovertranslateeudic/content/edit-wordbook-dialog.xhtml",
+        "edit-wordbook",
+        "centerscreen,resizable,width=520,height=400",
+        args,
+      );
+    } catch {
+      win.alert("无法打开编辑窗口，请确认插件已正确安装。");
+    }
+  } else {
+    // Eudic
+    const token = getPref("eudicToken") as string;
+    if (!token) {
+      win.alert(getString("hint-token-invalid"));
+      return;
+    }
+    const language = getPref("eudicLanguage") as string;
+    const client = new EudicClient(token, language);
+    let categories: { id: string; name: string; language: string }[];
+    try {
+      categories = addon.data.eudic?.categories?.length
+        ? addon.data.eudic.categories
+        : await client.getCategories();
+    } catch (e: any) {
+      const msg = `获取生词本失败：${(e as any)?.message || "网络错误"}`;
+      win.alert(msg);
+      return;
+    }
+    const api = {
+      getCategories: async () => {
+        const cats = await client.getCategories();
+        return cats.map(c => ({ id: c.id, name: c.name, language: c.language }));
+      },
+      createCategory: async (name: string) => { await client.createCategory(name); },
+      renameCategory: async (id: string, currentName: string, newName: string) => {
+        await client.renameCategory(id, currentName, newName);
+      },
+      deleteCategory: async (id: string, name: string) => { await client.deleteCategory(id, name); },
+    };
+    const args = { api, categories };
+    const mainWin = Zotero.getMainWindow() as any;
+    try {
+      mainWin.openDialog(
+        "chrome://hovertranslateeudic/content/edit-wordbook-dialog.xhtml",
+        "edit-wordbook",
+        "centerscreen,resizable,width=520,height=400",
+        args,
+      );
+    } catch {
+      win.alert("无法打开编辑窗口，请确认插件已正确安装。");
+    }
   }
+
   // After the dialog closes, refresh the category list in the preferences.
-  // Use a polling check since the dialog is non-modal.
   const checkClosed = () => {
     const existing = (Zotero.getMainWindow() as any).document?.getElementById?.("hovertranslateeudic-editWordbookDialog");
     if (!existing) {
@@ -451,65 +560,71 @@ async function handleEditWordbooks(win: Window) {
 let refreshInProgress = false;
 
 async function refreshCategories(win: Window, silent: boolean) {
-  // Guard against concurrent calls (auto-fetch + button click may overlap).
   if (refreshInProgress) {
     try { Zotero.debug("[hover-translate-eudic/prefs] refreshCategories already in progress, skipping"); } catch { /* ignore */ }
     return;
   }
   refreshInProgress = true;
   const pdbg = (m: string) => {
-    try {
-      Zotero.debug(`[hover-translate-eudic/prefs] ${m}`);
-    } catch {
-      /* ignore */
-    }
+    try { Zotero.debug(`[hover-translate-eudic/prefs] ${m}`); } catch { /* ignore */ }
   };
   pdbg("refreshCategories start");
-  const token = getPref("eudicToken");
-  if (!token) {
-    pdbg("no token");
-    if (!silent) win.alert(getString("hint-token-invalid"));
-    return;
+
+  const platform = getPref("wordbookPlatform") as string;
+  let token: string;
+  let client: EudicClient | MaimemoClient;
+
+  if (platform === "maimemo") {
+    token = getPref("maimemoToken") as string;
+    if (!token) {
+      pdbg("no maimemo token");
+      if (!silent) win.alert(getString("hint-token-invalid"));
+      refreshInProgress = false;
+      return;
+    }
+    client = new MaimemoClient(token);
+  } else {
+    token = getPref("eudicToken") as string;
+    if (!token) {
+      pdbg("no eudic token");
+      if (!silent) win.alert(getString("hint-token-invalid"));
+      refreshInProgress = false;
+      return;
+    }
+    const language = getPref("eudicLanguage") as string;
+    client = new EudicClient(token, language);
   }
-  const language = getPref("eudicLanguage");
-  const client = new EudicClient(token, language);
+
   const menulist = $(`zotero-prefpane-${ref}-eudicCategoryId`, win);
   let popup: any =
     menulist?.menupopup || menulist?.querySelector("menupopup");
-  if (!popup) {
-    // Create a menupopup if missing.
-    if (menulist) {
-      popup = (win.document as any).createXULElement("menupopup");
-      menulist.appendChild(popup);
-    }
+  if (!popup && menulist) {
+    popup = (win.document as any).createXULElement("menupopup");
+    menulist.appendChild(popup);
   }
   if (!menulist || !popup) {
     pdbg("menulist/popup not found");
+    refreshInProgress = false;
     return;
   }
 
-  // Clear existing items.
   while (popup.firstChild) popup.removeChild(popup.firstChild);
 
   let categories: { id: string; name: string; language: string }[] = [];
   try {
     categories = await client.getCategories();
-    addon.data.eudic.categories = categories;
-    addon.data.eudic.client = client;
+    if (platform === "eudic") {
+      addon.data.eudic.categories = categories;
+      addon.data.eudic.client = client as EudicClient;
+    }
     pdbg(`got ${categories.length} categories`);
   } catch (e: any) {
     pdbg(`getCategories failed: status=${e?.status} msg=${e?.message}`);
-    // Fallback to default category.
     const def = (win.document as any).createXULElement("menuitem") as any;
     def.setAttribute("value", "0");
     def.setAttribute("label", "默认生词本");
     popup.appendChild(def);
-    try {
-      menulist.selectedIndex = 0;
-      menulist.value = "0";
-    } catch {
-      /* ignore */
-    }
+    try { menulist.selectedIndex = 0; menulist.value = "0"; } catch { /* ignore */ }
     setPref("eudicCategoryId", "0");
     setPref("eudicCategoryName", "默认生词本");
     if (!silent) {
@@ -518,7 +633,7 @@ async function refreshCategories(win: Window, silent: boolean) {
         status === 401
           ? getString("hint-token-invalid")
           : status === 0
-            ? `网络错误：${e?.message || "无法连接欧路服务"}`
+            ? `网络错误：${e?.message || "无法连接服务"}`
             : `刷新失败：${e?.message || `HTTP ${status}`}`;
       win.alert(msg);
     }
@@ -526,7 +641,6 @@ async function refreshCategories(win: Window, silent: boolean) {
     return;
   }
 
-  // Build menuitems. Use createXULElement for XUL reliability (Zotero 7+).
   const items: any[] = [];
   if (categories.length === 0) {
     const def = (win.document as any).createXULElement("menuitem") as any;
@@ -544,23 +658,26 @@ async function refreshCategories(win: Window, silent: boolean) {
     }
   }
 
-  // Preserve current selection if still present, else pick first.
-  const savedId = getPref("eudicCategoryId");
+  const savedId = getPref(
+    platform === "maimemo" ? "maimemoCategoryId" : "eudicCategoryId",
+  );
   let targetIdx = items.findIndex((it) => it.getAttribute("value") === savedId);
   if (targetIdx < 0) targetIdx = 0;
   const targetItem = items[targetIdx];
   const targetId = targetItem.getAttribute("value");
   const targetLabel = targetItem.getAttribute("label") || targetId;
-  // Use selectedIndex (most reliable for XUL menulist display) + value/label.
   try {
     menulist.selectedIndex = targetIdx;
     menulist.value = targetId;
     menulist.label = targetLabel;
-  } catch {
-    /* ignore */
+  } catch { /* ignore */ }
+  if (platform === "maimemo") {
+    setPref("maimemoCategoryId", String(targetId));
+    setPref("maimemoCategoryName", String(targetLabel));
+  } else {
+    setPref("eudicCategoryId", String(targetId));
+    setPref("eudicCategoryName", String(targetLabel));
   }
-  setPref("eudicCategoryId", String(targetId));
-  setPref("eudicCategoryName", String(targetLabel));
   pdbg(`selected idx=${targetIdx} id=${targetId} label=${targetLabel}`);
   refreshInProgress = false;
 }
@@ -575,11 +692,12 @@ function resetDefaults(win: Window) {
     clearPref(key as any);
     setPref(key as any, DEFAULTS[key]);
   }
-  // Re-init a fresh client (null since token cleared).
+  // Re-init clients.
   addon.data.eudic.client = createEudicClientFromPrefs();
   // Refresh UI from the reset prefs.
   updateModifierRowState(win);
   updateEudicBoxState(win);
+  updateTokenVisibility(win);
   // Re-sync color picker + R/G/B/A inputs from the reset pref.
   initColorPicker(win);
   // Reload the panel so bound controls re-read prefs.

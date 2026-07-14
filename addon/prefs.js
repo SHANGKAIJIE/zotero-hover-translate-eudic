@@ -15,11 +15,17 @@ pref("disableOnSelection", true);
 pref("popupAutoCloseDelay", 30); // 秒
 pref("translateDisplayMode", "simple"); // simple | full
 
-// ---- 3.2 欧路词典生词本设置 ----
+// ---- 3.2 生词本设置 ----
+pref("wordbookPlatform", "eudic"); // "eudic" | "maimemo"
 pref("enableEudicSync", false);
+// Eudic
 pref("eudicToken", "");
 pref("eudicCategoryId", "0");
 pref("eudicCategoryName", "默认生词本");
+// Maimemo
+pref("maimemoToken", "");
+pref("maimemoCategoryId", "");
+pref("maimemoCategoryName", "");
 pref("eudicLanguage", "en"); // en | fr | de | es
 pref("buttonShowScene", "both"); // both | hover | selection
 pref("addWordMode", "manual"); // manual | auto

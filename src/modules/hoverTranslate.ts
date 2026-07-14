@@ -25,6 +25,7 @@ import {
 } from "../utils/window";
 import { wordRangeAtOffset, isSingleEnglishWord } from "./util";
 import { createEudicClientFromPrefs } from "./eudic";
+import { createMaimemoClientFromPrefs } from "./maimemo";
 
 const HIGHLIGHT_OVERLAY_ID = `${config.addonRef}-highlight-overlay`;
 const POPUP_ID = `${config.addonRef}-hover-popup`;
@@ -991,7 +992,11 @@ function maybeAddWordButton(
   const scenePref = getPref("buttonShowScene");
   if (scenePref !== "both" && scenePref !== scene) return null;
   if (!isSingleEnglishWord(word)) return null;
-  if (!getPref("eudicToken")) return null;
+  const platform = getPref("wordbookPlatform") as string;
+  const hasToken = platform === "maimemo"
+    ? !!getPref("maimemoToken")
+    : !!getPref("eudicToken");
+  if (!hasToken) return null;
 
   const doc = popup.ownerDocument!;
   const toolbar = doc.createElement("div");
@@ -1044,6 +1049,14 @@ function maybeAddWordButton(
 }
 
 async function addWordToEudic(word: string): Promise<boolean> {
+  const platform = getPref("wordbookPlatform") as string;
+  if (platform === "maimemo") {
+    const client = createMaimemoClientFromPrefs();
+    if (!client) return false;
+    const categoryId = getPref("maimemoCategoryId") as string;
+    const res = await client.addWord(word, categoryId);
+    return res.success;
+  }
   const client = createEudicClientFromPrefs();
   if (!client) return false;
   const categoryId = getPref("eudicCategoryId");

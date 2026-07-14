@@ -18,10 +18,14 @@ declare namespace _ZoteroTypes {
       "disableOnSelection": boolean;
       "popupAutoCloseDelay": number;
       "translateDisplayMode": string;
+      "wordbookPlatform": string;
       "enableEudicSync": boolean;
       "eudicToken": string;
       "eudicCategoryId": string;
       "eudicCategoryName": string;
+      "maimemoToken": string;
+      "maimemoCategoryId": string;
+      "maimemoCategoryName": string;
       "eudicLanguage": string;
       "buttonShowScene": string;
       "addWordMode": string;

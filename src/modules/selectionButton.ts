@@ -14,6 +14,7 @@ import { getPref, registerPrefObserver } from "../utils/prefs";
 import { getString } from "../utils/locale";
 import { isSingleEnglishWord } from "./util";
 import { createEudicClientFromPrefs } from "./eudic";
+import { createMaimemoClientFromPrefs } from "./maimemo";
 
 let registered = false;
 let listener: ((event: any) => void) | null = null;
@@ -32,8 +33,12 @@ export function unregisterSelectionButton() {
 }
 
 function syncRegistration() {
+  const platform = getPref("wordbookPlatform") as string;
+  const hasToken = platform === "maimemo"
+    ? !!getPref("maimemoToken")
+    : !!getPref("eudicToken");
   const shouldEnable =
-    getPref("enableEudicSync") && !!getPref("eudicToken");
+    getPref("enableEudicSync") && hasToken;
   if (shouldEnable && !registered) {
     doRegister();
   } else if (!shouldEnable && registered) {
@@ -89,7 +94,11 @@ function onRenderTextSelectionPopup(event: any) {
   const scenePref = getPref("buttonShowScene");
   if (scenePref !== "both" && scenePref !== "selection") return;
   if (!isSingleEnglishWord(selectedText)) return;
-  if (!getPref("eudicToken")) return;
+  const platform = getPref("wordbookPlatform") as string;
+  const hasToken = platform === "maimemo"
+    ? !!getPref("maimemoToken")
+    : !!getPref("eudicToken");
+  if (!hasToken) return;
 
   // Build a full-width button styled like llm-for-zotero's "Add Text" button.
   const btn = doc.createElement("button");
@@ -158,6 +167,14 @@ function onRenderTextSelectionPopup(event: any) {
 }
 
 async function addWordToEudic(word: string): Promise<boolean> {
+  const platform = getPref("wordbookPlatform") as string;
+  if (platform === "maimemo") {
+    const client = createMaimemoClientFromPrefs();
+    if (!client) return false;
+    const categoryId = getPref("maimemoCategoryId") as string;
+    const res = await client.addWord(word, categoryId);
+    return res.success;
+  }
   const client = createEudicClientFromPrefs();
   if (!client) return false;
   const categoryId = getPref("eudicCategoryId");

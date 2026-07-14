@@ -88,7 +88,7 @@
       data-l10n-id="pref-enableHoverTranslate"
     />
 
-    <hbox align="center" id="__addonRef__-modifierRow">
+    <hbox align="center" id="__addonRef__-triggerModeRow">
       <label class="pref-label" data-l10n-id="pref-triggerMode" />
       <menulist id="zotero-prefpane-__addonRef__-triggerMode" preference="triggerMode">
         <menupopup>
@@ -97,13 +97,15 @@
           <menuitem value="click" data-l10n-id="pref-triggerMode-click" />
         </menupopup>
       </menulist>
-      <label data-l10n-id="pref-modifierKeys" style="margin-left: 12px" />
-      <checkbox id="zotero-prefpane-__addonRef__-modifierCtrl" preference="modifierCtrl" data-l10n-id="pref-modifierCtrl" />
-      <checkbox id="zotero-prefpane-__addonRef__-modifierAlt" preference="modifierAlt" data-l10n-id="pref-modifierAlt" />
-      <checkbox id="zotero-prefpane-__addonRef__-modifierShift" preference="modifierShift" data-l10n-id="pref-modifierShift" />
+      <hbox id="__addonRef__-modifierKeysBox" align="center">
+        <label data-l10n-id="pref-modifierKeys" style="margin-left: 12px" />
+        <checkbox id="zotero-prefpane-__addonRef__-modifierCtrl" preference="modifierCtrl" data-l10n-id="pref-modifierCtrl" />
+        <checkbox id="zotero-prefpane-__addonRef__-modifierAlt" preference="modifierAlt" data-l10n-id="pref-modifierAlt" />
+        <checkbox id="zotero-prefpane-__addonRef__-modifierShift" preference="modifierShift" data-l10n-id="pref-modifierShift" />
+      </hbox>
     </hbox>
 
-    <hbox align="center">
+    <hbox id="__addonRef__-hoverDelayRow" align="center">
       <label class="pref-label" data-l10n-id="pref-hoverDelay" />
       <html:input
         type="number"
@@ -114,7 +116,7 @@
         preference="hoverDelay"
         style="width: 80px"
       />
-      <label data-l10n-id="pref-hoverDelay-unit" />
+      <label id="__addonRef__-hoverDelayUnit" data-l10n-id="pref-hoverDelay-unit" />
     </hbox>
 
     <hbox align="center">
@@ -163,21 +165,57 @@
 
     <vbox id="__addonRef__-eudicConfigBox">
       <hbox align="center">
-        <label class="pref-label" data-l10n-id="pref-eudicToken" />
-        <html:input
-          type="password"
-          id="zotero-prefpane-__addonRef__-eudicToken"
-          preference="eudicToken"
-          style="flex: 1; min-width: 240px"
-        />
+        <label class="pref-label" data-l10n-id="pref-wordbookPlatform" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-wordbookPlatform"
+          preference="wordbookPlatform"
+        >
+          <menupopup>
+            <menuitem value="eudic" data-l10n-id="pref-wordbookPlatform-eudic" />
+            <menuitem value="maimemo" data-l10n-id="pref-wordbookPlatform-maimemo" />
+          </menupopup>
+        </menulist>
       </hbox>
-      <hbox style="margin-left: 116px">
-        <label
-          class="text-link"
-          href="https://my.eudic.net/OpenAPI/Authorization"
-          data-l10n-id="pref-eudicToken-apply"
-        />
-      </hbox>
+
+      <!-- Eudic token section -->
+      <vbox id="__addonRef__-eudicTokenBox">
+        <hbox align="center">
+          <label class="pref-label" data-l10n-id="pref-eudicToken" />
+          <html:input
+            type="password"
+            id="zotero-prefpane-__addonRef__-eudicToken"
+            preference="eudicToken"
+            style="flex: 1; min-width: 240px"
+          />
+        </hbox>
+        <hbox style="margin-left: 116px">
+          <label
+            class="text-link"
+            href="https://my.eudic.net/OpenAPI/Authorization"
+            data-l10n-id="pref-eudicToken-apply"
+          />
+        </hbox>
+      </vbox>
+
+      <!-- Maimemo token section -->
+      <vbox id="__addonRef__-maimemoTokenBox" hidden="true">
+        <hbox align="center">
+          <label class="pref-label" data-l10n-id="pref-maimemoToken" />
+          <html:input
+            type="password"
+            id="zotero-prefpane-__addonRef__-maimemoToken"
+            preference="maimemoToken"
+            style="flex: 1; min-width: 240px"
+          />
+        </hbox>
+        <hbox style="margin-left: 116px">
+          <label
+            class="text-link"
+            href="https://open.maimemo.com/open/api/v1/tokens/openapi"
+            data-l10n-id="pref-maimemoToken-apply"
+          />
+        </hbox>
+      </vbox>
 
       <hbox align="center">
         <label class="pref-label" data-l10n-id="pref-eudicCategory" />
@@ -265,6 +303,10 @@
       />
     </hbox>
 
+    <hbox id="__addonRef__-maimemoExportHint" hidden="true" style="margin-left: 116px; margin-top: 4px">
+      <label style="color: #c9780a; font-style: italic" data-l10n-id="pref-maimemoExportHint" />
+    </hbox>
+
     <checkbox
       id="__addonRef__-exportAutoReveal"
       preference="exportAutoReveal"
@@ -273,6 +315,7 @@
 
     <hbox align="center" style="margin-top: 8px">
       <button id="__addonRef__-exportBtn" data-l10n-id="pref-export-btn" />
+      <label style="color: #888; font-style: italic; margin-left: 8px" data-l10n-id="pref-export-retryHint" />
     </hbox>
   </groupbox>
 
