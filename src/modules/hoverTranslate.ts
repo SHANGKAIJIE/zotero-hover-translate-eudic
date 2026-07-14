@@ -858,17 +858,32 @@ async function fillDictionaryResult(
 ) {
   const pdf = (Zotero as any).PDFTranslate;
   if (!pdf || !pdf.api || typeof pdf.api.translate !== "function") return;
-  // Read pdf-translate's configured dictionary service.
-  let dictSource: string | undefined;
-  try {
-    dictSource = Zotero.Prefs.get(
-      "extensions.zotero.ZoteroPDFTranslate.dictSource",
-      true,
-    ) as string;
-  } catch {
-    /* ignore */
+  // Read pdf-translate's dict source. On a cold start our plugin may
+  // load before pdf-translate has registered its pref defaults, so retry
+  // once after a short delay if the value is missing.
+  let dictSource: string = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const enabled = Zotero.Prefs.get(
+        "extensions.zotero.ZoteroPDFTranslate.enableDict",
+        true,
+      ) as boolean;
+      if (!enabled) {
+        dbg("fillDictionaryResult: dict disabled in pdf-translate");
+        return;
+      }
+      dictSource = (Zotero.Prefs.get(
+        "extensions.zotero.ZoteroPDFTranslate.dictSource",
+        true,
+      ) as string) || "";
+    } catch { /* ignore */ }
+    if (dictSource) break;
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 200));
   }
-  if (!dictSource) return;
+  if (!dictSource) {
+    dbg("fillDictionaryResult: dictSource still empty after retry, skipping");
+    return;
+  }
   try {
     const task = await pdf.api.translate(word, {
       pluginID: config.addonID,
