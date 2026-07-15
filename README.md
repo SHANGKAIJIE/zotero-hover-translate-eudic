@@ -4,7 +4,7 @@
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.5-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.1.7-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 
 ---
 
@@ -76,6 +76,16 @@ npm start
 **悬停触发延迟**：设置悬停触发翻译的延迟时间（单位：毫秒）。
 
 **弹窗自动关闭**：设置翻译弹窗自动关闭的延时，设为 0 则不自动关闭。
+
+**翻译显示模式**：控制翻译弹窗中的内容：
+| 模式 | 说明 |
+| --- | --- |
+| 简单翻译 | 仅显示翻译结果，与划词翻译面板一致。 |
+| 完整释义 | 翻译结果外附加字典释义（如适用），内容更丰富。 |
+
+**选中文字时禁用悬停**：勾选后，鼠标划词选择文本时自动隐藏悬停窗口，避免与 Translate for Zotero 的划词翻译弹窗冲突。
+
+**启用悬停翻译(插件总开关)**：控制插件的取词翻译功能是否启用。取消勾选后，取词触发方式 / 悬停延迟 / 弹窗关闭 / 显示模式均变为灰色不可操作。
 
 **高亮颜色**：通过 `R`（红）、`G`（绿）、`B`（蓝，0–255）与 `A`（透明度，0–100%）四个数字框精确调整高亮色，或直接用颜色选择器拾取。
 
@@ -152,9 +162,12 @@ zotero-hover-translate-eudic/
 │   ├── modules/
 │   │   ├── hoverTranslate.ts # 悬停 / 单击取词 + 翻译弹窗核心逻辑
 │   │   ├── eudic.ts          # 欧路 OpenAPI 客户端（生词本同步）
+│   │   ├── lemmatize.ts      # 英文词形还原（变形词→原型）v0.1.6
+│   │   ├── maimemo.ts        # 墨墨背单词 OpenAPI 客户端 v0.1.5
 │   │   ├── eudicExport.ts    # 生词本导出（CSV/TSV/TXT/JSON）
 │   │   ├── preferenceScript.ts # 设置面板交互逻辑
-│   │   └── selectionButton.ts  # 选区翻译按钮
+│   │   ├── selectionButton.ts  # 选区翻译按钮
+│   │   └── util.ts            # 单词提取/验证工具
 │   └── utils/                # 工具函数（prefs 等）
 ├── addon/                    # 插件静态资源
 │   ├── content/
