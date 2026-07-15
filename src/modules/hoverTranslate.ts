@@ -705,11 +705,20 @@ async function doTranslate(
     `color:${tc.status};font-size:12px;font-style:italic;`;
 
   const result = doc.createElement("div");
-  result.style.cssText = `color:${tc.primary};white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};`;
+  result.style.cssText = `color:${tc.primary};white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};font-weight:400;padding-left:4px;`;
 
-  popup.appendChild(raw);
-  popup.appendChild(status);
-  popup.appendChild(result);
+  // Flex row: left column (word + translation) + right circular button
+  const row = doc.createElement("div");
+  row.style.cssText = "display:flex;align-items:center;gap:6px;";
+
+  const leftCol = doc.createElement("div");
+  leftCol.style.cssText = "flex:1;min-width:0;";
+
+  leftCol.appendChild(raw);
+  leftCol.appendChild(status);
+  leftCol.appendChild(result);
+  row.appendChild(leftCol);
+  popup.appendChild(row);
 
   // Position near cursor (use last known mouse pos stored on dataset via window).
   positionPopup(innerWin, popup);
@@ -746,7 +755,7 @@ async function doTranslate(
 
   // +生词本 button (hover scene, single word only). Keep a ref so auto-add
   // can drive the same button state as a manual click.
-  const wordBtn = maybeAddWordButton(innerWin, popup, word, "hover");
+  const wordBtn = maybeAddWordButton(innerWin, row, word, "hover");
 
   // Start the auto-close timer BEFORE auto-add so that the async
   // autoAddWordWithButton can cancel it.  Otherwise the timer is set
@@ -773,16 +782,24 @@ async function autoAddWordWithButton(
   try {
     const win = btn.ownerDocument?.defaultView as Window | null;
     if (win) _cancelAutoClose(win);
-    btn.textContent = getString("wordbtn-adding");
+    btn.textContent = "+";
     btn.setAttribute("disabled", "true");
     const ok = await addWordToEudic(word);
-    btn.textContent = ok
-      ? getString("wordbtn-added")
-      : getString("wordbtn-failed");
-    // Resume the paused auto-close timer (original expiry).
+    if (ok) {
+      btn.textContent = "✓";
+      btn.style.color = "#22c55e";
+      btn.style.borderColor = "#22c55e";
+    } else {
+      btn.textContent = "✗";
+      btn.style.color = "#ef4444";
+      btn.style.borderColor = "#ef4444";
+    }
     if (win) _resumeAutoClose(win);
     setTimeout(() => {
-      btn.textContent = getString("wordbtn-add");
+      const tc = getThemeColors(win || undefined);
+      btn.textContent = "+";
+      btn.style.color = tc.raw;
+      btn.style.borderColor = tc.btnBorder;
       btn.removeAttribute("disabled");
     }, 1000);
   } catch {
@@ -809,7 +826,7 @@ function schedulePopupAutoClose(innerWin: Window) {
 
 /** Internal: arm a setTimeout that fires at `expiry` (absolute ms).
  *  Before closing the popup it checks whether the word-button is still
- *  in a feedback cycle (\"添加中\" / \"已加/失败\").  If so it re-arms
+ *  in a feedback cycle (\"✓\" / \"✗\").  If so it re-arms
  *  instead of closing — this guarantees the popup survives the full
  *  button cycle regardless of timer-cancellation timing edge cases. */
 function _armCloseTimer(win: Window, expiry: number) {
@@ -820,7 +837,7 @@ function _armCloseTimer(win: Window, expiry: number) {
     const btn = popup.querySelector("button") as HTMLButtonElement | null;
     // If a word-button exists and is NOT in its default state, the
     // button cycle is still in progress — re-arm instead of closing.
-    if (btn && btn.textContent !== getString("wordbtn-add")) {
+    if (btn && btn.textContent !== "+") {
       // Button cycle still in progress — keep popup alive 1 more
       // second, then close regardless to prevent a runaway loop.
       (win as any).__hoverCloseTimer = win.setTimeout(() => {
@@ -866,10 +883,15 @@ function appendExtraResult(
   text: string,
   fontSize: string,
   lineHeight: string,
+  isHtml?: boolean,
 ) {
   const tc = getThemeColors(doc.defaultView || undefined);
   const ex = doc.createElement("div");
-  ex.textContent = text;
+  if (isHtml) {
+    ex.innerHTML = text;
+  } else {
+    ex.textContent = text;
+  }
   ex.style.cssText = `color:${tc.secondary};white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};margin-top:4px;border-top:1px solid ${tc.divider};padding-top:4px;`;
   popup.appendChild(ex);
 }
@@ -918,7 +940,13 @@ async function fillDictionaryResult(
       itemID: reader.itemID,
     });
     if (task && task.status === "success" && task.result) {
-      appendExtraResult(doc, popup, task.result, fontSize, lineHeight);
+      const tc = getThemeColors(doc.defaultView || undefined);
+      const formatted = task.result
+        .replace(/;\s*/g, '\n')
+        .replace(/\s+(n\.|adj\.|adv\.|v\.|vi\.|vt\.|prep\.|conj\.|pron\.|int\.|网络释义)\s*/gi,
+          (_: string, pos: string) => `\n<span style="color:${tc.primary}">${pos}</span> `)
+        .replace(/^\n+/, '');
+      appendExtraResult(doc, popup, formatted, fontSize, lineHeight, true);
     }
   } catch (e: any) {
     dbg(`dict query failed: ${e?.message || e}`);
@@ -1010,7 +1038,7 @@ function positionPopup(innerWin: Window, popup: HTMLElement) {
 
 function maybeAddWordButton(
   innerWin: Window,
-  popup: HTMLElement,
+  container: HTMLElement,
   word: string,
   scene: "hover" | "selection",
 ): HTMLButtonElement | null {
@@ -1024,53 +1052,58 @@ function maybeAddWordButton(
     : !!getPref("eudicToken");
   if (!hasToken) return null;
 
-  const doc = popup.ownerDocument!;
-  const toolbar = doc.createElement("div");
-  toolbar.style.cssText = "margin-top:6px;";
+  const doc = container.ownerDocument!;
+  const tc = getThemeColors(innerWin);
 
   const btn = doc.createElement("button");
-  btn.textContent = getString("wordbtn-add");
-  // Style adapted from llm-for-zotero's "Add Text" button:
-  // full-width block, rounded, translucent, theme-adaptive.
-  const tc = getThemeColors(innerWin);
+  btn.textContent = "+";
+  // Circular outline button, placed to the right of word + translation.
   btn.style.cssText = [
-    "display:block",
-    "width:100%",
-    "margin:0",
-    "padding:6px 8px",
-    "box-sizing:border-box",
-    `border:1px solid ${tc.btnBorder}`,
-    "border-radius:6px",
-    `background:${tc.btnBg}`,
-    "color:inherit",
-    "font-size:12px",
-    "line-height:1.25",
+    "width:28px",
+    "height:28px",
+    "min-width:28px",
+    "flex-shrink:0",
+    "border-radius:50%",
+    "box-shadow:0 0 4px rgba(128,128,128,0.15)",
+    `border:1.5px solid ${tc.btnBorder}`,
+    "background:transparent",
+    "padding:0",
+    `color:${tc.raw}`,
+    "font-size:16px",
+    "line-height:26px",
+    "font-weight:bold",
     "text-align:center",
     "cursor:pointer",
+    "display:flex",
+    "align-items:center",
+    "justify-content:center",
+    "transition:color 0.2s, border-color 0.2s",
   ].join(";");
 
   btn.addEventListener("click", async () => {
-    // Cancel auto-close while API runs so the popup doesn't vanish
-    // before the user sees the outcome.
     _cancelAutoClose(innerWin);
-    btn.textContent = getString("wordbtn-adding");
+    btn.textContent = "+";
     btn.setAttribute("disabled", "true");
     const ok = await addWordToEudic(word);
-    btn.textContent = ok
-      ? getString("wordbtn-added")
-      : getString("wordbtn-failed");
-    // Resume the paused auto-close timer (original expiry).
-    // If the timer already expired while the API was running,
-    // the popup closes immediately.
+    if (ok) {
+      btn.textContent = "✓";
+      btn.style.color = "#22c55e";
+      btn.style.borderColor = "#22c55e";
+    } else {
+      btn.textContent = "✗";
+      btn.style.color = "#ef4444";
+      btn.style.borderColor = "#ef4444";
+    }
     _resumeAutoClose(innerWin);
     setTimeout(() => {
-      btn.textContent = getString("wordbtn-add");
+      btn.textContent = "+";
+      btn.style.color = tc.raw;
+      btn.style.borderColor = tc.btnBorder;
       btn.removeAttribute("disabled");
     }, 1000);
   });
 
-  toolbar.appendChild(btn);
-  popup.appendChild(toolbar);
+  container.appendChild(btn);
   return btn;
 }
 
