@@ -17,9 +17,10 @@ export function isSingleEnglishWord(text: string): boolean {
 }
 
 /**
- * Extract the English word (>=2 letters) containing the character at
- * `offset` within `text`. Returns null if the character is not part of a
- * valid English word.
+ * Extract the English word containing the character at `offset` within
+ * `text`. Returns null if the character is not part of a valid English word.
+ * Highlights any word ≥ 1 letter; "+生词本" button requires ≥ 2 via
+ * isSingleEnglishWord.
  */
 export function wordAtOffset(text: string, offset: number): string | null {
   if (!text || offset < 0 || offset > text.length) return null;
@@ -28,10 +29,9 @@ export function wordAtOffset(text: string, offset: number): string | null {
   while ((matches = WORD_RUN.exec(text)) !== null) {
     const start = matches.index;
     const end = start + matches[0].length;
-    // offset may be at end boundary; treat end as inclusive of the run
     if (offset >= start && offset <= end) {
       const word = matches[0];
-      return word.length >= 2 ? word : null;
+      return word.length >= 1 ? word : null;
     }
   }
   return null;
@@ -52,7 +52,7 @@ export function wordRangeAtOffset(
     const end = start + matches[0].length;
     if (offset >= start && offset <= end) {
       const word = matches[0];
-      if (word.length >= 2) {
+      if (word.length >= 1) {
         return { word, start, end };
       }
       return null;
