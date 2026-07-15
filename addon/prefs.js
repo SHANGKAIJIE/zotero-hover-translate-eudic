@@ -29,6 +29,7 @@ pref("maimemoCategoryName", "");
 pref("eudicLanguage", "en"); // en | fr | de | es
 pref("buttonShowScene", "both"); // both | hover | selection
 pref("addWordMode", "manual"); // manual | auto
+pref("lemmaMode", "lemma"); // lemma | inflected
 
 // ---- 3.3 导出生词本 ----
 pref("exportAutoReveal", true);

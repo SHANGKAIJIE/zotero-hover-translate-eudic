@@ -4,7 +4,7 @@
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.7-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.1.9-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 
 ---
 
@@ -109,6 +109,8 @@ npm start
 2. 在插件设置中填入 Token。
 3. 点击「刷新列表」拉取你的云词本。
 
+> ⚠️ **注意**：墨墨开放平台 Access Token 有效期仅 **24 小时**，过期后需重新获取。Token 过期时插件会弹窗提醒。
+
 **选择生词本**：从拉取的生词本列表中选择目标词本，翻译弹窗点击 `+生词本` 时加入该词本。
 
 **编辑词本**：打开弹窗直接浏览所有生词本，支持**添加**新词本、**重命名**已有词本、**删除**词本操作。
@@ -121,6 +123,15 @@ npm start
 | 仅划词翻译显示 | 仅在划词翻译按钮中显示 |
 
 **加词方式**：`手动点击按钮添加` 或 `翻译后自动加入生词本`。
+
+**词形选择**（仅欧路词典）：控制添加到生词本时是否进行词形还原——
+
+| 选项 | 说明 |
+| --- | --- |
+| 还原为单词原型 | 调用词形还原引擎（BNC 词典 + 不规则表 + 后缀规则），将变形词转为原型后上传 |
+| 保留变形词（复数 / 过去式 等）| 直接以上下文中的词形上传，不进行词形还原 |
+
+> 建议选择「单词原型」，变形词加入生词本可能导致缺少音标和释义。此选项仅对欧路词典生效；墨墨背单词在 App 展示层已自动归一化为词典原型。
 
 **单词语言**：设置加入生词本的单词语言（en/fr/de/es 等）。
 

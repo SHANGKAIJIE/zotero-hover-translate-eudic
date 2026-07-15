@@ -1075,10 +1075,9 @@ function maybeAddWordButton(
 }
 
 async function addWordToEudic(word: string): Promise<boolean> {
-  // Lemmatise inflected forms to dictionary headwords before API call.
-  // Eudic stores words as-is and matches them by exact headword, so
-  // "models" would be stored without phon/exp while "model" gets both.
-  const lemma = toLemma(word);
+  // Lemmatise inflected forms to dictionary headwords before API call
+  // when lemmaMode is "lemma"; skip lemmatisation when "inflected".
+  const lemma = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
   if (lemma !== word) {
     try {
       Zotero.debug(

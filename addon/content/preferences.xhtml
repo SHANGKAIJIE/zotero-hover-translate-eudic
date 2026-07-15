@@ -217,6 +217,9 @@
             data-l10n-id="pref-maimemoToken-apply"
           />
         </hbox>
+        <hbox style="margin-left: 116px; margin-top: 4px">
+          <label style="color: #c9780a; font-style: italic" data-l10n-id="pref-maimemoToken-24h-hint" />
+        </hbox>
       </vbox>
 
       <hbox align="center">
@@ -275,6 +278,24 @@
           </menupopup>
         </menulist>
       </hbox>
+
+      <vbox id="__addonRef__-lemmaModeBox">
+        <hbox align="center">
+          <label class="pref-label" data-l10n-id="pref-lemmaMode" />
+          <menulist
+            id="zotero-prefpane-__addonRef__-lemmaMode"
+            preference="lemmaMode"
+          >
+            <menupopup>
+              <menuitem value="lemma" data-l10n-id="pref-lemmaMode-lemma" />
+              <menuitem value="inflected" data-l10n-id="pref-lemmaMode-inflected" />
+            </menupopup>
+          </menulist>
+        </hbox>
+        <hbox style="margin-top: -4px; margin-bottom: 8px">
+          <label style="color: #888; font-style: italic; margin-left: 116px" data-l10n-id="pref-lemmaMode-hint" />
+        </hbox>
+      </vbox>
     </vbox>
   </groupbox>
 

@@ -168,8 +168,9 @@ function onRenderTextSelectionPopup(event: any) {
 }
 
 async function addWordToEudic(word: string): Promise<boolean> {
-  // Lemmatise inflected forms to dictionary headwords before API call.
-  const lemma = toLemma(word);
+  // Lemmatise inflected forms to dictionary headwords before API call
+  // when lemmaMode is "lemma"; skip lemmatisation when "inflected".
+  const lemma = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
   if (lemma !== word) {
     try {
       Zotero.debug(

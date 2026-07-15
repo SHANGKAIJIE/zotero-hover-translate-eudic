@@ -331,7 +331,8 @@ const RULES: Array<(w: string) => string | null> = [
  *   3. Conservative suffix rules (regular inflections)
  *
  * @param word  The English word (any capitalisation; case-insensitive matching)
- * @returns     The lemma (preserving original capitalisation), or original word
+ * @returns     The lemma in canonical lowercase (unless original is all-caps),
+ *              or the original word if no transformation applies
  *
  * Examples (old system → new system):
  *   according → accorde (was wrong)  → accord (correct ✓)
@@ -387,17 +388,22 @@ export function toLemma(word: string): string {
 
 /**
  * Preserve the capitalisation pattern of the original word.
- *   "Models" + "model" → "Model"
- *   "MODELS" + "model" → "MODEL"
- *   "models" + "model" → "model"
+ *
+ * Only all-uppercase words (acronyms / abbreviations) retain their casing
+ * so that e.g. "NASA" stays "NASA" after lemmatization. Title-case and
+ * sentence-case are downcased so that vocabulary lists receive the canonical
+ * lowercase headword (e.g. "The" → "the", "Went" → "go").
+ *
+ *   "models"  + "model"  → "model"
+ *   "Models"  + "model"  → "model"   (was "Model" — no longer upcased)
+ *   "The"     + "the"    → "the"     (was "The")
+ *   "Went"    + "go"     → "go"      (was "Go")
+ *   "MODELS"  + "model"  → "MODEL"   (all-caps still preserved)
  */
 function preserveCase(original: string, lemma: string): string {
   if (lemma.length === 0) return original;
   if (original === original.toUpperCase() && original.length > 1) {
     return lemma.toUpperCase();
-  }
-  if (original[0] === original[0].toUpperCase() && original[0] !== original[0].toLowerCase()) {
-    return lemma[0].toUpperCase() + lemma.slice(1);
   }
   return lemma;
 }

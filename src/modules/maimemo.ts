@@ -14,6 +14,9 @@ import type { EudicWordEntry } from "./eudic";
 
 const MAIMEMO_BASE = "https://open.maimemo.com";
 
+/** Avoid repeated token-expiry alerts within a short window. */
+let _tokenExpiredAlerted = false;
+
 /** Rate limit windows (from Maimemo docs). */
 const RATE_LIMITS: { windowMs: number; max: number }[] = [
   { windowMs: 10_000, max: 20 },
@@ -161,6 +164,16 @@ export class MaimemoClient {
         : status === 403
           ? "Rate limited"
           : `HTTP ${status}`);
+    if (status === 401 && !_tokenExpiredAlerted) {
+      _tokenExpiredAlerted = true;
+      try {
+        Zotero.getMainWindow().alert(
+          "墨墨 Token 已过期，请到 https://open.maimemo.com/open/api/v1/tokens/openapi 重新获取。\n\n" +
+          "Maimemo token has expired. Please renew it from the above URL."
+        );
+      } catch { /* ignore */ }
+      setTimeout(() => { _tokenExpiredAlerted = false; }, 60000);
+    }
     const err = new Error(msg) as Error & { status?: number };
     err.status = status;
     throw err;

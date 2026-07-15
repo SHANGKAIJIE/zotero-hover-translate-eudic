@@ -29,6 +29,7 @@ declare namespace _ZoteroTypes {
       "eudicLanguage": string;
       "buttonShowScene": string;
       "addWordMode": string;
+      "lemmaMode": string;
       "exportAutoReveal": boolean;
       "exportSavePath": string;
     };

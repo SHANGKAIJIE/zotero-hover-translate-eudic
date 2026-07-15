@@ -43,6 +43,7 @@ const DEFAULTS: Record<string, any> = {
   eudicLanguage: "en",
   buttonShowScene: "both",
   addWordMode: "manual",
+  lemmaMode: "lemma",
   exportAutoReveal: true,
   exportSavePath: "",
 };
@@ -221,6 +222,8 @@ function updateTokenVisibility(win: Window) {
   if (maimemoBox) maimemoBox.hidden = platform !== "maimemo";
   const hint = $(`${ref}-maimemoExportHint`, win);
   if (hint) hint.hidden = platform !== "maimemo";
+  const lemmaModeBox = $(`${ref}-lemmaModeBox`, win);
+  if (lemmaModeBox) lemmaModeBox.hidden = platform !== "eudic";
 }
 
 /** Reflect the currently saved eudicCategoryId in the menulist UI. */
