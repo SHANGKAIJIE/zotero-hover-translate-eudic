@@ -8,6 +8,9 @@
 
 ---
 
+<img width="794" height="324" alt="image" src="https://github.com/user-attachments/assets/cee41dda-0564-4d66-89b4-bc9ca3489d39" />
+
+
 ## ✨ 功能特性
 
 - **多种取词触发方式**
