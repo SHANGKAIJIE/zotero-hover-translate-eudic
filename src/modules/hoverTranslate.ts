@@ -1063,7 +1063,7 @@ function maybeAddWordButton(
     "height:28px",
     "min-width:28px",
     "flex-shrink:0",
-    "border-radius:50%",
+    "border-radius:8px",
     "box-shadow:0 0 4px rgba(128,128,128,0.15)",
     `border:1.5px solid ${tc.btnBorder}`,
     "background:transparent",
