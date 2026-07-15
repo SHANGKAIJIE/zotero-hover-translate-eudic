@@ -252,6 +252,19 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     // D6: update last pointer pos here (merged from injectPopupStyle's
     // extra mousemove listener — one listener instead of two per window).
     (win as any).__hoverLastPos = { x: ev.clientX, y: ev.clientY };
+    // If user is selecting text, suppress hover entirely. Prevents the
+    // hover popup from appearing alongside the selection popup.
+    if (getPref("disableOnSelection")) {
+      try {
+        const sel = win.getSelection();
+        if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
+          clearHover(activeWinRef.win);
+          return;
+        }
+      } catch {
+        /* cross-origin iframe — ignore */
+      }
+    }
     onReaderMouseMove(ev, win, reader, lastWordRef, lastHitRef, schedule, sweepPreheat);
     if (++moveCount % 50 === 0) {
       dbg(`mousemove#${moveCount} on ${safeHref(win)}`);
@@ -267,7 +280,11 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       if (popup && target && popup.contains(target)) {
         return;
       }
-      clearHover(activeWinRef.win);
+      // Clear hover in ALL monitored windows so no stale popup survives
+      // into a selection gesture.
+      for (const win of targets) {
+        try { clearHover(win); } catch { /* ignore */ }
+      }
       lastWord = "";
     } catch {
       /* suppress */
@@ -290,7 +307,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       // Yield if there is a real selection (let Translate handle it).
       if (getPref("disableOnSelection")) {
         const sel = activeWinRef.win.getSelection();
-        if (sel && sel.toString().trim().length > 0) return;
+        if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
       }
       const win = (ev.view as Window) || activeWinRef.win;
       activeWinRef.win = win;
@@ -367,11 +384,19 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
   };
   const onSelectionChange = () => {
     try {
-      const sel = activeWinRef.win.getSelection();
-      if (sel && sel.toString().trim().length > 0) {
-        // A real selection exists — yield to selection translate.
-        clearHover(activeWinRef.win);
-        lastWord = "";
+      // Check all monitored windows — selection may occur in a nested
+      // iframe that is not activeWinRef.win.
+      for (const win of targets) {
+        try {
+          const sel = win.getSelection();
+          if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
+            clearHover(win);
+            lastWord = "";
+            return;
+          }
+        } catch {
+          /* cross-origin iframe */
+        }
       }
     } catch {
       /* suppress */
@@ -500,7 +525,7 @@ function onReaderMouseMove(
     // Pause while a selection exists (yields to Translate's selection popup).
     if (getPref("disableOnSelection")) {
       const sel = innerWin.getSelection();
-      if (sel && sel.toString().trim().length > 0) {
+      if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
         clearHover(innerWin);
         return;
       }
