@@ -50,6 +50,7 @@ const DEFAULTS: Record<string, any> = {
 export async function registerPrefsScripts(win: Window) {
   addon.data.prefs = { window: win };
   updateModifierRowState(win);
+  updateHoverConfigState(win);
   updateEudicBoxState(win);
   updateTokenVisibility(win);
   syncCategorySelectionUI(win);
@@ -194,6 +195,14 @@ function updateModifierRowState(win: Window) {
   }
 }
 
+function updateHoverConfigState(win: Window) {
+  const enabled = getPref("enableHoverTranslate");
+  const box = $(`${ref}-hoverConfigBox`, win);
+  if (!box) return;
+  box.style.opacity = enabled ? "1" : "0.45";
+  box.style.pointerEvents = enabled ? "auto" : "none";
+}
+
 function updateEudicBoxState(win: Window) {
   const enabled = getPref("enableEudicSync");
   const box = $(`${ref}-eudicConfigBox`, win);
@@ -253,6 +262,12 @@ function bindPrefEvents(win: Window) {
   triggerMode?.addEventListener("command", () => {
     // value is auto-saved by preference binding; read from pref
     setTimeout(() => updateModifierRowState(win), 0);
+  });
+
+  // enableHoverTranslate -> toggle hover config box
+  const enableHover = $(`zotero-prefpane-${ref}-enableHoverTranslate`, win);
+  enableHover?.addEventListener("command", () => {
+    setTimeout(() => updateHoverConfigState(win), 0);
   });
 
   // enableEudicSync -> toggle config box
@@ -696,6 +711,7 @@ function resetDefaults(win: Window) {
   addon.data.eudic.client = createEudicClientFromPrefs();
   // Refresh UI from the reset prefs.
   updateModifierRowState(win);
+  updateHoverConfigState(win);
   updateEudicBoxState(win);
   updateTokenVisibility(win);
   // Re-sync color picker + R/G/B/A inputs from the reset pref.
