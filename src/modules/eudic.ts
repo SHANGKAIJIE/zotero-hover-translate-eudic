@@ -13,6 +13,16 @@ const EUDIC_BASE = "https://api.frdic.com";
 
 import { getPref } from "../utils/prefs";
 
+/** Rate limit windows (from Eudic OpenAPI docs §7).
+ *  30 / 1 min → 1 h ban,  500 / 30 min → 24 h ban */
+const RATE_LIMITS: { windowMs: number; max: number }[] = [
+  { windowMs: 60_000, max: 30 },
+  { windowMs: 30 * 60_000, max: 500 },
+];
+
+/** Shared rate-limit tracker across all EudicClient instances. */
+let _requestTimestamps: number[] = [];
+
 export interface EudicCategory {
   id: string;
   language: string;
@@ -60,12 +70,35 @@ export class EudicClient {
     };
   }
 
+  /** Wait if any rate limit window would be exceeded. */
+  private async _rateLimitWait(): Promise<void> {
+    const now = Date.now();
+    for (const { windowMs, max } of RATE_LIMITS) {
+      const cutoff = now - windowMs;
+      _requestTimestamps = _requestTimestamps.filter((t) => t > cutoff);
+      const count = _requestTimestamps.length;
+      if (count >= max) {
+        const sorted = [..._requestTimestamps].sort((a, b) => a - b);
+        const waitMs = sorted[0] + windowMs - now + 100; // +100ms buffer
+        if (waitMs > 0 && waitMs < 300_000) {
+          await new Promise((r) => setTimeout(r, waitMs));
+          return this._rateLimitWait(); // Re-check after waiting
+        }
+        if (waitMs >= 300_000) {
+          throw new Error("Rate limit exhausted: too many requests");
+        }
+      }
+    }
+    _requestTimestamps.push(Date.now());
+  }
+
   private async request(
     method: string,
     path: string,
     body?: object,
     query?: Record<string, string>,
   ): Promise<any> {
+    await this._rateLimitWait();
     let url = `${EUDIC_BASE}${path}`;
     if (query) {
       const qs = new URLSearchParams(query).toString();

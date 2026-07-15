@@ -24,6 +24,7 @@ import {
   getReaderInnerWindow,
 } from "../utils/window";
 import { wordRangeAtOffset, isSingleEnglishWord } from "./util";
+import { toLemma } from "./lemmatize";
 import { createEudicClientFromPrefs } from "./eudic";
 import { createMaimemoClientFromPrefs } from "./maimemo";
 
@@ -1049,18 +1050,29 @@ function maybeAddWordButton(
 }
 
 async function addWordToEudic(word: string): Promise<boolean> {
+  // Lemmatise inflected forms to dictionary headwords before API call.
+  // Eudic stores words as-is and matches them by exact headword, so
+  // "models" would be stored without phon/exp while "model" gets both.
+  const lemma = toLemma(word);
+  if (lemma !== word) {
+    try {
+      Zotero.debug(
+        `[hover-translate-eudic] lemmatise: "${word}" → "${lemma}"`
+      );
+    } catch { /* ignore */ }
+  }
   const platform = getPref("wordbookPlatform") as string;
   if (platform === "maimemo") {
     const client = createMaimemoClientFromPrefs();
     if (!client) return false;
     const categoryId = getPref("maimemoCategoryId") as string;
-    const res = await client.addWord(word, categoryId);
+    const res = await client.addWord(lemma, categoryId);
     return res.success;
   }
   const client = createEudicClientFromPrefs();
   if (!client) return false;
   const categoryId = getPref("eudicCategoryId");
-  const res = await client.addWord(word, categoryId);
+  const res = await client.addWord(lemma, categoryId);
   return res.success;
 }
 
