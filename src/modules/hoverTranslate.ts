@@ -725,6 +725,10 @@ async function doTranslate(
 
   doc.body?.appendChild(popup);
 
+  // +生词本 button — create immediately with the popup shell, before
+  // translation completes.  Keep a ref so auto-add can drive states.
+  const wordBtn = maybeAddWordButton(innerWin, row, word, "hover");
+
   // Perform translation via Translate for Zotero.
   const tr = await translateWord(word, reader);
   if (word !== lastWordRef.get()) return; // moved away during request
@@ -753,14 +757,7 @@ async function doTranslate(
     void fillDictionaryResult(word, reader, doc, popup, fontSize, lineHeight);
   }
 
-  // +生词本 button (hover scene, single word only). Keep a ref so auto-add
-  // can drive the same button state as a manual click.
-  const wordBtn = maybeAddWordButton(innerWin, row, word, "hover");
-
-  // Start the auto-close timer BEFORE auto-add so that the async
-  // autoAddWordWithButton can cancel it.  Otherwise the timer is set
-  // after the auto-add kicks off and auto-add's _cancelAutoClose runs
-  // before any timer exists — the popup closes mid-request.
+  // Start auto-close timer now that the translation is visible.
   schedulePopupAutoClose(innerWin);
 
   // Auto-add mode: drive the button through the same states as a click.

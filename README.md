@@ -4,7 +4,7 @@
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.2.1-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 
 <img width="883" height="435" alt="image" src="https://github.com/user-attachments/assets/60f38328-d2ce-423d-b621-3d6c0346fb15" />
 
