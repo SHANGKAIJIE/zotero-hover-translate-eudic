@@ -29,6 +29,22 @@
         {
           "version": "0.1.5",
           "update_link": "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases/download/release/hover-translate-eudic.xpi"
+        },
+        {
+          "version": "0.1.4",
+          "update_link": "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases/download/v0.1.4/hover-translate-eudic.xpi"
+        },
+        {
+          "version": "0.1.3",
+          "update_link": "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases/download/v0.1.3/hover-translate-eudic.xpi"
+        },
+        {
+          "version": "0.1.2",
+          "update_link": "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases/download/v0.1.2/hover-translate-eudic.xpi"
+        },
+        {
+          "version": "0.1.1",
+          "update_link": "https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases/download/v0.1.1/hover-translate-eudic.xpi"
         }
       ]
     }
