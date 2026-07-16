@@ -30,6 +30,7 @@ import { createMaimemoClientFromPrefs } from "./maimemo";
 import { addWord as addWordToLocal } from "./localWordbook";
 
 const HIGHLIGHT_OVERLAY_ID = `${config.addonRef}-highlight-overlay`;
+const HIGHLIGHT_CLASS = `${config.addonRef}-highlight`;
 const POPUP_ID = `${config.addonRef}-hover-popup`;
 const STYLE_INJECTED_FLAG = `${config.addonRef}-style-injected`;
 
@@ -213,7 +214,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
   // D3 preheat: shorter debounce starts a background translation that
   // writes into D2 cache. The popup gate (hoverDelay) fires later and
   // reads from cache — so the popup shows the translation immediately.
-  const PREHEAT_DELAY = 250; // ms, enough to filter quick sweeps
+  const PREHEAT_DELAY = 200; // ms, enough to filter quick sweeps
   const schedule = (word: string) => {
     const win = activeWinRef.win;
 
@@ -290,6 +291,21 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
         try { clearHover(win); } catch { /* ignore */ }
       }
       lastWord = "";
+
+      // mousedown preheat for click mode: start the translation request
+      // immediately on mouse press, before mouseup fires, so the network
+      // request is already in flight by the time doTranslate runs.
+      // The 50-200ms between mousedown and mouseup is free time — use it.
+      if (ev.button !== 0) return;
+      if (!getPref("enableHoverTranslate")) return;
+      if (getPref("triggerMode") !== "click") return;
+      const win = (ev.view as Window) || activeWinRef.win;
+      const hit = getWordAtPoint(win.document, ev.clientX, ev.clientY);
+      if (hit) {
+        // translateWord checks D2 cache internally; if already running or
+        // completed (from sweepPreheat), this returns the same promise.
+        void translateWord(hit.word, reader);
+      }
     } catch {
       /* suppress */
     }
@@ -660,33 +676,107 @@ function getWordAtPoint(
 
 /* ----------------------------- highlight ----------------------------- */
 
+/** Find the closest pdf.js .page ancestor element. */
+function findPageElement(node: Node | null): HTMLElement | null {
+  let el: HTMLElement | null = null;
+  if (node && node.nodeType === 3) {
+    el = (node as Text).parentElement as HTMLElement | null;
+  } else if (node) {
+    el = node as HTMLElement;
+  }
+  if (!el) return null;
+  while (el) {
+    if (el.matches?.(".page[data-page-number]")) return el;
+    el = el.parentElement as HTMLElement | null;
+  }
+  return null;
+}
+
 function applyHighlight(innerWin: Window, range: Range) {
   clearHighlight(innerWin);
   const doc = innerWin.document;
-  const rect = range.getBoundingClientRect();
-  if (!rect || (rect.width === 0 && rect.height === 0)) return;
-  const overlay = doc.createElement("div");
-  overlay.id = HIGHLIGHT_OVERLAY_ID;
+  const pageEl = findPageElement(range.startContainer);
+  if (!pageEl) {
+    // Fallback: position:fixed + doc.body (original method)
+    const rect = range.getBoundingClientRect();
+    if (!rect || (rect.width === 0 && rect.height === 0)) return;
+    const overlay = doc.createElement("div");
+    overlay.id = HIGHLIGHT_OVERLAY_ID;
+    const color = getPref("highlightColor") || "rgba(255,213,79,0.45)";
+    overlay.style.cssText = [
+      "position:fixed",
+      `left:${rect.left}px`,
+      `top:${rect.top}px`,
+      `width:${rect.width}px`,
+      `height:${rect.height}px`,
+      `background:${color}`,
+      "border-radius:2px",
+      "pointer-events:none",
+      "z-index:20",
+      "mix-blend-mode:multiply",
+    ].join(";");
+    doc.body?.appendChild(overlay);
+    return;
+  }
+
   const color = getPref("highlightColor") || "rgba(255,213,79,0.45)";
-  overlay.style.cssText = [
-    "position:fixed",
-    `left:${rect.left}px`,
-    `top:${rect.top}px`,
-    `width:${rect.width}px`,
-    `height:${rect.height}px`,
-    `background:${color}`,
-    "border-radius:2px",
-    "pointer-events:none",
-    "z-index:2147483646",
-    "mix-blend-mode:multiply",
-  ].join(";");
-  doc.body?.appendChild(overlay);
+  const pageRect = pageEl.getBoundingClientRect();
+  const rects = range.getClientRects();
+  if (!rects || rects.length === 0) return;
+
+  // Use the span's CSS percentage position (from pdf.js viewport math) for the
+  // horizontal coordinate, instead of range.getClientRects().left which reflects
+  // system font rendering that can differ from PDF embedded fonts.
+  // The span's left% was computed by pdf.js via viewport.convertToViewportPoint()
+  // and matches the canvas rendering exactly.
+  const span = range.startContainer.parentElement as HTMLElement | null;
+  let baseLeft = 0;
+  if (span) {
+    const leftPct = parseFloat(span.style.left);
+    if (!isNaN(leftPct)) {
+      baseLeft = (leftPct / 100) * pageRect.width;
+      // For multi-word spans, estimate the word's offset within the span
+      const textNode = range.startContainer as Text;
+      const beforeText = textNode.data.substring(0, range.startOffset);
+      if (beforeText && beforeText.trim()) {
+        const spanWidth = span.getBoundingClientRect().width;
+        const charRatio = beforeText.length / textNode.data.length;
+        baseLeft += charRatio * spanWidth;
+      }
+    } else {
+      baseLeft = rects[0].left - pageRect.left;
+    }
+  }
+
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i];
+    if (r.width === 0 && r.height === 0) continue;
+    const el = doc.createElement("div");
+    el.className = HIGHLIGHT_CLASS;
+    // Position: horizontal from span% (canvas-aligned), vertical+size from DOM rects
+    const left = span ? baseLeft : (r.left - pageRect.left);
+    el.style.cssText = [
+      "position:absolute",
+      `left:${left}px`,
+      `top:${r.top - pageRect.top}px`,
+      `width:${r.width}px`,
+      `height:${r.height}px`,
+      `background:${color}`,
+      "border-radius:2px",
+      "pointer-events:none",
+      "z-index:20",
+      "mix-blend-mode:multiply",
+    ].join(";");
+    pageEl.appendChild(el);
+  }
 }
 
 function clearHighlight(innerWin: Window) {
   const doc = innerWin.document;
-  const el = doc.getElementById(HIGHLIGHT_OVERLAY_ID);
-  if (el) el.remove();
+  const els = doc.querySelectorAll(`.${HIGHLIGHT_CLASS}`);
+  const oldEl = doc.getElementById(HIGHLIGHT_OVERLAY_ID);
+  for (const el of els) el.remove();
+  if (oldEl) oldEl.remove();
 }
 
 /* ----------------------------- translate + popup ----------------------------- */

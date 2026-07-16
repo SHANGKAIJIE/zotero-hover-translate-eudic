@@ -4,7 +4,7 @@
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.2-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.2.3-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 
 <img width="883" height="435" alt="image" src="https://github.com/user-attachments/assets/60f38328-d2ce-423d-b621-3d6c0346fb15" />
 
@@ -19,7 +19,7 @@
 - **复用 Translate for Zotero 引擎**：翻译结果、字典释义、多语种翻译服务直接复用已安装的 Translate 插件。
 - **一键同步欧路 / 墨墨 / 本地生词本**：翻译弹窗内点击圆形 `+` 按钮，将当前单词加入云端指定生词本或本地 CSV 文件（添加后切换为 `✓` 或 `✗` 状态反馈）。支持**欧路词典**、**墨墨背单词**与**本地生词本（CSV）**三平台切换。
 - **编辑云端生词本**：设置面板中直接浏览所有生词本，支持添加、重命名、删除操作。
-- **独立高亮**：取词时可选对单词施加高亮，颜色（R/G/B/A 四通道）与开关完全独立配置，不依赖翻译开关。
+- **精准取词高亮**：取词时可选对单词施加高亮，颜色（R/G/B/A 四通道）与开关完全独立配置。高亮使用 canvas 级 PDF 坐标定位，与文字精确对齐。
 - **深色模式自适应**：翻译弹窗跟随 Zotero（含 zotero-style 等主题插件）的深色 / 浅色模式自动切换配色。
 - **弹窗自动关闭**：可设置弹窗自动关闭延时（0 = 不自动关闭）。
 
@@ -81,7 +81,7 @@ npm start
 | 修饰键 + 悬停 | 选中下方修饰键（Ctrl/Alt/Shift 可组合），悬停即翻译；支持先悬停后按修饰键。 |
 | 鼠标左键单击 | 单击单词即翻译，悬停延迟设置在此模式下禁用。 |
 
-**悬停触发延迟**：设置悬停触发翻译的延迟时间（单位：毫秒）。
+**悬停触发延迟**：设置悬停触发翻译的延迟时间（单位：毫秒，默认 900ms）。插件内置两级预热机制——鼠标停 200ms 即开始后台翻译缓存，弹窗打开时翻译结果已就绪。点击模式下 mousedown 也会即时预热，缩短点击翻译等待时间。
 
 **弹窗自动关闭**：设置翻译弹窗自动关闭的延时，设为 0 则不自动关闭。
 
