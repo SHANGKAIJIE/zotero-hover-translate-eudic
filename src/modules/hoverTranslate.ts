@@ -668,7 +668,34 @@ function getWordAtPoint(
     const range = doc.createRange();
     range.setStart(node, wr.start);
     range.setEnd(node, wr.end);
-    return { word: wr.word, range };
+    let word = wr.word;
+
+    // PDF text layer sometimes splits a word across multiple <span> elements
+    // when characters have different font sizes (e.g. a large drop capital
+    // "S" in "SPECIFICATIONS" → "S" in one span, "PECIFICATIONS" in the next).
+    // When our word starts at offset 0 of this text node, check if the
+    // previous sibling span's text forms a continuous alpha word.
+    if (wr.start === 0) {
+      const span = node.parentElement;
+      if (span) {
+        const prevSpan = span.previousElementSibling;
+        if (prevSpan) {
+          const prevText = (prevSpan.textContent || "").replace(/\s+$/, "");
+          if (prevText && /[A-Za-z]$/.test(prevText)) {
+            const prevWr = wordRangeAtOffset(prevText, prevText.length - 1);
+            if (prevWr && prevWr.end === prevText.length) {
+              word = prevWr.word + word;
+              const prevNode = prevSpan.firstChild;
+              if (prevNode && prevNode.nodeType === 3) {
+                range.setStart(prevNode, prevWr.start);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return { word, range };
   } catch {
     return null;
   }
