@@ -47,6 +47,12 @@ const translateCache: Map<
   Promise<{ ok: boolean; result: string; error?: string; task?: any }>
 > = new Map();
 
+// Dict result cache (for dict engine mode, keyed by word|dictSource)
+const dictCache: Map<
+  string,
+  Promise<{ result: string; audio: { text: string; url: string }[] } | null>
+> = new Map();
+
 function makeCacheKey(
   word: string,
   service: string,
@@ -876,7 +882,22 @@ async function doTranslate(
   const wordBtn = maybeAddWordButton(innerWin, row, word, "hover");
 
   // Perform translation via Translate for Zotero.
-  const tr = await translateWord(word, reader);
+  let tr: any;
+  if (getPref("translateEngine") === "dict") {
+    // Dict engine (faster): query dictSource and extract first definition.
+    // Apply lemma reduction so inflected forms (e.g. "links") use the base
+    // word ("link") and get proper definitions instead of "link的复数".
+    const dictWord = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
+    const dictR = await fetchDictResult(dictWord, reader);
+    if (dictR?.result) {
+      tr = { ok: true, result: extractFirstDefinition(dictR.result), task: { audio: dictR.audio } };
+    } else {
+      // Fallback: use translateSource if dictSource returns nothing
+      tr = await translateWord(word, reader);
+    }
+  } else {
+    tr = await translateWord(word, reader);
+  }
   if (word !== lastWordRef.get()) return; // moved away during request
 
   if (!tr.ok) {
@@ -1334,13 +1355,32 @@ async function fetchDictResult(
       "extensions.zotero.ZoteroPDFTranslate.dictSource", true,
     ) as string;
     if (!dictSource) return null;
-    const task = await pdf.api.translate(word, {
-      pluginID: config.addonID,
-      service: dictSource,
-      itemID: reader.itemID,
-    });
-    if (!task?.result) return null;
-    return { result: task.result, audio: task.audio || [] };
+
+    // Use dictCache so preheat/mousedown-preheat also caches dict results
+    const cacheKey = `${word}|${dictSource}`;
+    const cached = dictCache.get(cacheKey);
+    if (cached) return cached;
+
+    const promise = (async () => {
+      try {
+        const task = await pdf.api.translate(word, {
+          pluginID: config.addonID,
+          service: dictSource,
+          itemID: reader.itemID,
+        });
+        if (!task?.result) {
+          dictCache.delete(cacheKey);
+          return null;
+        }
+        return { result: task.result, audio: task.audio || [] };
+      } catch {
+        dictCache.delete(cacheKey);
+        return null;
+      }
+    })();
+
+    dictCache.set(cacheKey, promise);
+    return promise;
   } catch {
     return null;
   }
@@ -1354,6 +1394,68 @@ async function fetchDictResult(
  *   HaiciDict:     "英 [ˈkɒmpjʊtə] 英"   → "ˈkɒmpjʊtə"
  *   CambridgeDict: "uk ˈkɒmpjʊtə  "      → "ˈkɒmpjʊtə"
  */
+/** Extract first definition line from a dictionary result, stripping word-class labels. */
+function extractFirstDefinition(dict: string): string {
+  if (!dict) return "";
+  // BingDict returns ALL definitions on a SINGLE LINE like:
+  //   "n. 图像；偶像；肖像； v. 反映；想像； 网络释义： 图片；影像"
+  // We need only the FIRST definition within the first word-class:
+  //   → "图像"
+  const lines = dict.replace(/\r/g, "").split("\n");
+  const defRe = /^\s*(linkv|attrib|auxv|interrog|interj|prefix|suffix|abbr|modal|modv|phr|idm|comb|pref|suff|sing|pl|pred|na|n|vt|vi|adj|adv|a|ad|prep|conj|pron|int|art|aux|det|num|qua|sym|v)\.\s*/i;
+  // Split at: semicolons (define separators), then next word-class, then 网络释义
+  const splitRe = /[;；]|\s+(?:linkv|attrib|auxv|interrog|interj|prefix|suffix|abbr|modal|modv|phr|idm|comb|pref|suff|sing|pl|pred|na|n|vt|vi|adj|adv|a|ad|prep|conj|pron|int|art|aux|det|num|qua|sym|v)\.\s|网络释义/i;
+
+  let result = "";
+
+  // 1. Try each line — match POS tag at start
+  const found = lines.find((l) => defRe.test(l));
+  if (found) {
+    const s = found.replace(defRe, "").trim();
+    result = s.split(splitRe)[0].trim();
+  }
+
+  // 2. For single-line dicts: find POS tag ANYWHERE in the line
+  if (!result) {
+    for (const line of lines) {
+      const m = line.match(defRe);
+      if (m && m.index != null) {
+        const s = line.slice(m.index + m[0].length).trim();
+        const first = s.split(splitRe)[0].trim();
+        if (first) { result = first; break; }
+      }
+    }
+  }
+
+  // 3. Fallback: first line with significant Chinese content (skip phonetic lines)
+  if (!result) {
+    const cnLine = lines.find((l) => {
+      const stripped = l.replace(/^[\s\u82f1\u7f8e\uff3a\uff4a\uff4b\uff35\uff2b\uff33\uff35\uff33]/i, "").trim();
+      return /[\u4e00-\u9fff]/.test(stripped);
+    });
+    if (cnLine) result = cnLine.trim();
+  }
+
+  // 4. Last fallback: first non-empty line
+  if (!result) {
+    const first = lines.find((l) => l.trim());
+    result = first ? first.trim() : "";
+  }
+
+  // 5. Post-process: strip parenthetical notes like
+  //    "(材料对光或辐射的)反射率" → "反射率"
+  //    "（材料对光或辐射的）反射率" → "反射率"  (full-width parens)
+  //    "（用于）强调"              → "强调"
+  //    "在(某处)发生"             → "在发生"
+  //    Only apply when meaningful content remains.
+  const stripped = result.replace(/\s*[(（][^)）]+[)）]\s*/g, " ").replace(/\s+/g, " ").trim();
+  if (stripped) {
+    result = stripped;
+  }
+
+  return result;
+}
+
 function stripAudioText(raw: string): string {
   // Try brackets first: "英 [ˈkɒmpjʊtə]" → "ˈkɒmpjʊtə"
   const bracketM = raw.match(/\[([^\]]+?)\]/);

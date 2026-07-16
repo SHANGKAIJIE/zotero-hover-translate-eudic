@@ -33,6 +33,7 @@ const DEFAULTS: Record<string, any> = {
   disableOnSelection: true,
   popupAutoCloseDelay: 30,
   translateDisplayMode: "simple",
+  translateEngine: "dict" as string,
   enableEudicSync: false,
   wordbookPlatform: "eudic",
   eudicToken: "",

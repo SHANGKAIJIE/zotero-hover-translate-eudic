@@ -14,6 +14,7 @@ pref("hoverDelay", 900);
 pref("disableOnSelection", true);
 pref("popupAutoCloseDelay", 30); // 秒
 pref("translateDisplayMode", "simple"); // simple | full
+pref("translateEngine", "dict");          // "dict" | "translate"
 
 // ---- 3.2 生词本设置 ----
 pref("wordbookPlatform", "eudic"); // "eudic" | "maimemo" | "local"

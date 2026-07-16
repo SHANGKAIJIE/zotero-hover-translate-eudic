@@ -18,6 +18,7 @@ declare namespace _ZoteroTypes {
       "disableOnSelection": boolean;
       "popupAutoCloseDelay": number;
       "translateDisplayMode": string;
+      "translateEngine": string;
       "wordbookPlatform": string;
       "localSavePath": string;
       "enableEudicSync": boolean;

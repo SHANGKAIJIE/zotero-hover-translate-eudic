@@ -34,6 +34,11 @@ pref-translateDisplayMode-simple =
     .label = 简洁（仅译文）
 pref-translateDisplayMode-full =
     .label = 完整（译文+字典释义，同 Translate for Zotero）
+pref-translateEngine = 译文引擎：
+pref-translateEngine-dict =
+    .label = 字典引擎（更快，常用释义）
+pref-translateEngine-translate =
+    .label = 翻译引擎（稍慢，释义更贴切）
 pref-disableOnSelection =
     .label = 选中文字时禁用悬停（避免与划词翻译冲突）
 

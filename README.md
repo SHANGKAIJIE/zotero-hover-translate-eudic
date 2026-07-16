@@ -4,7 +4,7 @@
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.3-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.2.4-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 
 <img width="883" height="435" alt="image" src="https://github.com/user-attachments/assets/60f38328-d2ce-423d-b621-3d6c0346fb15" />
 
@@ -84,6 +84,12 @@ npm start
 **悬停触发延迟**：设置悬停触发翻译的延迟时间（单位：毫秒，默认 900ms）。插件内置两级预热机制——鼠标停 200ms 即开始后台翻译缓存，弹窗打开时翻译结果已就绪。点击模式下 mousedown 也会即时预热，缩短点击翻译等待时间。
 
 **弹窗自动关闭**：设置翻译弹窗自动关闭的延时，设为 0 则不自动关闭。
+
+**译文引擎**：选择翻译所使用的引擎：
+| 引擎 | 说明 |
+| --- | --- |
+| 字典引擎（更快，常用释义） | 调用 Translate for Zotero 的字典服务快速返回单词常用释义，自动提取首义。 |
+| 翻译引擎（稍慢，释义更贴切） | 调用 Translate for Zotero 的全文翻译引擎，返回最贴合上下文的译文。 |
 
 **翻译显示模式**：控制翻译弹窗中的内容：
 | 模式 | 说明 |

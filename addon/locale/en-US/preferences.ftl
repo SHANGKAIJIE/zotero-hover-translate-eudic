@@ -34,6 +34,11 @@ pref-translateDisplayMode-simple =
     .label = Simple (translation only)
 pref-translateDisplayMode-full =
     .label = Full (translation + dictionary, like Translate for Zotero)
+pref-translateEngine = Translation engine:
+pref-translateEngine-dict =
+    .label = Dictionary engine (faster, common definitions)
+pref-translateEngine-translate =
+    .label = Translate engine (slower, more accurate)
 pref-disableOnSelection =
     .label = Disable hover when text is selected
 
