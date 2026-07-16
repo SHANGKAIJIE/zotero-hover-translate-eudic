@@ -19,6 +19,7 @@ declare namespace _ZoteroTypes {
       "popupAutoCloseDelay": number;
       "translateDisplayMode": string;
       "wordbookPlatform": string;
+      "localSavePath": string;
       "enableEudicSync": boolean;
       "eudicToken": string;
       "eudicCategoryId": string;

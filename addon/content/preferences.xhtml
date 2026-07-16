@@ -175,6 +175,7 @@
           <menupopup>
             <menuitem value="eudic" data-l10n-id="pref-wordbookPlatform-eudic" />
             <menuitem value="maimemo" data-l10n-id="pref-wordbookPlatform-maimemo" />
+            <menuitem value="local" data-l10n-id="pref-wordbookPlatform-local" />
           </menupopup>
         </menulist>
       </hbox>
@@ -222,7 +223,21 @@
         </hbox>
       </vbox>
 
-      <hbox align="center">
+      <!-- Local wordbook save path -->
+      <vbox id="__addonRef__-localSavePathBox" hidden="true">
+        <hbox align="center">
+          <label class="pref-label" data-l10n-id="pref-localSavePath" />
+          <html:input
+            type="text"
+            id="zotero-prefpane-__addonRef__-localSavePath"
+            preference="localSavePath"
+            style="flex: 1; min-width: 240px"
+            placeholder="留空则保存在 Zotero 配置目录"
+          />
+        </hbox>
+      </vbox>
+
+      <hbox id="__addonRef__-categoryRow" align="center">
         <label class="pref-label" data-l10n-id="pref-eudicCategory" />
         <menulist
           id="zotero-prefpane-__addonRef__-eudicCategoryId"

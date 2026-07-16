@@ -12,10 +12,12 @@
 import { config } from "../../package.json";
 import { getPref, registerPrefObserver } from "../utils/prefs";
 import { getString } from "../utils/locale";
-import { isSingleEnglishWord } from "./util";
+import { isSingleEnglishWord, wordRangeAtOffset } from "./util";
 import { toLemma } from "./lemmatize";
 import { createEudicClientFromPrefs } from "./eudic";
 import { createMaimemoClientFromPrefs } from "./maimemo";
+import { addWord as addWordToLocal } from "./localWordbook";
+import { getAllReaders, getReaderInnerWindow } from "../utils/window";
 
 let registered = false;
 let listener: ((event: any) => void) | null = null;
@@ -35,11 +37,13 @@ export function unregisterSelectionButton() {
 
 function syncRegistration() {
   const platform = getPref("wordbookPlatform") as string;
-  const hasToken = platform === "maimemo"
+  const hasStorage = platform === "maimemo"
     ? !!getPref("maimemoToken")
-    : !!getPref("eudicToken");
+    : platform === "local"
+      ? true
+      : !!getPref("eudicToken");
   const shouldEnable =
-    getPref("enableEudicSync") && hasToken;
+    getPref("enableEudicSync") && hasStorage;
   if (shouldEnable && !registered) {
     doRegister();
   } else if (!shouldEnable && registered) {
@@ -90,16 +94,22 @@ function doUnregister() {
 function onRenderTextSelectionPopup(event: any) {
   const { doc, append } = event;
   const selectedText: string = (event?.params?.annotation?.text || "").trim();
+  const annot = event?.params?.annotation;
+  const pageIndex = annot?.position?.pageIndex;
+  /** Bounding rects of the selection in PDF viewport space. */
+  const rects: { top: number; left: number; width: number; height: number }[] | undefined = annot?.position?.rects;
 
   if (!getPref("enableEudicSync")) return;
   const scenePref = getPref("buttonShowScene");
   if (scenePref !== "both" && scenePref !== "selection") return;
   if (!isSingleEnglishWord(selectedText)) return;
   const platform = getPref("wordbookPlatform") as string;
-  const hasToken = platform === "maimemo"
+  const hasStorage = platform === "maimemo"
     ? !!getPref("maimemoToken")
-    : !!getPref("eudicToken");
-  if (!hasToken) return;
+    : platform === "local"
+      ? true
+      : !!getPref("eudicToken");
+  if (!hasStorage) return;
 
   // Build a full-width button styled like llm-for-zotero's "Add Text" button.
   const btn = doc.createElement("button");
@@ -123,7 +133,21 @@ function onRenderTextSelectionPopup(event: any) {
   btn.addEventListener("click", async () => {
     btn.textContent = getString("wordbtn-adding");
     btn.setAttribute("disabled", "true");
-    const ok = await addWordToEudic(selectedText);
+    // Capture translation data from pdf-translate textarea (already visible)
+    let trResult = "";
+    let phon = "";
+    try {
+      const ta = doc.querySelector(
+        ".zoteropdftranslate-popup-textarea, .selection-popup textarea",
+      ) as HTMLTextAreaElement | null;
+      if (ta && ta.value) {
+        trResult = ta.value;
+        const match = ta.value.split("\n")[0].match(/\[([^\]]+?)\]/);
+        if (match) phon = match[1];
+      }
+    } catch { /* ignore */ }
+    const contextLine = findContextFromReaders(selectedText, rects, pageIndex);
+    const ok = await addWordToEudic(selectedText, trResult, phon);
     btn.textContent = ok
       ? getString("wordbtn-added")
       : getString("wordbtn-failed");
@@ -162,12 +186,43 @@ function onRenderTextSelectionPopup(event: any) {
   }
 
   // Auto-add mode: add immediately after the popup is shown.
+  // Use retry to wait for pdf-translate's async textarea population.
   if (getPref("addWordMode") === "auto") {
-    void addWordToEudic(selectedText);
+    // Capture context_line once (readers don't change between retries)
+    const contextLine = findContextFromReaders(selectedText, rects, pageIndex);
+    const tryAutoAdd = (attempt: number) => {
+      let trResult = "";
+      let phon = "";
+      try {
+        const ta = doc.querySelector(
+          ".zoteropdftranslate-popup-textarea, .selection-popup textarea",
+        ) as HTMLTextAreaElement | null;
+        if (ta && ta.value) {
+          trResult = ta.value;
+          const match = ta.value.split("\n")[0].match(/\[([^\]]+?)\]/);
+          if (match) phon = match[1];
+        }
+      } catch { /* ignore */ }
+      if (trResult) {
+        void addWordToEudic(selectedText, trResult, phon);
+      } else if (attempt < 3) {
+        // Retry with progressive delay: 150ms → 400ms
+        const delay = attempt === 1 ? 150 : 400;
+        setTimeout(() => tryAutoAdd(attempt + 1), delay);
+      } else {
+        // Fallback: add word without phon/exp
+        void addWordToEudic(selectedText);
+      }
+    };
+    tryAutoAdd(1);
   }
 }
 
-async function addWordToEudic(word: string): Promise<boolean> {
+async function addWordToEudic(
+  word: string,
+  translateResult?: string,
+  phon?: string,
+): Promise<boolean> {
   // Lemmatise inflected forms to dictionary headwords before API call
   // when lemmaMode is "lemma"; skip lemmatisation when "inflected".
   const lemma = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
@@ -186,9 +241,102 @@ async function addWordToEudic(word: string): Promise<boolean> {
     const res = await client.addWord(lemma, categoryId);
     return res.success;
   }
+  if (platform === "local") {
+    return addWordToLocal({
+      word: lemma,
+      phon: phon || "",
+      exp: translateResult || "",
+    });
+  }
+  // platform === "eudic" (explicit guard, not fallthrough)
+  if (platform !== "eudic") {
+    Zotero.debug(`[hover-translate-eudic/selection] unknown platform="${platform}", skipping`);
+    return false;
+  }
   const client = createEudicClientFromPrefs();
   if (!client) return false;
   const categoryId = getPref("eudicCategoryId");
   const res = await client.addWord(lemma, categoryId);
   return res.success;
+}
+
+/** Extract sentence from text around the word at the given offset. */
+function extractSentenceFromText(text: string, wordStart: number, word: string): string {
+  let start = 0;
+  for (let i = wordStart - 1; i >= 0; i--) {
+    if (".!?\n".includes(text[i])) { start = i + 1; break; }
+  }
+  let end = text.length;
+  for (let i = wordStart + word.length; i < text.length; i++) {
+    if (".!?\n".includes(text[i])) { end = i + 1; break; }
+  }
+  return text.slice(start, end).trim();
+}
+
+/**
+ * Find the PDF text node at the position given by the annotation rects,
+ * verify it matches the selected word, and extract the surrounding sentence.
+ *
+ * Uses the same caretPositionFromPoint mechanism as the hover path,
+ * so precision matches the hover path exactly.
+ *
+ * @param word      The selected word
+ * @param rects     Bounding rects of the selection (viewport coordinates)
+ * @param pageIndex Optional 0-based page index (fallback if rects don't work)
+ */
+function findContextFromReaders(
+  word: string,
+  rects?: { top: number; left: number; width: number; height: number }[],
+  pageIndex?: number,
+): string {
+  try {
+    const readers = getAllReaders();
+    const lowerWord = word.toLowerCase();
+
+    for (const reader of readers) {
+      const iw = getReaderInnerWindow(reader);
+      if (!iw?.document?.body) continue;
+
+      // --- Primary method: use selection rect with caretPositionFromPoint ---
+      // This is the same mechanism as the hover path, giving exact text node.
+      if (rects && rects.length > 0) {
+        try {
+          const cp: any = (iw.document as any).caretPositionFromPoint?.(
+            rects[0].left,
+            rects[0].top,
+          );
+          if (cp?.offsetNode?.nodeType === 3) {
+            const text = cp.offsetNode.data || "";
+            const wp = wordRangeAtOffset(text, cp.offset);
+            if (wp && wp.word.toLowerCase() === lowerWord && wp.word.length === word.length) {
+              return extractSentenceFromText(text, wp.start, word);
+            }
+          }
+        } catch { /* fall through */ }
+      }
+
+      // --- Fallback: page-based text node scan ---
+      let searchRoot: Node = iw.document.body;
+      if (pageIndex != null) {
+        const pageEl = iw.document.querySelector(
+          `.page[data-page-number="${pageIndex + 1}"]`,
+        );
+        if (pageEl) searchRoot = pageEl;
+      }
+      const walker = iw.document.createTreeWalker(
+        searchRoot,
+        NodeFilter.SHOW_TEXT,
+        null as any,
+      );
+      let node: Text | null;
+      while ((node = walker.nextNode() as Text | null)) {
+        const text = node.data || "";
+        const idx = text.toLowerCase().indexOf(lowerWord);
+        if (idx >= 0) {
+          return extractSentenceFromText(text, idx, word);
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return "";
 }

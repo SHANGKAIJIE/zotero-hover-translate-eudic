@@ -82,52 +82,44 @@ function esc(val: unknown, delim: string): string {
   return s;
 }
 
-function toCsv(words: EudicWordEntry[]): string {
-  const header = ["word", "phon", "exp", "context_line", "add_time", "star"];
+function toCsv(words: EudicWordEntry[], compact?: boolean): string {
+  const header = compact
+    ? ["word", "phon", "exp", "add_time"]
+    : ["word", "phon", "exp", "context_line", "add_time", "star"];
   const rows = [header.join(",")];
   for (const w of words) {
     const c = cleanEntry(w);
-    rows.push(
-      [
-        esc(c.word, ","),
-        esc(c.phon, ","),
-        esc(c.exp, ","),
-        esc(c.context, ","),
-        esc(c.add_time, ","),
-        esc(c.star ?? "", ","),
-      ].join(","),
-    );
+    const cols = compact
+      ? [esc(c.word, ","), esc(c.phon, ","), esc(c.exp, ","), esc(c.add_time, ",")]
+      : [esc(c.word, ","), esc(c.phon, ","), esc(c.exp, ","), esc(c.context, ","), esc(c.add_time, ","), esc(c.star ?? "", ",")];
+    rows.push(cols.join(","));
   }
   return rows.join("\n");
 }
 
-function toTsv(words: EudicWordEntry[]): string {
-  const header = ["word", "phon", "exp", "context_line", "add_time", "star"];
+function toTsv(words: EudicWordEntry[], compact?: boolean): string {
+  const header = compact
+    ? ["word", "phon", "exp", "add_time"]
+    : ["word", "phon", "exp", "context_line", "add_time", "star"];
   const rows = [header.join("\t")];
   for (const w of words) {
     const c = cleanEntry(w);
-    rows.push(
-      [
-        esc(c.word, "\t"),
-        esc(c.phon, "\t"),
-        esc(c.exp, "\t"),
-        esc(c.context, "\t"),
-        esc(c.add_time, "\t"),
-        esc(c.star ?? "", "\t"),
-      ].join("\t"),
-    );
+    const cols = compact
+      ? [esc(c.word, "\t"), esc(c.phon, "\t"), esc(c.exp, "\t"), esc(c.add_time, "\t")]
+      : [esc(c.word, "\t"), esc(c.phon, "\t"), esc(c.exp, "\t"), esc(c.context, "\t"), esc(c.add_time, "\t"), esc(c.star ?? "", "\t")];
+    rows.push(cols.join("\t"));
   }
   return rows.join("\n");
 }
 
-function toTxt(words: EudicWordEntry[]): string {
+function toTxt(words: EudicWordEntry[], compact?: boolean): string {
   const lines: string[] = [];
   for (const w of words) {
     const c = cleanEntry(w);
     const parts = [c.word];
     if (c.phon) parts.push(`[${c.phon}]`);
     if (c.exp) parts.push(c.exp);
-    if (c.context) parts.push(`— ${c.context}`);
+    if (!compact && c.context) parts.push(`— ${c.context}`);
     lines.push(parts.join("  "));
   }
   return lines.join("\n\n");
@@ -161,7 +153,7 @@ const FORMAT_META: Record<
   json: { ext: "json", label: "JSON", mime: "application/json" },
 };
 
-const CONVERTERS: Record<ExportFormat, (w: EudicWordEntry[]) => string> = {
+const CONVERTERS: Record<ExportFormat, (w: EudicWordEntry[], compact?: boolean) => string> = {
   csv: toCsv,
   tsv: toTsv,
   txt: toTxt,
@@ -219,6 +211,8 @@ export async function exportWordbook(
     outFile?: any;
     /** If true, try to reveal the saved file in the platform file manager. */
     autoReveal?: boolean;
+    /** Override the base filename (without extension). Default: "eudic-wordbook". */
+    baseName?: string;
   },
 ): Promise<string> {
   const meta = FORMAT_META[format];
@@ -256,7 +250,7 @@ export async function exportWordbook(
       exportDir.create((Components as any).interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
     }
     outFile = exportDir.clone();
-    outFile.append(`${EXPORT_FILENAME}.${meta.ext}`);
+    outFile.append(`${opts?.baseName || EXPORT_FILENAME}.${meta.ext}`);
   }
 
   // 4. Ensure the target file is writable (may be locked by Excel etc.).
@@ -298,6 +292,10 @@ export async function exportWordEntries(
     autoReveal?: boolean;
     /** If true, only export the word column (no empty phon/exp/etc.). */
     wordsOnly?: boolean;
+    /** Override the base filename (without extension). Default: "eudic-wordbook". */
+    baseName?: string;
+    /** If true, omit context_line and star columns. */
+    compact?: boolean;
   },
 ): Promise<string> {
   const meta = FORMAT_META[format];
@@ -308,7 +306,7 @@ export async function exportWordEntries(
     content = wordsOnlyConverter(format, words);
   } else {
     const converter = CONVERTERS[format];
-    content = converter(words);
+    content = converter(words, opts?.compact);
   }
 
   let outFile: any;
@@ -324,7 +322,7 @@ export async function exportWordEntries(
       exportDir.create((Components as any).interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
     }
     outFile = exportDir.clone();
-    outFile.append(`${EXPORT_FILENAME}.${meta.ext}`);
+    outFile.append(`${opts?.baseName || EXPORT_FILENAME}.${meta.ext}`);
   }
 
   ensureWritable(outFile);

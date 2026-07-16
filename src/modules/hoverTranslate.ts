@@ -27,6 +27,7 @@ import { wordRangeAtOffset, isSingleEnglishWord } from "./util";
 import { toLemma } from "./lemmatize";
 import { createEudicClientFromPrefs } from "./eudic";
 import { createMaimemoClientFromPrefs } from "./maimemo";
+import { addWord as addWordToLocal } from "./localWordbook";
 
 const HIGHLIGHT_OVERLAY_ID = `${config.addonRef}-highlight-overlay`;
 const POPUP_ID = `${config.addonRef}-hover-popup`;
@@ -200,6 +201,9 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     get: () => lastHit,
     set: (v: { word: string; range: Range } | null) => (lastHit = v),
   };
+  /** Track the sentence context (surrounding text) of the most recent hovered word. */
+  let lastContextLine = "";
+  const contextLineRef = { get: () => lastContextLine, set: (v: string) => (lastContextLine = v) };
   let moveCount = 0;
   // Track the window the mouse is currently over. The popup/highlight MUST
   // be created in THIS window (not the outer reader window), otherwise an
@@ -230,7 +234,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     // the popup shows the translation instantly.
     hoverTimer = win.setTimeout(() => {
       hoverTimer = null;
-      doTranslate(activeWinRef.win, reader, word, lastWordRef);
+      doTranslate(activeWinRef.win, reader, word, lastWordRef, contextLineRef);
     }, Math.max(0, getPref("hoverDelay") | 0));
   };
 
@@ -265,7 +269,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
         /* cross-origin iframe — ignore */
       }
     }
-    onReaderMouseMove(ev, win, reader, lastWordRef, lastHitRef, schedule, sweepPreheat);
+    onReaderMouseMove(ev, win, reader, lastWordRef, lastHitRef, contextLineRef, schedule, sweepPreheat);
     if (++moveCount % 50 === 0) {
       dbg(`mousemove#${moveCount} on ${safeHref(win)}`);
     }
@@ -321,7 +325,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
         applyHighlight(win, hit.range);
       }
       // Translate immediately (no debounce for click mode).
-      void doTranslate(win, reader, hit.word, lastWordRef);
+      void doTranslate(win, reader, hit.word, lastWordRef, contextLineRef);
     } catch {
       /* suppress */
     }
@@ -354,7 +358,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       if (getPref("enableHighlight")) {
         applyHighlight(activeWinRef.win, hit.range);
       }
-      void doTranslate(activeWinRef.win, reader, hit.word, lastWordRef);
+      void doTranslate(activeWinRef.win, reader, hit.word, lastWordRef, contextLineRef);
     } catch {
       /* suppress */
     }
@@ -508,6 +512,7 @@ function onReaderMouseMove(
   reader: _ZoteroTypes.ReaderInstance,
   lastWordRef: { get: () => string; set: (v: string) => void },
   lastHitRef: { get: () => { word: string; range: Range } | null; set: (v: { word: string; range: Range } | null) => void },
+  contextLineRef: { get: () => string; set: (v: string) => void },
   schedule: (word: string) => void,
   sweepPreheat: ((word: string) => void) | null,
 ) {
@@ -542,6 +547,29 @@ function onReaderMouseMove(
 
     // Always track the last hit for keydown-based triggering.
     lastHitRef.set(hit);
+
+    // Extract sentence context from the PDF text node around this word
+    try {
+      const container = hit.range.startContainer;
+      if (container && container.nodeType === 3) {
+        const fullText = (container as Text).data || "";
+        const wStart = hit.range.startOffset;
+        const wEnd = wStart + hit.word.length;
+        // Find start of sentence — walk back from word to delimiter
+        let sStart = 0;
+        for (let i = wStart - 1; i >= 0; i--) {
+          if (".!?\n".includes(fullText[i])) { sStart = i + 1; break; }
+        }
+        // Find end of sentence — walk forward from word to delimiter
+        let sEnd = fullText.length;
+        for (let i = wEnd; i < fullText.length; i++) {
+          if (".!?\n".includes(fullText[i])) { sEnd = i + 1; break; }
+        }
+        contextLineRef.set(fullText.slice(sStart, sEnd).trim());
+      }
+    } catch {
+      contextLineRef.set("");
+    }
 
     // Highlight is INDEPENDENT of the hover-translate master switch.
     if (highlightEnabled) {
@@ -668,6 +696,7 @@ async function doTranslate(
   reader: _ZoteroTypes.ReaderInstance,
   word: string,
   lastWordRef: { get: () => string; set: (v: string) => void },
+  contextLineRef: { get: () => string; set: (v: string) => void },
 ) {
   if (word !== lastWordRef.get()) return; // user already moved away
   dbg(`translating word="${word}"`);
@@ -743,6 +772,62 @@ async function doTranslate(
   status.textContent = "";
   result.textContent = tr.result || getString("hover-popup-empty");
 
+/** Check if a string looks like IPA phonetic notation (contains Unicode IPA characters). */
+function looksLikeIPA(s: string): boolean {
+  return /[ˈˌa-zA-Zəɜɪʊɔɒæɛʌθðʃʒŋɡʔɑɝɚɘɵɤɨ]{4,}/.test(s);
+}
+
+/** Extract phonetic notation from a dictionary/translation result string. */
+function extractPhonetic(text: string): string {
+  if (!text) return "";
+  // 1. Try [...] (e.g. 英 [ˈkɒmpjʊtə])
+  let m = text.match(/\[([^\]]+?)\]/);
+  if (m) return m[1];
+  // 2. Try /.../ (e.g. /ˈkɒmpjʊtə/)
+  m = text.match(/\/([^\/]+?)\//);
+  if (m) return m[1];
+  // 3. Try the first word of the first line if it looks like IPA
+  const firstLine = text.split("\n")[0].trim();
+  const firstWord = firstLine.split(/[\s,;]/)[0];
+  if (firstWord && looksLikeIPA(firstWord)) return firstWord;
+  return "";
+}
+
+  // For local platform, fetch full dictionary result for exp + phon
+  let expText = (tr.result || "").trim();
+  let phonText = "";
+  if (wordBtn && getPref("wordbookPlatform") === "local") {
+    // Determine which word to query: when lemma mode is on, use the
+    // headword so phon/exp match the stored word (not the inflected form).
+    const dictWord = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
+    const dictResult = await fetchDictResult(dictWord, reader);
+    if (dictResult) {
+      expText = dictResult.result.trim();
+      // Extract phon from dict task's audio (first entry only, single IPA)
+      if (dictResult.audio.length > 0) {
+        const raw = (dictResult.audio[0].text || "").trim();
+        if (raw) phonText = stripAudioText(raw);
+      }
+      // Fallback: try to extract phon from the dict result text
+      if (!phonText) phonText = extractPhonetic(dictResult.result);
+    }
+    // Fallback: try main translate task's audio
+    if (!phonText && tr.task?.audio?.length > 0) {
+      const raw = (tr.task.audio[0].text || "").trim();
+      if (raw) phonText = stripAudioText(raw);
+    }
+    // Fallback: try tr.result text
+    if (!phonText) phonText = extractPhonetic(tr.result || "");
+    // Wrap single IPA in /.../ format
+    if (phonText) phonText = "/" + phonText + "/";
+  }
+
+  // Store translation data on button for wordbook addition
+  if (wordBtn) {
+    wordBtn.dataset.trResult = expText;
+    wordBtn.dataset.phon = phonText;
+  }
+
   // Append any extra tasks the engine already returned.
   const extraTasks: any[] = tr.task?.extraTasks || [];
   for (const et of extraTasks) {
@@ -767,7 +852,7 @@ async function doTranslate(
     isSingleEnglishWord(word) &&
     wordBtn
   ) {
-    void autoAddWordWithButton(word, wordBtn);
+    void autoAddWordWithButton(word, wordBtn, expText, phonText);
   }
 }
 
@@ -775,13 +860,15 @@ async function doTranslate(
 async function autoAddWordWithButton(
   word: string,
   btn: HTMLButtonElement,
+  trResult?: string,
+  phonText?: string,
 ) {
   try {
     const win = btn.ownerDocument?.defaultView as Window | null;
     if (win) _cancelAutoClose(win);
     btn.textContent = "+";
     btn.setAttribute("disabled", "true");
-    const ok = await addWordToEudic(word);
+    const ok = await addWordToEudic(word, trResult || "", phonText || "");
     if (ok) {
       btn.textContent = "✓";
       btn.style.color = "#22c55e";
@@ -1044,10 +1131,12 @@ function maybeAddWordButton(
   if (scenePref !== "both" && scenePref !== scene) return null;
   if (!isSingleEnglishWord(word)) return null;
   const platform = getPref("wordbookPlatform") as string;
-  const hasToken = platform === "maimemo"
+  const hasStorage = platform === "maimemo"
     ? !!getPref("maimemoToken")
-    : !!getPref("eudicToken");
-  if (!hasToken) return null;
+    : platform === "local"
+      ? true
+      : !!getPref("eudicToken");
+  if (!hasStorage) return null;
 
   const doc = container.ownerDocument!;
   const tc = getThemeColors(innerWin);
@@ -1079,7 +1168,9 @@ function maybeAddWordButton(
     _cancelAutoClose(innerWin);
     btn.textContent = "+";
     btn.setAttribute("disabled", "true");
-    const ok = await addWordToEudic(word);
+    const trResult = btn.dataset.trResult || "";
+    const phon = btn.dataset.phon || "";
+    const ok = await addWordToEudic(word, trResult, phon);
     if (ok) {
       btn.textContent = "✓";
       btn.style.color = "#22c55e";
@@ -1102,7 +1193,64 @@ function maybeAddWordButton(
   return btn;
 }
 
-async function addWordToEudic(word: string): Promise<boolean> {
+/**
+ * Query zotero-pdf-translate's dictionary engine (dictSource) for a
+ * full dictionary entry (phonetics + definitions), used as `exp` for
+ * the local CSV wordbook.
+ *
+ * Returns both the result text and audio IPA entries, because some
+ * services (e.g. BingDict) ONLY populate audio with IPA but NOT the
+ * result text.
+ */
+async function fetchDictResult(
+  word: string,
+  reader: _ZoteroTypes.ReaderInstance,
+): Promise<{ result: string; audio: { text: string; url: string }[] } | null> {
+  try {
+    const pdf = (Zotero as any).PDFTranslate;
+    if (!pdf?.api?.translate) return null;
+    const enabled = Zotero.Prefs.get(
+      "extensions.zotero.ZoteroPDFTranslate.enableDict", true,
+    ) as boolean;
+    if (!enabled) return null;
+    const dictSource = Zotero.Prefs.get(
+      "extensions.zotero.ZoteroPDFTranslate.dictSource", true,
+    ) as string;
+    if (!dictSource) return null;
+    const task = await pdf.api.translate(word, {
+      pluginID: config.addonID,
+      service: dictSource,
+      itemID: reader.itemID,
+    });
+    if (!task?.result) return null;
+    return { result: task.result, audio: task.audio || [] };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort extraction: from an audio text value, extract the bare IPA.
+ * Handles various service formats:
+ *   BingDict:      "ˈkɒmpjʊtə"           → "ˈkɒmpjʊtə"
+ *   YoudaoDict:    "英 [ˈkɒmpjʊtə]"       → "ˈkɒmpjʊtə"
+ *   HaiciDict:     "英 [ˈkɒmpjʊtə] 英"   → "ˈkɒmpjʊtə"
+ *   CambridgeDict: "uk ˈkɒmpjʊtə  "      → "ˈkɒmpjʊtə"
+ */
+function stripAudioText(raw: string): string {
+  // Try brackets first: "英 [ˈkɒmpjʊtə]" → "ˈkɒmpjʊtə"
+  const bracketM = raw.match(/\[([^\]]+?)\]/);
+  if (bracketM) return bracketM[1];
+  // Strip language/region prefix: "uk ˈkɒmpjʊtə" → "ˈkɒmpjʊtə"
+  const stripped = raw.replace(/^[a-z]{2}\s+/i, "").trim();
+  return stripped;
+}
+
+async function addWordToEudic(
+  word: string,
+  translateResult?: string,
+  phon?: string,
+): Promise<boolean> {
   // Lemmatise inflected forms to dictionary headwords before API call
   // when lemmaMode is "lemma"; skip lemmatisation when "inflected".
   const lemma = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
@@ -1120,6 +1268,18 @@ async function addWordToEudic(word: string): Promise<boolean> {
     const categoryId = getPref("maimemoCategoryId") as string;
     const res = await client.addWord(lemma, categoryId);
     return res.success;
+  }
+  if (platform === "local") {
+    return addWordToLocal({
+      word: lemma,
+      phon: phon || "",
+      exp: translateResult || "",
+    });
+  }
+  // platform === "eudic" (explicit guard, not fallthrough)
+  if (platform !== "eudic") {
+    Zotero.debug(`[hover-translate-eudic] unknown platform="${platform}", skipping`);
+    return false;
   }
   const client = createEudicClientFromPrefs();
   if (!client) return false;

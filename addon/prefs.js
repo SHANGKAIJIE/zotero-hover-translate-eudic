@@ -16,7 +16,9 @@ pref("popupAutoCloseDelay", 30); // 秒
 pref("translateDisplayMode", "simple"); // simple | full
 
 // ---- 3.2 生词本设置 ----
-pref("wordbookPlatform", "eudic"); // "eudic" | "maimemo"
+pref("wordbookPlatform", "eudic"); // "eudic" | "maimemo" | "local"
+// Local
+pref("localSavePath", "");
 pref("enableEudicSync", false);
 // Eudic
 pref("eudicToken", "");

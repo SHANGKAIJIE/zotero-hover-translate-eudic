@@ -15,6 +15,7 @@ import { getString } from "../utils/locale";
 import { EudicClient, createEudicClientFromPrefs } from "./eudic";
 import { MaimemoClient, createMaimemoClientFromPrefs } from "./maimemo";
 import { exportWordbook, exportWordEntries } from "./eudicExport";
+import { getWords as getLocalWords } from "./localWordbook";
 
 const ref = config.addonRef;
 const $ = (id: string, win: Window) =>
@@ -44,6 +45,7 @@ const DEFAULTS: Record<string, any> = {
   buttonShowScene: "both",
   addWordMode: "manual",
   lemmaMode: "lemma",
+  localSavePath: "",
   exportAutoReveal: true,
   exportSavePath: "",
 };
@@ -213,7 +215,7 @@ function updateEudicBoxState(win: Window) {
   box.style.pointerEvents = enabled ? "auto" : "none";
 }
 
-/** Show/hide Eudic vs Maimemo token boxes based on selected platform. */
+/** Show/hide token boxes / path input based on selected platform. */
 function updateTokenVisibility(win: Window) {
   const platform = getPref("wordbookPlatform") as string;
   const eudicBox = $(`${ref}-eudicTokenBox`, win);
@@ -223,7 +225,11 @@ function updateTokenVisibility(win: Window) {
   const hint = $(`${ref}-maimemoExportHint`, win);
   if (hint) hint.hidden = platform !== "maimemo";
   const lemmaModeBox = $(`${ref}-lemmaModeBox`, win);
-  if (lemmaModeBox) lemmaModeBox.hidden = platform !== "eudic";
+  if (lemmaModeBox) lemmaModeBox.hidden = platform === "maimemo"; // show for eudic & local
+  const localPathBox = $(`${ref}-localSavePathBox`, win);
+  if (localPathBox) localPathBox.hidden = platform !== "local";
+  const categoryRow = $(`${ref}-categoryRow`, win);
+  if (categoryRow) categoryRow.hidden = platform === "local";
 }
 
 /** Reflect the currently saved eudicCategoryId in the menulist UI. */
@@ -391,11 +397,70 @@ function bindPrefEvents(win: Window) {
 
 /* ----------------------------- export ----------------------------- */
 
-const EXPORT_NAME = "eudic-wordbook";
+function getExportBaseName(): string {
+  const p = getPref("wordbookPlatform") as string;
+  if (p === "maimemo") return "maimemo-wordbook";
+  if (p === "local") return "local-wordbook";
+  return "eudic-wordbook";
+}
 
 /** Handle the export button click. Uses the main wordbook category. */
 async function handleExport(win: Window) {
   const platform = getPref("wordbookPlatform") as string;
+
+  // Local platform: read directly from CSV, no API call needed
+  if (platform === "local") {
+    const formatEl = $(`${ref}-exportFormat`, win) as any;
+    const format: string = formatEl?.value || "csv";
+    const autoReveal = getPref("exportAutoReveal") as boolean;
+    const savePath = (getPref("exportSavePath") as string || "").trim();
+
+    const extMap: Record<string, string> = {
+      csv: "csv", tsv: "tsv", txt: "txt", json: "json",
+    };
+    const ext = extMap[format] || "csv";
+
+    let outFile: any = null;
+    if (savePath) {
+      try {
+        const nsIFile = (Components as any).interfaces.nsIFile;
+        const file = (Components as any).classes["@mozilla.org/file/local;1"]
+          .createInstance(nsIFile);
+        file.initWithPath(savePath);
+        if (file.exists() && !file.isDirectory()) {
+          const parent = file.parent;
+          if (parent) {
+            parent.append(`${getExportBaseName()}.${ext}`);
+            outFile = parent;
+          }
+        } else {
+          if (!file.exists()) {
+            file.create((Components as any).interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
+          }
+          file.append(`${getExportBaseName()}.${ext}`);
+          outFile = file;
+        }
+      } catch { /* fall through */ }
+    }
+
+    try {
+      const words = await getLocalWords();
+      if (words.length === 0) {
+        win.alert("本地生词本为空，无内容可导出");
+        return;
+      }
+      const msg = await exportWordEntries(words, format as any, {
+        outFile: outFile || undefined,
+        autoReveal,
+        compact: true,
+        baseName: getExportBaseName(),
+      });
+      win.alert(msg);
+    } catch (e: any) {
+      win.alert(`导出失败：${e?.message || "未知错误"}`);
+    }
+    return;
+  }
 
   let token: string;
   let categoryId: string;
@@ -439,14 +504,14 @@ async function handleExport(win: Window) {
       if (file.exists() && !file.isDirectory()) {
         const parent = file.parent;
         if (parent) {
-          parent.append(`${EXPORT_NAME}.${ext}`);
+          parent.append(`${getExportBaseName()}.${ext}`);
           outFile = parent;
         }
       } else {
         if (!file.exists()) {
           file.create((Components as any).interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
         }
-        file.append(`${EXPORT_NAME}.${ext}`);
+        file.append(`${getExportBaseName()}.${ext}`);
         outFile = file;
       }
     } catch {
@@ -466,6 +531,7 @@ async function handleExport(win: Window) {
         outFile: outFile || undefined,
         autoReveal,
         wordsOnly: true,
+        baseName: getExportBaseName(),
       });
     } else {
       const language = getPref("eudicLanguage") as string;
@@ -473,6 +539,7 @@ async function handleExport(win: Window) {
       msg = await exportWordbook(client, categoryId, format as any, {
         outFile: outFile || undefined,
         autoReveal,
+        baseName: getExportBaseName(),
       });
     }
     win.alert(msg);
