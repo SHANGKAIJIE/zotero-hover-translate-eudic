@@ -39,6 +39,8 @@ pref-translateEngine-dict =
     .label = Dictionary engine (faster, common definitions)
 pref-translateEngine-translate =
     .label = Translate engine (slower, more accurate)
+pref-translateEngine-hint =
+    .value = Reuses the Translate plugin. If the result shows [Request Error], try switching the engine in that plugin.
 pref-disableOnSelection =
     .label = Disable hover when text is selected
 

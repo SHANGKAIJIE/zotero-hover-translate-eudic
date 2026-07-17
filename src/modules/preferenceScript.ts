@@ -69,6 +69,7 @@ export async function registerPrefsScripts(win: Window) {
   if (autoFetch) {
     win.setTimeout(() => void refreshCategories(win, true), 200);
   }
+  updateTranslateEngineHintVisibility(win);
   // Defer: let Zotero's preference binding + Fluent localization settle,
   // then force menulist labels to refresh from current pref values.
   win.setTimeout(() => {
@@ -233,6 +234,13 @@ function updateTokenVisibility(win: Window) {
   if (categoryRow) categoryRow.hidden = platform === "local";
 }
 
+/** Show/hide the translate engine hint — only visible when engine is "translate". */
+function updateTranslateEngineHintVisibility(win: Window) {
+  const engine = getPref("translateEngine") as string;
+  const hint = $(`${ref}-translateEngineHint`, win);
+  if (hint) hint.hidden = engine !== "translate";
+}
+
 /** Reflect the currently saved eudicCategoryId in the menulist UI. */
 function syncCategorySelectionUI(win: Window) {
   const menulist = $(`zotero-prefpane-${ref}-eudicCategoryId`, win);
@@ -293,6 +301,12 @@ function bindPrefEvents(win: Window) {
       updateTokenVisibility(win);
       void refreshCategories(win, true);
     }, 0);
+  });
+
+  // translateEngine -> toggle hint visibility
+  const engineSel = $(`zotero-prefpane-${ref}-translateEngine`, win);
+  engineSel?.addEventListener("command", () => {
+    setTimeout(() => updateTranslateEngineHintVisibility(win), 0);
   });
 
   // language change -> refresh category list

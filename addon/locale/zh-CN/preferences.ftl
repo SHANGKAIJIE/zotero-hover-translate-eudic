@@ -39,6 +39,8 @@ pref-translateEngine-dict =
     .label = 字典引擎（更快，取首条释义）
 pref-translateEngine-translate =
     .label = 翻译引擎（稍慢，释义更贴切）
+pref-translateEngine-hint =
+    .value = 翻译引擎复用Translate插件，若翻译结果[请求错误]，可去该插件切换翻译引擎
 pref-disableOnSelection =
     .label = 选中文字时禁用悬停（避免与划词翻译冲突）
 
