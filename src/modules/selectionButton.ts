@@ -225,7 +225,13 @@ async function addWordToEudic(
 ): Promise<boolean> {
   // Lemmatise inflected forms to dictionary headwords before API call
   // when lemmaMode is "lemma"; skip lemmatisation when "inflected".
-  const lemma = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
+  const raw = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
+  // Remove sentence-case capitalization (e.g. "Subsequently" → "subsequently")
+  // but preserve true acronyms / all-caps words (e.g. "NASA" stays "NASA").
+  const lemma =
+    word === word.toUpperCase() && word.length > 1
+      ? raw
+      : raw.toLowerCase();
   if (lemma !== word) {
     try {
       Zotero.debug(

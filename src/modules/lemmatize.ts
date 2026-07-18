@@ -380,8 +380,10 @@ export function toLemma(word: string): string {
     }
   }
 
-  // No transformation applies — word is already a base form
-  return word;
+  // No transformation applies — word is already a base form.
+  // Apply preserveCase so sentence-case is downcased (e.g. "Subsequently"→"subsequently")
+  // but true acronyms stay uppercase (e.g. "NASA"→"NASA").
+  return preserveCase(word, lower);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────

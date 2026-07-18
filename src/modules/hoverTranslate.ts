@@ -728,77 +728,39 @@ function findPageElement(node: Node | null): HTMLElement | null {
 function applyHighlight(innerWin: Window, range: Range) {
   clearHighlight(innerWin);
   const doc = innerWin.document;
+  const color = getPref("highlightColor") || "rgba(255,213,79,0.45)";
   const pageEl = findPageElement(range.startContainer);
+
   if (!pageEl) {
-    // Fallback: position:fixed + doc.body (original method)
     const rect = range.getBoundingClientRect();
     if (!rect || (rect.width === 0 && rect.height === 0)) return;
     const overlay = doc.createElement("div");
     overlay.id = HIGHLIGHT_OVERLAY_ID;
-    const color = getPref("highlightColor") || "rgba(255,213,79,0.45)";
     overlay.style.cssText = [
       "position:fixed",
-      `left:${rect.left}px`,
-      `top:${rect.top}px`,
-      `width:${rect.width}px`,
-      `height:${rect.height}px`,
-      `background:${color}`,
-      "border-radius:2px",
-      "pointer-events:none",
-      "z-index:20",
-      "mix-blend-mode:multiply",
+      `left:${rect.left}px`, `top:${rect.top}px`,
+      `width:${rect.width}px`, `height:${rect.height}px`,
+      `background:${color}`, "border-radius:2px",
+      "pointer-events:none", "z-index:20", "mix-blend-mode:multiply",
     ].join(";");
     doc.body?.appendChild(overlay);
     return;
   }
 
-  const color = getPref("highlightColor") || "rgba(255,213,79,0.45)";
   const pageRect = pageEl.getBoundingClientRect();
   const rects = range.getClientRects();
-  if (!rects || rects.length === 0) return;
+  if (!rects?.length) return;
 
-  // Use the span's CSS percentage position (from pdf.js viewport math) for the
-  // horizontal coordinate, instead of range.getClientRects().left which reflects
-  // system font rendering that can differ from PDF embedded fonts.
-  // The span's left% was computed by pdf.js via viewport.convertToViewportPoint()
-  // and matches the canvas rendering exactly.
-  const span = range.startContainer.parentElement as HTMLElement | null;
-  let baseLeft = 0;
-  if (span) {
-    const leftPct = parseFloat(span.style.left);
-    if (!isNaN(leftPct)) {
-      baseLeft = (leftPct / 100) * pageRect.width;
-      // For multi-word spans, estimate the word's offset within the span
-      const textNode = range.startContainer as Text;
-      const beforeText = textNode.data.substring(0, range.startOffset);
-      if (beforeText && beforeText.trim()) {
-        const spanWidth = span.getBoundingClientRect().width;
-        const charRatio = beforeText.length / textNode.data.length;
-        baseLeft += charRatio * spanWidth;
-      }
-    } else {
-      baseLeft = rects[0].left - pageRect.left;
-    }
-  }
-
-  for (let i = 0; i < rects.length; i++) {
-    const r = rects[i];
+  for (const r of rects) {
     if (r.width === 0 && r.height === 0) continue;
     const el = doc.createElement("div");
     el.className = HIGHLIGHT_CLASS;
-    // Position: horizontal from span% (canvas-aligned), vertical+size from DOM rects
-    const left = span ? baseLeft : (r.left - pageRect.left);
     el.style.cssText = [
       "position:absolute",
-      `left:${left}px`,
-      `top:${r.top - pageRect.top}px`,
-      `width:${r.width}px`,
-      `height:${r.height}px`,
-      `background:${color}`,
-      "border-radius:2px",
-      "pointer-events:none",
-      "z-index:20",
-      "mix-blend-mode:multiply",
+      `left:${r.left - pageRect.left}px`, `top:${r.top - pageRect.top}px`,
+      `width:${r.width}px`, `height:${r.height}px`,
+      `background:${color}`, "border-radius:2px",
+      "pointer-events:none", "z-index:20", "mix-blend-mode:multiply",
     ].join(";");
     pageEl.appendChild(el);
   }
@@ -1472,7 +1434,13 @@ async function addWordToEudic(
 ): Promise<boolean> {
   // Lemmatise inflected forms to dictionary headwords before API call
   // when lemmaMode is "lemma"; skip lemmatisation when "inflected".
-  const lemma = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
+  const raw = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
+  // Remove sentence-case capitalization (e.g. "Subsequently" → "subsequently")
+  // but preserve true acronyms / all-caps words (e.g. "NASA" stays "NASA").
+  const lemma =
+    word === word.toUpperCase() && word.length > 1
+      ? raw
+      : raw.toLowerCase();
   if (lemma !== word) {
     try {
       Zotero.debug(
