@@ -126,7 +126,7 @@ npm start
 插件通过 Zotero 内置 HTTP 服务器接收浏览器扩展推送的 Auth Token，实现无感同步：
 
 1. **安装 [HTE Bridge](https://github.com/SHANGKAIJIE/hte-bridge) 浏览器扩展**，加载后自动读取扇贝登录 Cookie 并推送到 Zotero。
-2. 确保已在浏览器中登录[扇贝网页版](https://web.shanbay.com/)。
+2. 确保已在浏览器中登录[扇贝网页版](https://web.shanbay.com/wordsweb/#/collection)。
 3. 打开 HTE Bridge 弹出面板，确认 Zotero 已连接、扇贝已登录，点击「刷新同步」推送 Token。
 4. Token 自动填入插件设置面板，无需手动复制粘贴。
 
