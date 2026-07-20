@@ -16,6 +16,7 @@ import { isSingleEnglishWord, wordRangeAtOffset } from "./util";
 import { toLemma } from "./lemmatize";
 import { createEudicClientFromPrefs } from "./eudic";
 import { createMaimemoClientFromPrefs } from "./maimemo";
+import { createShanbayClientFromPrefs } from "./shanbay";
 import { addWord as addWordToLocal } from "./localWordbook";
 import { getAllReaders, getReaderInnerWindow } from "../utils/window";
 
@@ -39,7 +40,9 @@ function syncRegistration() {
   const platform = getPref("wordbookPlatform") as string;
   const hasStorage = platform === "maimemo"
     ? !!getPref("maimemoToken")
-    : platform === "local"
+    : platform === "shanbay"
+      ? !!getPref("shanbayToken")
+      : platform === "local"
       ? true
       : !!getPref("eudicToken");
   const shouldEnable =
@@ -106,7 +109,9 @@ function onRenderTextSelectionPopup(event: any) {
   const platform = getPref("wordbookPlatform") as string;
   const hasStorage = platform === "maimemo"
     ? !!getPref("maimemoToken")
-    : platform === "local"
+    : platform === "shanbay"
+      ? !!getPref("shanbayToken")
+      : platform === "local"
       ? true
       : !!getPref("eudicToken");
   if (!hasStorage) return;
@@ -244,7 +249,7 @@ async function addWordToEudic(
     const client = createMaimemoClientFromPrefs();
     if (!client) return false;
     const categoryId = getPref("maimemoCategoryId") as string;
-    const res = await client.addWord(lemma, categoryId);
+    const res = await client.addWord(word.toLowerCase(), categoryId);
     return res.success;
   }
   if (platform === "local") {
@@ -253,6 +258,12 @@ async function addWordToEudic(
       phon: phon || "",
       exp: translateResult || "",
     });
+  }
+  if (platform === "shanbay") {
+    const client = createShanbayClientFromPrefs();
+    if (!client) return false;
+    const res = await client.addWord(word.toLowerCase());
+    return res.success;
   }
   // platform === "eudic" (explicit guard, not fallthrough)
   if (platform !== "eudic") {

@@ -28,6 +28,9 @@ declare namespace _ZoteroTypes {
       "maimemoToken": string;
       "maimemoCategoryId": string;
       "maimemoCategoryName": string;
+      "shanbayToken": string;
+      "shanbayCategoryId": string;
+      "shanbayCategoryName": string;
       "eudicLanguage": string;
       "buttonShowScene": string;
       "addWordMode": string;

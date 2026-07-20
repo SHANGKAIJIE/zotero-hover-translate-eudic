@@ -189,6 +189,7 @@
         >
           <menupopup>
             <menuitem value="eudic" data-l10n-id="pref-wordbookPlatform-eudic" />
+            <menuitem value="shanbay" data-l10n-id="pref-wordbookPlatform-shanbay" />
             <menuitem value="maimemo" data-l10n-id="pref-wordbookPlatform-maimemo" />
             <menuitem value="local" data-l10n-id="pref-wordbookPlatform-local" />
           </menupopup>
@@ -235,6 +236,31 @@
         </hbox>
         <hbox style="margin-left: 116px; margin-top: 4px">
           <label style="color: #c9780a; font-style: italic" data-l10n-id="pref-maimemoToken-24h-hint" />
+        </hbox>
+      </vbox>
+
+      <!-- Shanbay token section -->
+      <vbox id="__addonRef__-shanbayTokenBox" hidden="true">
+        <hbox align="center">
+          <label class="pref-label" data-l10n-id="pref-shanbayToken" />
+          <html:input
+            type="password"
+            id="zotero-prefpane-__addonRef__-shanbayToken"
+            preference="shanbayToken"
+            style="flex: 1; min-width: 240px"
+          />
+        </hbox>
+        <hbox style="margin-left: 116px">
+          <label
+            class="text-link"
+            href="https://github.com/SHANGKAIJIE/hte-bridge"
+            data-l10n-id="pref-shanbayToken-apply"
+          />
+        </hbox>
+        <hbox style="margin-left: 116px; margin-top: 4px">
+          <label style="color: #c9780a; font-style: italic">
+            注意：Auth Token 由 HTE Bridge 浏览器插件自动填入。
+          </label>
         </hbox>
       </vbox>
 
@@ -358,6 +384,12 @@
 
     <hbox id="__addonRef__-maimemoExportHint" hidden="true" style="margin-left: 116px; margin-top: 4px">
       <label style="color: #c9780a; font-style: italic" data-l10n-id="pref-maimemoExportHint" />
+    </hbox>
+
+    <hbox id="__addonRef__-shanbayExportHint" hidden="true" style="margin-left: 116px; margin-top: 4px">
+      <label style="color: #c9780a; font-style: italic">
+        注意：扇贝单词只能导出单词列表，不含音标/释义。
+      </label>
     </hbox>
 
     <checkbox

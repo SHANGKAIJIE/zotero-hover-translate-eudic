@@ -14,6 +14,7 @@ import { getPref, setPref, clearPref } from "../utils/prefs";
 import { getString } from "../utils/locale";
 import { EudicClient, createEudicClientFromPrefs } from "./eudic";
 import { MaimemoClient, createMaimemoClientFromPrefs } from "./maimemo";
+import { ShanbayClient, createShanbayClientFromPrefs } from "./shanbay";
 import { exportWordbook, exportWordEntries } from "./eudicExport";
 import { getWords as getLocalWords } from "./localWordbook";
 
@@ -42,6 +43,9 @@ const DEFAULTS: Record<string, any> = {
   maimemoToken: "",
   maimemoCategoryId: "",
   maimemoCategoryName: "",
+  shanbayToken: "",
+  shanbayCategoryId: "default",
+  shanbayCategoryName: "默认生词本",
   eudicLanguage: "en",
   buttonShowScene: "both",
   addWordMode: "manual",
@@ -62,9 +66,10 @@ export async function registerPrefsScripts(win: Window) {
   bindPrefEvents(win);
   // Auto-fetch categories on panel open if token is configured for the active platform.
   const platform = getPref("wordbookPlatform") as string;
-  const token = platform === "maimemo"
-    ? getPref("maimemoToken") as string
-    : getPref("eudicToken") as string;
+  let token: string | undefined;
+  if (platform === "maimemo") token = getPref("maimemoToken") as string;
+  else if (platform === "shanbay") token = getPref("shanbayToken") as string;
+  else token = getPref("eudicToken") as string;
   const autoFetch = getPref("enableEudicSync") && !!token;
   if (autoFetch) {
     win.setTimeout(() => void refreshCategories(win, true), 200);
@@ -222,12 +227,16 @@ function updateTokenVisibility(win: Window) {
   const platform = getPref("wordbookPlatform") as string;
   const eudicBox = $(`${ref}-eudicTokenBox`, win);
   const maimemoBox = $(`${ref}-maimemoTokenBox`, win);
+  const shanbayBox = $(`${ref}-shanbayTokenBox`, win);
   if (eudicBox) eudicBox.hidden = platform !== "eudic";
   if (maimemoBox) maimemoBox.hidden = platform !== "maimemo";
-  const hint = $(`${ref}-maimemoExportHint`, win);
-  if (hint) hint.hidden = platform !== "maimemo";
+  if (shanbayBox) shanbayBox.hidden = platform !== "shanbay";
+  const maimemoHint = $(`${ref}-maimemoExportHint`, win);
+  if (maimemoHint) maimemoHint.hidden = platform !== "maimemo";
+  const shanbayHint = $(`${ref}-shanbayExportHint`, win);
+  if (shanbayHint) shanbayHint.hidden = platform !== "shanbay";
   const lemmaModeBox = $(`${ref}-lemmaModeBox`, win);
-  if (lemmaModeBox) lemmaModeBox.hidden = platform === "maimemo"; // show for eudic & local
+  if (lemmaModeBox) lemmaModeBox.hidden = platform === "maimemo" || platform === "shanbay";
   const localPathBox = $(`${ref}-localSavePathBox`, win);
   if (localPathBox) localPathBox.hidden = platform !== "local";
   const categoryRow = $(`${ref}-categoryRow`, win);
@@ -396,6 +405,21 @@ function bindPrefEvents(win: Window) {
     });
   }
 
+  // apply-token link → HTE Bridge GitHub repo
+  const shanbayApplyLink = win.document.querySelector(
+    `label[data-l10n-id="${ref}-pref-shanbayToken-apply"]`,
+  ) as any;
+  if (shanbayApplyLink) {
+    shanbayApplyLink.style.cursor = "pointer";
+    shanbayApplyLink.addEventListener("click", () => {
+      try {
+        Zotero.launchURL("https://github.com/SHANGKAIJIE/hte-bridge");
+      } catch {
+        win.open("https://github.com/SHANGKAIJIE/hte-bridge", "_blank");
+      }
+    });
+  }
+
   // export button
 
   // edit category button
@@ -415,6 +439,7 @@ function bindPrefEvents(win: Window) {
 function getExportBaseName(): string {
   const p = getPref("wordbookPlatform") as string;
   if (p === "maimemo") return "maimemo-wordbook";
+  if (p === "shanbay") return "shanbay-wordbook";
   if (p === "local") return "local-wordbook";
   return "eudic-wordbook";
 }
@@ -483,6 +508,9 @@ async function handleExport(win: Window) {
   if (platform === "maimemo") {
     token = getPref("maimemoToken") as string;
     categoryId = (getPref("maimemoCategoryId") as string) || "";
+  } else if (platform === "shanbay") {
+    token = getPref("shanbayToken") as string;
+    categoryId = "default";
   } else {
     token = getPref("eudicToken") as string;
     categoryId = (getPref("eudicCategoryId") as string) || "0";
@@ -548,6 +576,19 @@ async function handleExport(win: Window) {
         wordsOnly: true,
         baseName: getExportBaseName(),
       });
+    } else if (platform === "shanbay") {
+      const sClient = new ShanbayClient(token);
+      const words = await sClient.getWords();
+      if (words.length === 0) {
+        throw new Error("扇贝生词本中没有任何单词");
+      }
+      msg = await exportWordEntries(words, format as any, {
+        outFile: outFile || undefined,
+        autoReveal,
+        wordsOnly: true,
+        note: "扇贝单词 — 仅支持导出单词列表",
+        baseName: getExportBaseName(),
+      });
     } else {
       const language = getPref("eudicLanguage") as string;
       const client = new EudicClient(token, language);
@@ -599,6 +640,8 @@ async function handleEditWordbooks(win: Window) {
     } catch {
       win.alert("无法打开编辑窗口，请确认插件已正确安装。");
     }
+  } else if (platform === "shanbay") {
+    win.alert("扇贝单词仅支持默认生词本，无需编辑。");
   } else {
     // Eudic
     const token = getPref("eudicToken") as string;
@@ -672,7 +715,7 @@ async function refreshCategories(win: Window, silent: boolean) {
 
   const platform = getPref("wordbookPlatform") as string;
   let token: string;
-  let client: EudicClient | MaimemoClient;
+  let client: EudicClient | MaimemoClient | ShanbayClient;
 
   if (platform === "maimemo") {
     token = getPref("maimemoToken") as string;
@@ -683,6 +726,15 @@ async function refreshCategories(win: Window, silent: boolean) {
       return;
     }
     client = new MaimemoClient(token);
+  } else if (platform === "shanbay") {
+    token = getPref("shanbayToken") as string;
+    if (!token) {
+      pdbg("no shanbay token");
+      if (!silent) win.alert(getString("hint-token-invalid"));
+      refreshInProgress = false;
+      return;
+    }
+    client = new ShanbayClient(token);
   } else {
     token = getPref("eudicToken") as string;
     if (!token) {
@@ -712,7 +764,11 @@ async function refreshCategories(win: Window, silent: boolean) {
 
   let categories: { id: string; name: string; language: string }[] = [];
   try {
-    categories = await client.getCategories();
+    if (platform === "shanbay") {
+      categories = [{ id: "default", name: "默认生词本", language: "en" }];
+    } else {
+      categories = await client.getCategories();
+    }
     if (platform === "eudic") {
       addon.data.eudic.categories = categories;
       addon.data.eudic.client = client as EudicClient;
@@ -759,7 +815,9 @@ async function refreshCategories(win: Window, silent: boolean) {
   }
 
   const savedId = getPref(
-    platform === "maimemo" ? "maimemoCategoryId" : "eudicCategoryId",
+    platform === "maimemo" ? "maimemoCategoryId"
+      : platform === "shanbay" ? "shanbayCategoryId"
+      : "eudicCategoryId",
   );
   let targetIdx = items.findIndex((it) => it.getAttribute("value") === savedId);
   if (targetIdx < 0) targetIdx = 0;
@@ -774,6 +832,9 @@ async function refreshCategories(win: Window, silent: boolean) {
   if (platform === "maimemo") {
     setPref("maimemoCategoryId", String(targetId));
     setPref("maimemoCategoryName", String(targetLabel));
+  } else if (platform === "shanbay") {
+    setPref("shanbayCategoryId", String(targetId));
+    setPref("shanbayCategoryName", String(targetLabel));
   } else {
     setPref("eudicCategoryId", String(targetId));
     setPref("eudicCategoryName", String(targetLabel));

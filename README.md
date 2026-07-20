@@ -1,10 +1,10 @@
 # Hover Translate Eudic
 
-> 鼠标悬停 / 单击 PDF 中的单词即可翻译，复用 **Translate for Zotero** 的翻译引擎，并支持一键同步生词本到 **欧路词典 (Eudic)**、**墨墨背单词 (Maimemo)** 或 **本地 CSV 生词本**。
+> 鼠标悬停 / 单击 PDF 中的单词即可翻译，复用 **Translate for Zotero** 的翻译引擎，并支持一键同步生词本到 **欧路词典 (Eudic)**、**扇贝单词 (Shanbay)**、**墨墨背单词 (Maimemo)** 或 **本地生词本**。
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.5-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.2.6-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 
 <img width="883" height="435" alt="image" src="https://github.com/user-attachments/assets/60f38328-d2ce-423d-b621-3d6c0346fb15" />
 
@@ -17,7 +17,7 @@
   - `修饰键 + 悬停`：按住 `Ctrl` / `Alt` / `Shift`（可组合）悬停即翻译；也支持**先悬停再按下修饰键**。
   - `鼠标左键单击`：单击单词即翻译，无需保持按键。
 - **复用 Translate for Zotero 引擎**：翻译结果、字典释义、多语种翻译服务直接复用已安装的 Translate 插件。
-- **一键同步欧路 / 墨墨 / 本地生词本**：翻译弹窗内点击圆形 `+` 按钮，将当前单词加入云端指定生词本或本地 CSV 文件（添加后切换为 `✓` 或 `✗` 状态反馈）。支持**欧路词典**、**墨墨背单词**与**本地生词本（CSV）**三平台切换。
+- **一键同步欧路 / 扇贝 / 墨墨 / 本地生词本**：翻译弹窗内点击圆形 `+` 按钮，将当前单词加入云端指定生词本或本地 CSV 文件（添加后切换为 `✓` 或 `✗` 状态反馈）。支持**欧路词典**、**扇贝单词**、**墨墨背单词**与**本地生词本**四平台切换。
 - **编辑云端生词本**：设置面板中直接浏览所有生词本，支持添加、重命名、删除操作。
 - **精准取词高亮**：取词时可选对单词施加高亮，颜色（R/G/B/A 四通道）与开关完全独立配置。高亮使用 canvas 级 PDF 坐标定位，与文字精确对齐。
 - **深色模式自适应**：翻译弹窗跟随 Zotero（含 zotero-style 等主题插件）的深色 / 浅色模式自动切换配色。
@@ -103,7 +103,7 @@ npm start
 
 ### 生词本设置
 
-**生词本平台**：选择同步目标平台 — **欧路词典**、**墨墨背单词** 或 **本地生词本（CSV）**。
+**生词本平台**：选择同步目标平台 — **欧路词典**、**扇贝单词**、**墨墨背单词** 或 **本地生词本**。
 
 #### 欧路词典
 
@@ -121,7 +121,20 @@ npm start
 
 > ⚠️ **注意**：墨墨开放平台 Access Token 有效期仅 **24 小时**，过期后需重新获取。Token 过期时插件会弹窗提醒。
 
-#### 本地生词本（CSV）
+#### 扇贝单词
+
+插件通过 Zotero 内置 HTTP 服务器接收浏览器扩展推送的 Auth Token，实现无感同步：
+
+1. **安装 [HTE Bridge](https://github.com/SHANGKAIJIE/hte-bridge) 浏览器扩展**，加载后自动读取扇贝登录 Cookie 并推送到 Zotero。
+2. 确保已在浏览器中登录[扇贝网页版](https://web.shanbay.com/)。
+3. 打开 HTE Bridge 弹出面板，确认 Zotero 已连接、扇贝已登录，点击「刷新同步」推送 Token。
+4. Token 自动填入插件设置面板，无需手动复制粘贴。
+
+> 扇贝单词的 API 自动将变形词归一化为词典原型，添加到生词本时始终以原型存储。
+
+> 参考实现：[扇贝单词助手 V3](https://github.com/honwhy/shanbay-ext) — 扇贝查词 / 添加生词浏览器扩展。
+
+#### 本地生词本
 
 插件将生词直接保存到本地 CSV 文件，无需网络连接：
 
@@ -194,6 +207,9 @@ zotero-hover-translate-eudic/
 │   ├── modules/
 │   │   ├── hoverTranslate.ts # 悬停 / 单击取词 + 翻译弹窗核心逻辑
 │   │   ├── eudic.ts          # 欧路 OpenAPI 客户端（生词本同步）
+│   │   ├── shanbay.ts        # 扇贝单词 API 客户端 v0.2.6
+│   │   ├── shanbayDecode.ts  # 扇贝导出 Trie 解码器 v0.2.6
+│   │   ├── server.ts         # HTTP 端点（HTE Bridge 通信）v0.2.6
 │   │   ├── lemmatize.ts      # 英文词形还原（变形词→原型）v0.1.6
 │   │   ├── localWordbook.ts  # 本地 CSV 生词本存储 v0.2.2
 │   │   ├── maimemo.ts        # 墨墨背单词 OpenAPI 客户端 v0.1.5
@@ -229,5 +245,6 @@ zotero-hover-translate-eudic/
 - [windingwind/zotero-plugin-template](https://github.com/windingwind/zotero-plugin-template) — Zotero 插件模板
 - [windingwind/zotero-pdf-translate](https://github.com/windingwind/zotero-pdf-translate) — PDF 翻译引擎复用
 - [bulletproof-system/zotero-maimemo-sync](https://github.com/bulletproof-system/zotero-maimemo-sync) — 墨墨背单词同步参考
+- [honwhy/shanbay-ext](https://github.com/honwhy/shanbay-ext) — 扇贝单词助手 V3，扇贝 API 参考实现
 - [墨墨开放 API](https://open.maimemo.com/) — 墨墨背单词云词本接口
 - [欧路 OpenAPI 获取授权](https://my.eudic.net/OpenAPI/Authorization) — 欧路词典 OpenAPI 授权获取

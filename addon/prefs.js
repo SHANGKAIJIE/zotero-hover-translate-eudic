@@ -17,7 +17,7 @@ pref("translateDisplayMode", "simple"); // simple | full
 pref("translateEngine", "dict");          // "dict" | "translate"
 
 // ---- 3.2 生词本设置 ----
-pref("wordbookPlatform", "eudic"); // "eudic" | "maimemo" | "local"
+pref("wordbookPlatform", "eudic"); // "eudic" | "maimemo" | "local" | "shanbay"
 // Local
 pref("localSavePath", "");
 pref("enableEudicSync", false);
@@ -29,6 +29,10 @@ pref("eudicCategoryName", "默认生词本");
 pref("maimemoToken", "");
 pref("maimemoCategoryId", "");
 pref("maimemoCategoryName", "");
+// Shanbay
+pref("shanbayToken", "");
+pref("shanbayCategoryId", "default");
+pref("shanbayCategoryName", "默认生词本");
 pref("eudicLanguage", "en"); // en | fr | de | es
 pref("buttonShowScene", "both"); // both | hover | selection
 pref("addWordMode", "manual"); // manual | auto

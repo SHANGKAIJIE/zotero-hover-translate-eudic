@@ -161,7 +161,7 @@ const CONVERTERS: Record<ExportFormat, (w: EudicWordEntry[], compact?: boolean) 
 };
 
 /** Words-only converter: only the word field, no empty phon/exp/etc. */
-function wordsOnlyConverter(format: ExportFormat, words: EudicWordEntry[]): string {
+function wordsOnlyConverter(format: ExportFormat, words: EudicWordEntry[], note?: string): string {
   const simpleWords = words.map((w) => ({ word: w.word }));
   switch (format) {
     case "csv":
@@ -169,7 +169,7 @@ function wordsOnlyConverter(format: ExportFormat, words: EudicWordEntry[]): stri
     case "tsv":
       return toTsvSimple(simpleWords);
     case "json":
-      return toJsonSimple(simpleWords);
+      return toJsonSimple(simpleWords, note);
     default: // txt
       return words.map((w) => w.word).join("\n");
   }
@@ -184,11 +184,11 @@ function toTsvSimple(rows: { word: string }[]): string {
   return `word\n${rows.map((r) => r.word || "").join("\n")}`;
 }
 
-function toJsonSimple(rows: { word: string }[]): string {
+function toJsonSimple(rows: { word: string }[], note?: string): string {
   return JSON.stringify({
     export_time: new Date().toISOString(),
     total: rows.length,
-    note: "墨墨背单词 — 仅支持导出单词列表",
+    note: note || "墨墨背单词 — 仅支持导出单词列表",
     words: rows,
   }, null, 2);
 }
@@ -292,6 +292,8 @@ export async function exportWordEntries(
     autoReveal?: boolean;
     /** If true, only export the word column (no empty phon/exp/etc.). */
     wordsOnly?: boolean;
+    /** Custom note for JSON export (describes the source platform). */
+    note?: string;
     /** Override the base filename (without extension). Default: "eudic-wordbook". */
     baseName?: string;
     /** If true, omit context_line and star columns. */
@@ -303,7 +305,7 @@ export async function exportWordEntries(
 
   if (opts?.wordsOnly) {
     // Words-only mode: strip empty fields, output only the word column.
-    content = wordsOnlyConverter(format, words);
+    content = wordsOnlyConverter(format, words, opts?.note);
   } else {
     const converter = CONVERTERS[format];
     content = converter(words, opts?.compact);

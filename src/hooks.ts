@@ -11,6 +11,7 @@ import {
   registerSelectionButton,
   unregisterSelectionButton,
 } from "./modules/selectionButton";
+import { registerServer, unregisterServer } from "./modules/server";
 
 let notifierID: string | null = null;
 
@@ -22,6 +23,13 @@ async function onStartup() {
   ]);
 
   initLocale();
+
+  // Register HTTP server endpoints for HTE Bridge communication
+  try {
+    await registerServer();
+  } catch (e) {
+    ztoolkit.log("hooks: registerServer failed", e);
+  }
 
   // Each subsystem is isolated so a failure in one cannot break the others
   // (or other plugins' reader event handling).
@@ -98,6 +106,7 @@ function onShutdown(): void {
   ztoolkit.unregisterAll();
   hoverCleanupAll();
   unregisterSelectionButton();
+  unregisterServer();
   if (notifierID) {
     try {
       Zotero.Notifier.unregisterObserver(notifierID);
