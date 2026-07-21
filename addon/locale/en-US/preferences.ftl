@@ -64,6 +64,7 @@ pref-maimemoToken = API Token:
 pref-maimemoToken-apply = Apply for Maimemo Access Token
 pref-maimemoToken-24h-hint =
     .value = Note: Maimemo token expires every 24 hours. Please renew after expiration.
+pref-maimemoToken-hte-bridge = Install HTE-Bridge browser extension for automatic token refresh
 pref-localSavePath = Save path:
 pref-eudicCategory = Select wordbook:
 pref-eudicCategory-refresh =

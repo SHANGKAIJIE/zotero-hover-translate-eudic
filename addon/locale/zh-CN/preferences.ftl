@@ -64,6 +64,7 @@ pref-maimemoToken = API Token：
 pref-maimemoToken-apply = 申请墨墨开放平台 Access Token
 pref-maimemoToken-24h-hint =
     .value = 注意：墨墨 Token 有效期仅 24 小时，过期后需重新获取
+pref-maimemoToken-hte-bridge = 可选择安装 HTE-Bridge 浏览器插件，保持 Token 自动更新和输入
 pref-localSavePath = 存储路径：
 pref-localSavePath-placeholder = 留空则保存在 Zotero 配置目录
 pref-eudicCategory = 选择生词本：

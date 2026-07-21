@@ -420,6 +420,21 @@ function bindPrefEvents(win: Window) {
     });
   }
 
+  // maimemo HTE-Bridge download link
+  const maimemoBridgeLink = win.document.querySelector(
+    `label[data-l10n-id="${ref}-pref-maimemoToken-hte-bridge"]`,
+  ) as any;
+  if (maimemoBridgeLink) {
+    maimemoBridgeLink.style.cursor = "pointer";
+    maimemoBridgeLink.addEventListener("click", () => {
+      try {
+        Zotero.launchURL("https://github.com/SHANGKAIJIE/hte-bridge");
+      } catch {
+        win.open("https://github.com/SHANGKAIJIE/hte-bridge", "_blank");
+      }
+    });
+  }
+
   // export button
 
   // edit category button

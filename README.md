@@ -4,7 +4,7 @@
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.6-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.2.7-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 
 <img width="883" height="435" alt="image" src="https://github.com/user-attachments/assets/60f38328-d2ce-423d-b621-3d6c0346fb15" />
 
@@ -114,12 +114,20 @@ npm start
 
 #### 墨墨背单词
 
-插件通过墨墨开放 API 同步云词本，需要一个 **Access Token**：
-1. 登录[墨墨开放平台](https://open.maimemo.com/open/api/v1/tokens/openapi)，申请 Access Token。
-2. 在插件设置中填入 Token。
-3. 点击「刷新列表」拉取你的云词本。
+插件通过墨墨开放 API 同步云词本，需要一个 **Access Token**，有两种方式获取与维护：
 
-> ⚠️ **注意**：墨墨开放平台 Access Token 有效期仅 **24 小时**，过期后需重新获取。Token 过期时插件会弹窗提醒。
+**方式一：手动获取（无需浏览器插件）**
+1. 登录[墨墨开放平台](https://open.maimemo.com/open/api/v1/tokens/openapi)，申请 Access Token。
+2. 复制 Token 粘贴到插件设置面板。
+3. Token 有效期 24 小时，过期后需重新获取。
+
+**方式二：自动续期（推荐，需 HTE Bridge）**
+1. 安装 [HTE Bridge](https://github.com/SHANGKAIJIE/hte-bridge) 浏览器扩展，加载后自动检测墨墨登录状态。
+2. 确保已在浏览器中登录[墨墨开放平台](https://open.maimemo.com/open/api/v1/tokens/openapi)。
+3. 打开 HTE Bridge 弹出面板，确认墨墨显示已登录。
+4. 点击「刷新同步」推送 Token，之后每 23h 自动续期，无需手动操作。
+
+> ⚠️ Token 仅 24 小时有效，建议配合 HTE Bridge 自动续期，避免手动重复获取。
 
 #### 扇贝单词
 
@@ -207,9 +215,9 @@ zotero-hover-translate-eudic/
 │   ├── modules/
 │   │   ├── hoverTranslate.ts # 悬停 / 单击取词 + 翻译弹窗核心逻辑
 │   │   ├── eudic.ts          # 欧路 OpenAPI 客户端（生词本同步）
-│   │   ├── shanbay.ts        # 扇贝单词 API 客户端 v0.2.6
-│   │   ├── shanbayDecode.ts  # 扇贝导出 Trie 解码器 v0.2.6
-│   │   ├── server.ts         # HTTP 端点（HTE Bridge 通信）v0.2.6
+│   │   ├── shanbay.ts        # 扇贝单词 API 客户端 v0.2.7
+│   │   ├── shanbayDecode.ts  # 扇贝导出 Trie 解码器 v0.2.7
+│   │   ├── server.ts         # HTTP 端点（HTE Bridge 通信）v0.2.7
 │   │   ├── lemmatize.ts      # 英文词形还原（变形词→原型）v0.1.6
 │   │   ├── localWordbook.ts  # 本地 CSV 生词本存储 v0.2.2
 │   │   ├── maimemo.ts        # 墨墨背单词 OpenAPI 客户端 v0.1.5
