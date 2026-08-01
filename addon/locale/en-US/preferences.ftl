@@ -25,6 +25,11 @@ pref-highlightColorAlpha = Opacity:
 pref-highlightColorA-unit = %
 pref-hoverDelay = Hover delay:
 pref-hoverDelay-unit = ms
+pref-popupPosition = Popup position:
+pref-popupPosition-top =
+    .label = Above word
+pref-popupPosition-bottom =
+    .label = Below word
 pref-popupAutoCloseDelay = Popup auto-close:
 pref-popupAutoCloseDelay-unit = sec (0=never)
 pref-translateDisplayMode = Display mode:

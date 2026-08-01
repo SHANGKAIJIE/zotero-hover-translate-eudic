@@ -29,6 +29,18 @@ import LEMMA_MAP from "../data/lemma_dict.json";
 
 const lemmaMap = LEMMA_MAP as Record<string, string>;
 
+/**
+ * 已知词汇表：lemmaMap 的全部词形（key）与词根（value）的并集。
+ * 用于校验后缀剥离结果——剥离后的词根必须是词典里真实存在的词，
+ * 否则拒绝剥离（如 imager → "imag"：imag 不是标准英文词，剥离后
+ * 生词本/词典会查到无关词条或查空）。
+ */
+const KNOWN_WORDS = new Set<string>();
+for (const [form, lemma] of Object.entries(lemmaMap)) {
+  KNOWN_WORDS.add(form);
+  KNOWN_WORDS.add(lemma);
+}
+
 // ── Noun exceptions — prevent over-lemmatization ──────────────────────
 // Words that are standalone dictionary headwords but also appear as
 // morphological derivations in the BNC data. These should never be
@@ -71,6 +83,7 @@ const ER_NOUNS = new Set([
   "copper", "silver", "rubber", "leather", "feather",
   "sister", "brother", "mother", "father", "daughter",
   "weather", "order", "offer", "suffer", "whisper", "answer",
+  "imager", // 成像器（agent noun；避免 tryEr 误还原为 imag）
 ]);
 
 // ── Irregular forms table ─────────────────────────────────────────────
@@ -256,15 +269,21 @@ function tryEr(word: string): string | null {
     const c = stem[stem.length - 1];
     const prev = stem[stem.length - 2];
     if (c === prev && "bcdfghjklmnpqrstvwxyz".includes(c) && !"aeiou".includes(c)) {
-      return stem.slice(0, -1);
+      const cand = stem.slice(0, -1);
+      return KNOWN_WORDS.has(cand) ? cand : null;
     }
   }
 
   // -ier → -y: happier → happy
-  if (stem.endsWith("i") && stem.length >= 2) return stem.slice(0, -1) + "y";
+  if (stem.endsWith("i") && stem.length >= 2) {
+    const cand = stem.slice(0, -1) + "y";
+    return KNOWN_WORDS.has(cand) ? cand : null;
+  }
 
   // -er → -e: nicer → nice (short stems only)
-  if (stem.length <= 5) return stem;
+  // 剥离后的词根必须是已知词汇，否则拒绝剥离。误伤示例：imager → "imag"，
+  // imag 非标准词，还原后查不到正确释义（会查到无关词条或查空）。
+  if (stem.length <= 5) return KNOWN_WORDS.has(stem) ? stem : null;
 
   return null;
 }

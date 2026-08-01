@@ -25,6 +25,11 @@ pref-highlightColorAlpha = 透明度：
 pref-highlightColorA-unit = %
 pref-hoverDelay = 悬停触发延迟：
 pref-hoverDelay-unit = 毫秒
+pref-popupPosition = 弹窗位置：
+pref-popupPosition-top =
+    .label = 单词上方
+pref-popupPosition-bottom =
+    .label = 单词下方
 pref-popupAutoCloseDelay = 弹窗自动关闭：
 pref-popupAutoCloseDelay-unit = 秒（0=不自动关闭）
 pref-translateDisplayMode = 翻译显示模式：

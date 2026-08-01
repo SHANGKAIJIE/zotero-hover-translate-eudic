@@ -13,6 +13,7 @@ pref("highlightColor", "rgba(255,233,79,1.0)");
 pref("hoverDelay", 900);
 pref("disableOnSelection", true); // 划词时禁用悬停弹窗（避免与划词翻译弹窗冲突）
 pref("popupAutoCloseDelay", 30); // 秒
+pref("popupPosition", "top");    // 弹窗位置：top=单词上方（默认）| bottom=单词下方
 pref("translateDisplayMode", "simple"); // simple | full
 pref("translateEngine", "dict");          // "dict" | "translate"
 

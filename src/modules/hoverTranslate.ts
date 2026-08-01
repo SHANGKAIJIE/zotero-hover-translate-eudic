@@ -49,10 +49,12 @@ const translateCache: Map<
 > = new Map();
 
 // Dict result cache (for dict engine mode, keyed by word|dictSource)
-const dictCache: Map<
-  string,
-  Promise<{ result: string; audio: { text: string; url: string }[] } | null>
-> = new Map();
+type DictResult = {
+  result: string;
+  audio: { text: string; url: string }[];
+  service: string;
+};
+const dictCache: Map<string, Promise<DictResult | null>> = new Map();
 
 function makeCacheKey(
   word: string,
@@ -1000,6 +1002,7 @@ async function doTranslate(
   // 使 + 按钮始终位于与简洁模式相同的水平位置，文字与按钮之间的间距也保留。
   const isFullMode = getPref("translateDisplayMode") === "full";
   const row = doc.createElement("div");
+  row.dataset.hteRow = "1"; // 核心区标记（syncPopupLayout 按实际位置调整布局用）
   row.style.cssText = isFullMode
     ? "display:flex;align-items:center;gap:6px;width:fit-content;min-width:90px;max-width:380px;"
     : "display:flex;align-items:center;gap:6px;";
@@ -1012,10 +1015,17 @@ async function doTranslate(
   leftCol.appendChild(result);
   row.appendChild(leftCol);
   popup.appendChild(row);
-  // 字典释义独立区域：放在 row 之后（popup 底部），避免撑高 leftCol，
-  // 使 + 按钮始终与"单词+译文"垂直居中对齐（与简洁模式一致）。
+  // 字典释义独立区域：避免撑高 leftCol，使 + 按钮始终与"单词+译文"垂直居中对齐。
+  // 布局方向跟随弹窗与单词的相对位置——核心区（单词/译文/+按钮）永远靠近单词：
+  //  - 弹窗在单词上方（preferTop）：释义放弹窗上部，核心区在下（贴近单词顶部）
+  //  - 弹窗在单词下方：释义放弹窗下部，核心区在上（贴近单词底部）
   const dictArea = doc.createElement("div");
-  popup.appendChild(dictArea);
+  dictArea.dataset.hteDict = "1"; // 释义区标记（syncPopupLayout 调整用）
+  if (isFullMode && getPref("popupPosition") !== "bottom") {
+    popup.insertBefore(dictArea, row); // 释义在 row 之前（弹窗上部）
+  } else {
+    popup.appendChild(dictArea);
+  }
 
   doc.body?.appendChild(popup);
 
@@ -1027,18 +1037,52 @@ async function doTranslate(
   // highlight) so the popup stays close to the hovered word; falls back to the
   // last mouse position when no range is available.  Called after the popup is
   // in the document so its real size can be measured.
-  positionPopup(innerWin, popup, range);
+  try {
+    positionPopup(innerWin, popup, range);
+  } catch (e) {
+    // 定位异常绝不能让弹窗停在左上角——记录日志，回退到默认位置
+    dbg(`initial position error: ${String((e as any)?.message || e)}`);
+    popup.style.left = "4px";
+    popup.style.top = "4px";
+  }
+  // 保存锚点 Range，供翻译完成/释义填充后的重新定位使用
+  (popup as any).__hteRange = range;
+
+  // 间距恒定修正：positionPopup 在翻译开始前调用，此时弹窗是「翻译中」高度；
+  // 译文/释义填充后弹窗尺寸变化，若不重新定位，多行译文会向下延伸而盖住单词。
+  // ① ResizeObserver 兜底：任何尺寸变化（翻译完成、full 模式释义填充、+按钮
+  //    状态变化等）都重新定位；② 主流程也在翻译完成/释义填充后显式重定位。
+  try {
+    const ro = new ResizeObserver(() => {
+      try {
+        dbg(`popup resized to ${popup.offsetWidth}x${popup.offsetHeight}, repositioning`);
+        repositionHoverPopup(innerWin, popup, range);
+      } catch (e) {
+        dbg(`popup resize reposition error: ${String((e as any)?.message || e)}`);
+      }
+    });
+    ro.observe(popup);
+    (popup as any).__hteResizeObserver = ro;
+    dbg(`popup resize observer created (${popup.offsetWidth}x${popup.offsetHeight})`);
+  } catch (e) {
+    dbg(`ResizeObserver unavailable: ${String((e as any)?.message || e)}`);
+  }
 
   // Perform translation via Translate for Zotero.
   let tr: any;
   if (getPref("translateEngine") === "dict") {
     // Dict engine (faster): query dictSource and extract first definition.
-    // Apply lemma reduction so inflected forms (e.g. "links") use the base
-    // word ("link") and get proper definitions instead of "link的复数".
-    const dictWord = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
-    const dictR = await fetchDictResult(dictWord, reader);
+    // 直接查询用户悬停的原文词，不做词形还原——词形还原（lemmaMode）只用于
+    // 「加生词本」流程（下方 wordBtn 路径）。悬停翻译要查的是当前悬停的具体词
+    // （如 imager），还原成词根（imag）会查到无关词条（如 imag 的「复数虚部」）
+    // 或查空导致回退显示完整词典条目。
+    const dictR = await fetchDictResult(word, reader);
     if (dictR?.result) {
-      tr = { ok: true, result: extractFirstDefinition(dictR.result), task: { audio: dictR.audio } };
+      tr = {
+        ok: true,
+        result: extractFirstDefinition(dictR.result, dictR.service),
+        task: { audio: dictR.audio },
+      };
     } else {
       // Fallback: use translateSource if dictSource returns nothing
       tr = await translateWord(word, reader);
@@ -1057,6 +1101,8 @@ async function doTranslate(
   }
   status.textContent = "";
   result.textContent = tr.result || getString("hover-popup-empty");
+  // 译文已填入 → 显式重定位一次，保持与单词固定间距（多行译文不盖住单词）
+  repositionHoverPopup(innerWin, popup, range);
 
 /** Check if a string looks like IPA phonetic notation (contains Unicode IPA characters). */
 function looksLikeIPA(s: string): boolean {
@@ -1132,6 +1178,9 @@ function extractPhonetic(text: string): string {
   if (getPref("translateDisplayMode") === "full") {
     void fillDictionaryResult(word, reader, doc, dictArea, fontSize, lineHeight);
   }
+
+  // extraTasks 与 full 模式释义可能已同步填充 → 再重定位一次
+  repositionHoverPopup(innerWin, popup, range);
 
   // Start auto-close timer now that the translation is visible.
   schedulePopupAutoClose(innerWin);
@@ -1275,6 +1324,8 @@ function appendExtraResult(
   fontSize: string,
   lineHeight: string,
   isHtml?: boolean,
+  /** 分割线方向：top=分隔线在释义上方（释义位于核心区下方时）；bottom=在释义下方（释义位于核心区上方时） */
+  dividerPos: "top" | "bottom" = "top",
 ) {
   const tc = getThemeColors(doc.defaultView || undefined);
   const ex = doc.createElement("div");
@@ -1283,7 +1334,11 @@ function appendExtraResult(
   } else {
     ex.textContent = text;
   }
-  ex.style.cssText = `color:${tc.secondary};white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};margin-top:4px;border-top:1px solid ${tc.divider};padding-top:4px;`;
+  const divider =
+    dividerPos === "bottom"
+      ? `margin-bottom:4px;border-bottom:1px solid ${tc.divider};padding-bottom:4px;`
+      : `margin-top:4px;border-top:1px solid ${tc.divider};padding-top:4px;`;
+  ex.style.cssText = `color:${tc.secondary};white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};${divider}`;
   popup.appendChild(ex);
 }
 
@@ -1337,7 +1392,26 @@ async function fillDictionaryResult(
         .replace(/\s+(n\.|adj\.|adv\.|v\.|vi\.|vt\.|prep\.|conj\.|pron\.|int\.|网络释义)\s*/gi,
           (_: string, pos: string) => `\n<span style="color:${tc.primary}">${pos}</span> `)
         .replace(/^\n+/, '');
-      appendExtraResult(doc, container, formatted, fontSize, lineHeight, true);
+      appendExtraResult(
+        doc,
+        container,
+        formatted,
+        fontSize,
+        lineHeight,
+        true,
+        // 分割线方向与 dictArea 插入位置一致：弹窗在单词上方时释义在弹窗上部，
+        // 分隔线放释义底部（与下方核心区分隔）；否则放释义顶部
+        getPref("popupPosition") !== "bottom" ? "bottom" : "top",
+      );
+      // 释义已填入 → 重定位，保持与单词固定间距
+      const popup = doc.getElementById(POPUP_ID) as HTMLElement | null;
+      if (popup) {
+        repositionHoverPopup(
+          doc.defaultView as Window,
+          popup,
+          (popup as any).__hteRange as Range | undefined,
+        );
+      }
     }
   } catch (e: any) {
     dbg(`dict query failed: ${e?.message || e}`);
@@ -1434,6 +1508,86 @@ async function translateWord(
   return promise;
 }
 
+/**
+ * 安全重定位悬停弹窗（间距恒定修正用）：
+ *  - range 有效 → 重新锚定单词包围盒定位
+ *  - range 失效（pdf.js 文本层重建等）→ 保持当前位置，不跳回鼠标
+ *  - 任何异常 → 记录日志，不中断主流程
+ */
+function repositionHoverPopup(
+  innerWin: Window,
+  popup: HTMLElement,
+  range?: Range | null,
+): void {
+  try {
+    let hasAnchor = false;
+    try {
+      hasAnchor = (range?.getClientRects()?.length ?? 0) > 0;
+    } catch {
+      hasAnchor = false;
+    }
+    if (!hasAnchor) {
+      dbg(`reposition skip: range invalid, keeping current position`);
+      return;
+    }
+    positionPopup(innerWin, popup, range ?? undefined);
+  } catch (e) {
+    dbg(`reposition error: ${String((e as any)?.message || e)}`);
+  }
+}
+
+/**
+ * 同步弹窗内部布局与「实际显示位置」一致（间距恒定修正的一部分）：
+ * 核心区（单词/译文/+按钮，[data-hte-row]）永远靠近单词文本——
+ *  - placeBelow（弹窗在单词下方）：释义区在核心区之后（弹窗底部）
+ *  - !placeBelow（弹窗在单词上方）：释义区在核心区之前（弹窗顶部）
+ * 同时切换释义区分割线方向（border-top/bottom），保证分隔线始终位于
+ * 释义区与核心区之间。
+ */
+function syncPopupLayout(popup: HTMLElement, placeBelow: boolean): void {
+  try {
+    const dictArea = popup.querySelector<HTMLElement>("[data-hte-dict]");
+    const row = popup.querySelector<HTMLElement>("[data-hte-row]");
+    if (!dictArea || !row) return;
+    // 用字面量 4（DOCUMENT_POSITION_PRECEDING）替代 Node 全局——
+    // 主进程特权环境可能没有 Node 常量，直接用 compareDocumentPosition 位掩码
+    const dictPrecedesRow =
+      (dictArea.compareDocumentPosition(row) & 4) !== 0;
+    const wantPrecede = !placeBelow; // 上方模式：释义区在核心区之前
+    if (dictPrecedesRow !== wantPrecede) {
+      if (wantPrecede) {
+        popup.insertBefore(dictArea, row);
+      } else {
+        popup.appendChild(dictArea);
+      }
+    }
+    // 分割线方向始终与「实际显示位置」同步（独立于位置调整——即使位置无需
+    // 移动，也要修正异步填充的释义元素方向：释义创建时按设置偏好设方向，
+    // 翻转场景下可能与实际位置不一致，如偏好上方但翻转下方时释义在核心区
+    // 之后，分割线必须是 border-top 而不是创建时的 border-bottom）
+    const tc = getThemeColors(popup.ownerDocument?.defaultView || undefined);
+    for (const ex of Array.from(dictArea.children) as HTMLElement[]) {
+      if (placeBelow) {
+        ex.style.marginTop = "4px";
+        ex.style.borderTop = `1px solid ${tc.divider}`;
+        ex.style.paddingTop = "4px";
+        ex.style.marginBottom = "";
+        ex.style.borderBottom = "";
+        ex.style.paddingBottom = "";
+      } else {
+        ex.style.marginBottom = "4px";
+        ex.style.borderBottom = `1px solid ${tc.divider}`;
+        ex.style.paddingBottom = "4px";
+        ex.style.marginTop = "";
+        ex.style.borderTop = "";
+        ex.style.paddingTop = "";
+      }
+    }
+  } catch (e) {
+    dbg(`syncPopupLayout error: ${String((e as any)?.message || e)}`);
+  }
+}
+
 function positionPopup(innerWin: Window, popup: HTMLElement, range?: Range) {
   const vw = innerWin.innerWidth;
   const vh = innerWin.innerHeight;
@@ -1460,16 +1614,24 @@ function positionPopup(innerWin: Window, popup: HTMLElement, range?: Range) {
 
   let x: number;
   let y: number;
+  let placeBelow: boolean | null = null;
 
   if (anchor) {
     // 弹窗此时已在文档中（调用方先挂载再定位），实测实际宽高，
     // 避免估算误差导致上方翻转时弹窗离文本太远。
     const W = popup.offsetWidth || EST_W;
     const H = popup.offsetHeight || EST_H;
-    // 垂直：优先放文本下方，空间不足则翻转到上方（间距均为 GAP）。
+    // 垂直：按「弹窗位置」偏好决定默认方向（间距均为 GAP）。
+    //  - top（单词上方，默认）：优先放文本上方；上方空间不足且下方更大时翻转下方
+    //  - bottom（单词下方）：优先放文本下方；下方空间不足时翻转上方
     const spaceBelow = vh - anchor.bottom;
     const spaceAbove = anchor.top;
-    const placeBelow = spaceBelow >= spaceAbove || spaceBelow >= Math.min(H, 132);
+    const preferTop = getPref("popupPosition") !== "bottom";
+    if (preferTop) {
+      placeBelow = spaceAbove < Math.min(H, 132) && spaceBelow > spaceAbove;
+    } else {
+      placeBelow = spaceBelow >= spaceAbove || spaceBelow >= Math.min(H, 132);
+    }
     if (placeBelow) {
       y = anchor.bottom + GAP;
     } else {
@@ -1494,8 +1656,16 @@ function positionPopup(innerWin: Window, popup: HTMLElement, range?: Range) {
     if (y < 4) y = 4;
   }
 
+  // 先完成定位（x/y 已就绪），再同步内部布局——布局同步绝不影响弹窗位置
   popup.style.left = `${x}px`;
   popup.style.top = `${y}px`;
+  if (placeBelow !== null) {
+    try {
+      syncPopupLayout(popup, placeBelow);
+    } catch (e) {
+      dbg(`syncPopupLayout error: ${String((e as any)?.message || e)}`);
+    }
+  }
 }
 
 /* ----------------------------- wordbook button ----------------------------- */
@@ -1608,7 +1778,12 @@ function maybeAddWordButton(
 export async function fetchDictResult(
   word: string,
   reader: _ZoteroTypes.ReaderInstance,
-): Promise<{ result: string; audio: { text: string; url: string }[] } | null> {
+): Promise<{
+  result: string;
+  audio: { text: string; url: string }[];
+  /** 词典源 service 名（供 extractFirstDefinition 按词典专用策略提取）。 */
+  service: string;
+} | null> {
   try {
     const pdf = (Zotero as any).PDFTranslate;
     if (!pdf?.api?.translate) return null;
@@ -1628,17 +1803,33 @@ export async function fetchDictResult(
 
     const promise = (async () => {
       try {
+        // 显式传 langfrom/langto（与 translateWord 一致）：hover 目标总是
+        // 英文单词。缺省时 pdf-translate 会走 autoDetectLanguage 自动推断，
+        // 推断结果不稳定可能导致词典源请求失败（表现为 [请求错误]）。
         const task = await pdf.api.translate(word, {
           pluginID: config.addonID,
           service: dictSource,
           itemID: reader.itemID,
+          langfrom: "en",
+          langto: getPdfTranslateTargetLang(),
         });
-        if (!task?.result) {
+        // 必须同时满足 status=success 且有结果。词典服务请求可能 HTTP 成功但
+        // 解析失败（如 Bing 页面无 description meta → Parse error），此时
+        // task.result 是 "[请求错误] <服务名>..." 错误文本——若当作成功结果，
+        // 弹窗会原样显示「请求错误」（extractFirstDefinition 的 fallback 会把
+        // 含中文的错误行提取出来）。
+        if (!task || task.status !== "success" || !task.result) {
+          dbg(
+            `fetchDictResult: non-success for "${word}" (service=${dictSource}, status=${task?.status})`,
+          );
           dictCache.delete(cacheKey);
           return null;
         }
-        return { result: task.result, audio: task.audio || [] };
-      } catch {
+        return { result: task.result, audio: task.audio || [], service: dictSource };
+      } catch (e) {
+        dbg(
+          `fetchDictResult: request error for "${word}" (service=${dictSource}): ${String((e as any)?.message || e)}`,
+        );
         dictCache.delete(cacheKey);
         return null;
       }
@@ -1660,65 +1851,132 @@ export async function fetchDictResult(
  *   CambridgeDict: "uk ˈkɒmpjʊtə  "      → "ˈkɒmpjʊtə"
  */
 /** Extract first definition line from a dictionary result, stripping word-class labels. */
-function extractFirstDefinition(dict: string): string {
+/** 词性标记词表（用于识别定义行与剥离 POS 前缀）。 */
+const POS_WORDS =
+  "linkv|attrib|auxv|interrog|interj|prefix|suffix|abbr|modal|modv|phr|idm|comb|pref|suff|sing|pl|pred|na|noun|verb|adjective|adverb|preposition|conjunction|pronoun|interjection|article|determiner|numeral|quantifier|symbol|n|vt|vi|adj|adv|a|ad|prep|conj|pron|int|art|aux|det|num|qua|sym|v";
+
+/** 是否是音标/发音行（英 [...]、美 [...]、uk /.../、/ˈ.../ 等）。 */
+function isPhoneticLine(l: string): boolean {
+  return (
+    // 语言前缀 + 音标：英 [...]、美 [...]、uk /.../、us /.../（容忍 uk/'... 复制失真）
+    /^(英|美)\s*[\[/(]/.test(l) ||
+    /^(uk|us)\s*[/'\[(]/.test(l) ||
+    // /ˈ.../、[ˈ...]、(ˈ.../) 音标行
+    (/^[/\[(]/.test(l) && /[ˈˌəɜɪʊɔɒæɛʌθðʃʒŋɡʔɑɝɚɘɵɤɨ]/.test(l)) ||
+    // "uk ˈkɒmpjʊtə" / "ˈkɒmpjʊtə" 等无括号形式
+    (/^[a-z]+ /i.test(l) &&
+      /[ˈˌəɜɪʊɔɒæɛʌθðʃʒŋɡʔɑ]/.test(l) &&
+      !/[\u4e00-\u9fff]/.test(l))
+  );
+}
+
+/** 是否是单独一行的词性标记：剑桥/科林斯的 "noun"/"verb"，剑桥的 "noun[C]"、"verb[I,T]" 变体。 */
+function isBarePosLine(l: string): boolean {
+  return new RegExp(`^(${POS_WORDS})\\b(?:\\[[^\\]]*\\])?\\.?\\s*$`, "i").test(l);
+}
+
+/**
+ * 从词典结果中提取第一条释义（简译用）。
+ *
+ * 以 Translate for Zotero 的 dictSource（service 名）为分流依据，对每个词典
+ * 使用专用提取策略——各词典 result 格式差异很大，纯通用启发式易误判：
+ *  - webliodict（en-ja）：2.5.2 源码 process2 会把页面描述区标题「意味・対訳」
+ *    当作第一项释义。去掉标题前缀后剩余即全部释义，取第一段日文释义
+ *  - bingdict / youdaodict / haicidict / collinsdict / cambridgedict（en-zh）：
+ *    跳过音标行 / 单独词性行（含 noun[C] 变体）/ 剑桥英文定义行，
+ *    取第一个含中文的定义行
+ *  - freedictionaryapi（en-en）：取 [noun] 英文定义行
+ *  - gramotadict（ru）：取第一个有定义特征的行
+ *  - 未知 service：通用启发式兜底
+ */
+function extractFirstDefinition(dict: string, service?: string): string {
   if (!dict) return "";
-  // BingDict returns ALL definitions on a SINGLE LINE like:
-  //   "n. 图像；偶像；肖像； v. 反映；想像； 网络释义： 图片；影像"
-  // We need only the FIRST definition within the first word-class:
-  //   → "图像"
-  const lines = dict.replace(/\r/g, "").split("\n");
-  const defRe = /^\s*(linkv|attrib|auxv|interrog|interj|prefix|suffix|abbr|modal|modv|phr|idm|comb|pref|suff|sing|pl|pred|na|n|vt|vi|adj|adv|a|ad|prep|conj|pron|int|art|aux|det|num|qua|sym|v)\.\s*/i;
-  // Split at: semicolons (define separators), then next word-class, then 网络释义
-  const splitRe = /[;；]|\s+(?:linkv|attrib|auxv|interrog|interj|prefix|suffix|abbr|modal|modv|phr|idm|comb|pref|suff|sing|pl|pred|na|n|vt|vi|adj|adv|a|ad|prep|conj|pron|int|art|aux|det|num|qua|sym|v)\.\s|网络释义/i;
+  const svc = String(service || "").toLowerCase();
+  const lines = dict.replace(/\r/g, "").split("\n").map((l) => l.trim());
 
-  let result = "";
-
-  // 1. Try each line — match POS tag at start
-  const found = lines.find((l) => defRe.test(l));
-  if (found) {
-    const s = found.replace(defRe, "").trim();
-    result = s.split(splitRe)[0].trim();
+  // Weblio（en-ja）专用：标题「意味・対訳」后可能直接接全部释义（同一行）
+  if (svc.includes("weblio")) {
+    for (const l of lines) {
+      if (!l) continue;
+      const m = l.match(/^意味[・·]対訳\s*(.*)$/);
+      if (m) {
+        // 2.5.2 的 process2 用 `:` 连接标题与释义（如 "意味・対訳:....と..."），
+        // 去标题前缀后剩余可能以冒号等分隔符开头——先清理再取第一段，否则
+        // split 第一段为空 → 简译显示「(无译文)」
+        const rest = m[1].replace(/^[:：;；|、,，\s]+/, "").trim();
+        if (rest) return cleanDefinition(rest, true);
+        continue; // 标题独占一行 → 继续找
+      }
+      // 跳过区块标题/说明行（コア、項目を...、and/イディオム...）
+      if (l === "コア" || /^項目/.test(l) || /^[a-z]+\//i.test(l)) continue;
+      if (/[ぁ-んァ-ヶ]/.test(l)) return cleanDefinition(l, true);
+    }
+    return "";
   }
 
-  // 2. For single-line dicts: find POS tag ANYWHERE in the line
-  if (!result) {
-    for (const line of lines) {
-      const m = line.match(defRe);
-      if (m && m.index != null) {
-        const s = line.slice(m.index + m[0].length).trim();
-        const first = s.split(splitRe)[0].trim();
-        if (first) { result = first; break; }
+  let candidate = "";
+  // 1. zh 词典：第一个「剥 POS 前缀后行首是中文」的定义行（正式释义行）。
+  //    要求中文在行首或紧随 POS 前缀——避免选中英文标注开头的行
+  //    （如必应对 were 的 "short. we are;"，行首是英文，切第一段会得到
+  //    "short." 噪音）
+  for (const l of lines) {
+    if (!l || isPhoneticLine(l) || isBarePosLine(l)) continue;
+    // 剑桥英文定义行（"1. guideword definition"）位于其中文释义之前，跳过
+    if (/^\d+[.、)）]\s+[A-Za-z]/.test(l)) continue;
+    const stripped = l.replace(new RegExp(`^(${POS_WORDS})\\b\\.?\\s*`, "i"), "");
+    if (/[\u4e00-\u9fff]/.test(stripped) && !/^[A-Za-z]/.test(stripped)) {
+      candidate = l;
+      break;
+    }
+  }
+  // 2. 兜底：第一个含中文的行（如必应仅有网络释义行 "网络释义:是;..."）
+  if (!candidate) {
+    for (const l of lines) {
+      if (!l || isPhoneticLine(l) || isBarePosLine(l)) continue;
+      if (/[\u4e00-\u9fff]/.test(l)) {
+        candidate = l;
+        break;
       }
     }
   }
 
-  // 3. Fallback: first line with significant Chinese content (skip phonetic lines)
-  if (!result) {
-    const cnLine = lines.find((l) => {
-      const stripped = l.replace(/^[\s\u82f1\u7f8e\uff3a\uff4a\uff4b\uff35\uff2b\uff33\uff35\uff33]/i, "").trim();
-      return /[\u4e00-\u9fff]/.test(stripped);
-    });
-    if (cnLine) result = cnLine.trim();
+  // 2. 无中文（en-en / ru / 单释义行）：第一个非音标/非词性/非噪音行
+  if (!candidate) {
+    for (const l of lines) {
+      if (!l || isPhoneticLine(l) || isBarePosLine(l)) continue;
+      if (/^-{2,}$/.test(l)) continue; // 分隔线（freedictionaryapi 的 ----）
+      if (/^\[(example|audio|synonym|antonym|note)\]/i.test(l)) continue; // 元信息
+      candidate = l;
+      break;
+    }
   }
+  if (!candidate) return "";
 
-  // 4. Last fallback: first non-empty line
-  if (!result) {
-    const first = lines.find((l) => l.trim());
-    result = first ? first.trim() : "";
+  let r = candidate;
+  if (/[\u4e00-\u9fff]/.test(r)) {
+    r = r.replace(new RegExp(`^(${POS_WORDS})\\b\\.?\\s*`, "i"), "");
+  } else {
+    r = r.replace(/^\[[a-z]+\]\s*/i, "");
   }
+  return cleanDefinition(r, false);
+}
 
-  // 5. Post-process: strip parenthetical notes like
-  //    "(材料对光或辐射的)反射率" → "反射率"
-  //    "（材料对光或辐射的）反射率" → "反射率"  (full-width parens)
-  //    "（用于）强调"              → "强调"
-  //    "在(某处)发生"             → "在发生"
-  //    Only apply when meaningful content remains.
-  const stripped = result.replace(/\s*[(（][^)）]+[)）]\s*/g, " ").replace(/\s+/g, " ").trim();
-  if (stripped) {
-    result = stripped;
+/**
+ * 清理释义文本：去数字序号、按分隔符取第一段、清理括号注释。
+ * 中文/日文释义常以 冒号/分号/顿号/逗号/空格 分隔多个义项，取第一个；
+ * 英文定义（freedictionaryapi）保留完整句子，仅按分号/竖线切分。
+ */
+function cleanDefinition(r: string, jp: boolean): string {
+  // 必应网络释义行："网络释义:是;过去式;..." → 剥前缀，取冒号后的第一条
+  r = r.replace(/^\s*网络释义\s*[:：]\s*/, "");
+  r = r.replace(/^\s*\d+[.、)）]\s*/, "");
+  if (jp || /[\u4e00-\u9fff\u3040-\u30ff]/.test(r)) {
+    r = r.split(/[:：;；|、,，\s]+/)[0].trim();
+  } else {
+    r = r.split(/[;；|]/)[0].trim();
   }
-
-  return result;
+  r = r.replace(/\s*[(（][^)）]+[)）]\s*/g, " ").replace(/\s+/g, " ").trim();
+  return r;
 }
 
 function stripAudioText(raw: string): string {
@@ -1947,5 +2205,13 @@ function clearHover(innerWin: Window) {
 
 function clearPopup(innerWin: Window) {
   const el = innerWin.document.getElementById(POPUP_ID);
-  if (el) el.remove();
+  if (!el) return;
+  // 断开 ResizeObserver，避免移除后残留观察器
+  try {
+    const ro = (el as any).__hteResizeObserver as ResizeObserver | undefined;
+    ro?.disconnect();
+  } catch {
+    /* ignore */
+  }
+  el.remove();
 }

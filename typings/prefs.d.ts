@@ -17,6 +17,7 @@ declare namespace _ZoteroTypes {
       "hoverDelay": number;
       "disableOnSelection": boolean;
       "popupAutoCloseDelay": number;
+      "popupPosition": string;
       "translateDisplayMode": string;
       "translateEngine": string;
       "wordbookPlatform": string;

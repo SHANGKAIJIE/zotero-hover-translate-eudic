@@ -34,6 +34,7 @@ const DEFAULTS: Record<string, any> = {
   hoverDelay: 900,
   disableOnSelection: true,
   popupAutoCloseDelay: 30,
+  popupPosition: "top",
   translateDisplayMode: "simple",
   translateEngine: "dict" as string,
   enableEudicSync: false,
