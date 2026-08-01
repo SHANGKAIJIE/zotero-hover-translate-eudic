@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-0.2.8-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 
-<img width="883" height="435" alt="image" src="https://github.com/user-attachments/assets/60f38328-d2ce-423d-b621-3d6c0346fb15" />
+<img width="731" height="390" alt="image" src="https://github.com/user-attachments/assets/81cd19b2-7b02-48e7-a969-6b45c2b848f8" />
 
 ---
 
