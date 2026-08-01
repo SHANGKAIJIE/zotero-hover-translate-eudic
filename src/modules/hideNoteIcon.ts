@@ -1,0 +1,694 @@
+/**
+ * hideNoteIcon.ts
+ *
+ * 隐藏 PDF 阅读器中便签图标（CommentIcon / NoteIcon）。
+ *
+ * 渲染机制（Zotero 9 / Firefox ESR 140，实际运行源码 resource/reader/reader.js）：
+ *  - canvas 路径：Renderer._renderCommon() 中
+ *      _drawNote(annotation)          —— 独立 Note 的便签图标
+ *      _drawCommentIcons(annotations) —— 高亮/下划线/图片中带 comment 的便签图标
+ *    （注意：旧版本 _pushCommentIcons/_pushNote 已不存在，patch 它们无效）
+ *  - DOM React 路径：AnnotationLayer.setAnnotations() → _renderAnnotations()
+ *      → HighlightOrUnderline 组件中 if (annotation.comment) 决定 commentIconPosition
+ *      → 渲染 CommentIcon（#annotation-overlay shadow DOM）
+ *
+ * 隐藏策略（双路径同时 patch）：
+ *  1. DOM React 路径：包装 AnnotationLayer.prototype.setAnnotations，
+ *     对需要隐藏的 annotation 以副本将 comment 置空（不影响 _annotationsByID 弹窗数据），
+ *     使 HighlightOrUnderline 不渲染 CommentIcon；恢复时用原始数据重新 setAnnotations。
+ *  2. canvas 路径：包装 Renderer.prototype._drawNote / _drawCommentIcons，
+ *     直接过滤需要隐藏的 annotation；恢复原型后 _invalidateSignature() + render() 重绘。
+ *
+ * 支持模式（pref hideNoteIconMode）：
+ *  - word：仅按本插件创建的注释 ID（annotationTrackedIDs 跟踪列表）精确识别隐藏，
+ *    不使用标签/文本等启发式判定（避免标签相同导致误判），也不依赖标注颜色
+ *  - all：隐藏所有高亮/下划线/图片注释
+ * 独立便签图标（type=note）不受 hideNoteIconMode 限制，仅由 hideNoteIconNotes
+ * （隐藏/不隐藏）独立控制；总开关 hideNoteIcon 关闭时全部不隐藏。
+ *
+ * 注释 ID 跟踪（annotationTrackedIDs pref，JSON: {"附件itemID": ["KEY", ...]}）：
+ *  - 创建：annotationSync 保存注释成功后调用 recordAnnotationID() 记录
+ *  - 判定：word 模式按 annotation.id 是否在跟踪列表中精确识别
+ *  - 清理：① 监听 Zotero Notifier item 删除/回收站事件，按 key 即时移除
+ *          ② 打开 PDF 注入时返回当前注释 ID 集合，主进程对照该附件清理残留（自愈）
+ */
+import { getPref, setPref, registerPrefObserver } from "../utils/prefs";
+import { getAllReaders, getReaderInnerWindow } from "../utils/window";
+
+const PREF_KEYS = [
+  "hideNoteIcon",
+  "hideNoteIconMode",
+  "hideNoteIconNotes",
+  "annotationTrackedIDs",
+] as const;
+
+/** 注释跟踪列表 pref 键。 */
+const TRACKED_PREF = "annotationTrackedIDs";
+
+/** iframe window 上的 patch 状态 key（V2：新双路径方案，与旧 V1 隔离）。 */
+const STATE_KEY = "__hteNoteIconPatchV2";
+
+/** 已 attach 的 reader 集合（防重复 patch）。 */
+const attachedReaders = new Set<any>();
+
+/** 轮询定时器。 */
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+/** 已注册的 pref observer symbols。 */
+const prefObservers: symbol[] = [];
+
+/** item 删除/回收站观察器 ID（清理跟踪列表）。 */
+let itemNotifierID: string | null = null;
+
+/**
+ * 从 notifier delete/trash 事件的 extraData 中尽力提取注释 key 列表。
+ * Zotero 广播格式有差异（extraData.keys 或按 id 分组的 data），做防御性提取。
+ */
+function extractKeysFromExtraData(
+  ids: Array<string | number>,
+  extraData: any,
+): string[] {
+  const out: string[] = [];
+  const push = (v: unknown) => {
+    if (typeof v === "string" && v) out.push(v);
+  };
+  if (extraData) {
+    // 顶层 keys 数组
+    if (Array.isArray(extraData.keys)) extraData.keys.forEach(push);
+    // 按 id 分组的 data（Zotero.Notifier 对多 id 事件的合并格式）
+    if (typeof extraData === "object") {
+      for (const id of ids) {
+        const d = extraData[String(id)] ?? extraData[id];
+        if (d && typeof d === "object" && Array.isArray(d.keys)) {
+          d.keys.forEach(push);
+        }
+      }
+    }
+  }
+  // 去重
+  return [...new Set(out)];
+}
+
+/** 注册 item 删除观察器：注释删除时即时清理跟踪列表。 */
+function registerItemNotifier(): void {
+  if (itemNotifierID) return;
+  try {
+    const observer = {
+      notify: async (
+        event: string,
+        type: string,
+        ids: Array<string | number>,
+        extraData: { [key: string]: any },
+      ) => {
+        if (type !== "item") return;
+        if (event !== "delete" && event !== "trash") return;
+        const keys = extractKeysFromExtraData(ids || [], extraData);
+        if (keys.length) {
+          noteLog(`item ${event}: removing tracked ids=${keys.join(",")}`);
+          removeTrackedIDs(keys);
+        }
+      },
+    };
+    itemNotifierID = Zotero.Notifier.registerObserver(observer, ["item"]);
+  } catch (e) {
+    noteLog("registerItemNotifier error: " + dumpErr(e));
+    itemNotifierID = null;
+  }
+}
+
+function unregisterItemNotifier(): void {
+  if (itemNotifierID) {
+    try {
+      Zotero.Notifier.unregisterObserver(itemNotifierID);
+    } catch {
+      /* ignore */
+    }
+    itemNotifierID = null;
+  }
+}
+
+function noteLog(msg: string) {
+  try {
+    (Zotero as any)?.debug?.(`[hte-noteicon] ${msg}`);
+    console?.log?.(`[hte-noteicon] ${msg}`);
+  } catch {
+    /* ignore */
+  }
+}
+
+function dumpErr(e: unknown): string {
+  try {
+    if (e && typeof e === "object" && "stack" in e) {
+      return String((e as any).stack || e);
+    }
+    return String(e);
+  } catch {
+    return "[unstringifiable error]";
+  }
+}
+
+interface PatchParams {
+  mode: "off" | "word" | "all";
+  hideNotes: boolean;
+  /** 本插件创建的注释 ID 列表（word 模式唯一判定依据）。 */
+  trackedIDs: string[];
+}
+
+/** 读取跟踪列表（JSON: {"附件itemID": ["KEY", ...]}）。防御性解析。 */
+function readTrackedMap(): Record<string, string[]> {
+  try {
+    const raw = String(getPref(TRACKED_PREF) || "{}");
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      return obj as Record<string, string[]>;
+    }
+  } catch {
+    /* ignore */
+  }
+  return {};
+}
+
+/** 写回跟踪列表。 */
+function writeTrackedMap(map: Record<string, string[]>): void {
+  try {
+    setPref(TRACKED_PREF, JSON.stringify(map));
+  } catch (e) {
+    noteLog("writeTrackedMap error: " + dumpErr(e));
+  }
+}
+
+/**
+ * 记录一个由本插件创建的注释 ID（供 word 模式精确识别）。
+ * @param attachmentID PDF 附件 itemID
+ * @param key 注释 8 位 key（= annotation.id / item.key）
+ */
+export function recordAnnotationID(attachmentID: number, key: string): void {
+  if (!key) return;
+  try {
+    const map = readTrackedMap();
+    const aid = String(attachmentID);
+    const list = Array.isArray(map[aid]) ? map[aid] : [];
+    if (!list.includes(key)) {
+      list.push(key);
+      map[aid] = list;
+      writeTrackedMap(map);
+      noteLog(`tracked annotation: attachment=${aid} key=${key}`);
+    }
+  } catch (e) {
+    noteLog("recordAnnotationID error: " + dumpErr(e));
+  }
+}
+
+/** 扁平化全部跟踪 ID（供注入判定使用）。 */
+function getAllTrackedIDs(): string[] {
+  const map = readTrackedMap();
+  const set = new Set<string>();
+  for (const list of Object.values(map)) {
+    if (Array.isArray(list)) {
+      for (const k of list) {
+        if (typeof k === "string" && k) set.add(k);
+      }
+    }
+  }
+  return [...set];
+}
+
+/** 按 key 移除跟踪记录（key 全局唯一，跨附件匹配）。 */
+function removeTrackedIDs(keys: string[]): void {
+  if (!keys || !keys.length) return;
+  const keySet = new Set(keys.map((k) => String(k)));
+  const map = readTrackedMap();
+  let changed = false;
+  for (const aid of Object.keys(map)) {
+    const before = map[aid].length;
+    map[aid] = map[aid].filter((k) => !keySet.has(k));
+    if (map[aid].length !== before) changed = true;
+    if (!map[aid].length) delete map[aid];
+  }
+  if (changed) {
+    writeTrackedMap(map);
+    noteLog(`removed tracked ids: ${keys.join(",")}`);
+  }
+}
+
+/**
+ * 对照自愈：某附件的真实注释集合为 liveKeys 时，清理该附件下已不存在的跟踪 ID。
+ * 在 reader 注入返回后调用（避免列表因删除事件丢失而无限增长）。
+ */
+function pruneTrackedIDsForAttachment(
+  attachmentID: number | string | undefined,
+  liveKeys: string[],
+): void {
+  if (!attachmentID) return;
+  const aid = String(attachmentID);
+  const map = readTrackedMap();
+  const list = Array.isArray(map[aid]) ? map[aid] : [];
+  if (!list.length) return;
+  const live = new Set((liveKeys || []).map((k) => String(k)));
+  const pruned = list.filter((k) => live.has(k));
+  if (pruned.length !== list.length) {
+    if (pruned.length) {
+      map[aid] = pruned;
+    } else {
+      delete map[aid];
+    }
+    writeTrackedMap(map);
+    noteLog(
+      `pruned attachment=${aid}: ${list.length - pruned.length} stale id(s) removed`,
+    );
+  }
+}
+
+function getPatchParams(): PatchParams {
+  const enabled = !!getPref("hideNoteIcon");
+  const mode: PatchParams["mode"] = enabled
+    ? getPref("hideNoteIconMode") === "all"
+      ? "all"
+      : "word"
+    : "off";
+  // hideNoteIconNotes 是 boolean pref，但旧版 menulist 自动绑定可能把值写成
+  // 字符串 "true"/"false"（非空字符串恒 truthy）。必须严格按 "true" 判定，
+  // 否则独立便签开关失效（!!"false" === true）。
+  const notesRaw = String(getPref("hideNoteIconNotes"));
+  return {
+    mode,
+    hideNotes: notesRaw === "true",
+    trackedIDs: getAllTrackedIDs(),
+  };
+}
+
+/**
+ * 构建注入 reader iframe 的 patch 源码（字符串，在 iframe 全局作用域执行）。
+ *
+ * 双路径：
+ *  - AnnotationLayer.prototype.setAnnotations（DOM React 路径，影响高亮/下划线/图片便签）
+ *  - Renderer.prototype._drawNote / _drawCommentIcons（canvas 路径）
+ *
+ * state 缓存在 window[STATE_KEY]，重复注入时按 prototype 去重、只更新参数并重新应用。
+ */
+function buildPatchSource(params: PatchParams): string {
+  const { mode, hideNotes, trackedIDs } = params;
+  const MODE = JSON.stringify(mode);
+  const HIDE_NOTES = hideNotes ? "true" : "false";
+  const TRACKED_IDS = JSON.stringify(trackedIDs || []);
+  return `(() => {
+    const stateKey = ${JSON.stringify(STATE_KEY)};
+    const root = window;
+    let state = root[stateKey];
+    if (!state) {
+      state = root[stateKey] = {
+        layerPatches: [],
+        rendererPatches: [],
+        counters: {
+          setAnnotations: 0,
+          setAnnotationsHidden: 0,
+          drawNote: 0,
+          drawNoteHidden: 0,
+          commentIcons: 0,
+          commentIconsTotal: 0,
+          commentIconsFiltered: 0,
+          redrawPages: 0,
+        },
+      };
+    }
+    const MODE = ${MODE};
+    const HIDE_NOTES = ${HIDE_NOTES};
+    const TRACKED_IDS = ${TRACKED_IDS};
+    // 参数签名：仅参数变化（all↔word、独立注释开关、跟踪 ID）时也要强制重绘，
+    // 因为此时原型没有替换，changed 不会置 true，canvas 保持旧画面。
+    const paramsKey = [MODE, HIDE_NOTES, TRACKED_IDS.join("|")].join("|");
+    let changed = state.lastParamsKey !== paramsKey;
+    state.lastParamsKey = paramsKey;
+
+    // V3 修复：最新参数与判定函数挂到 state。
+    // 之前 MODE/HIDE_NOTES 被 wrapper 闭包捕获，缓存到 state.layerPatches/
+    // state.rendererPatches 后，后续注入即使更新了 patch.enabled（主开关 off/on
+    // 因此生效），wrapper 内部的 shouldHide 仍是旧闭包（旧 MODE），导致
+    // word↔all 切换、hideNoteIconNotes 开关都无效。现在 wrapper 每次
+    // 从 state 读取最新参数与函数，任何参数变化立即生效。
+    state.params = { MODE, HIDE_NOTES, TRACKED_IDS };
+    // 判定某个注释的图标是否应被隐藏（每次从 state.params 读最新参数）
+    state.shouldHide = (annotation) => {
+      const p = state.params;
+      if (!annotation || p.MODE === "off") return false;
+      const type = annotation.type;
+      // 独立便签图标：仅由独立开关控制（不受 mode 限制）
+      if (type === "note") return p.HIDE_NOTES;
+      if (type !== "highlight" && type !== "underline" && type !== "image") return false;
+      if (p.MODE === "all") return true;
+      // word 模式：仅按注释 ID 精确识别本插件创建的注释（无启发式判定，
+      // 避免标签相同/文本相似导致误判；不依赖标注颜色）
+      return !!(annotation.id && p.TRACKED_IDS.includes(annotation.id));
+    };
+    // DOM React 路径专用判定：note 类型不走这里（其图标由 canvas _drawNote 处理，
+    // comment 是 note 内容，绝不能置空）
+    state.shouldHideDom = (annotation) => {
+      if (!annotation || annotation.type === "note") return false;
+      return state.shouldHide(annotation);
+    };
+    const patchLayer = (layer) => {
+      if (!layer || typeof layer.setAnnotations !== "function") return;
+      const proto = Object.getPrototypeOf(layer);
+      if (!proto) return;
+      let rec = state.layerPatches.find((p) => p.proto === proto);
+      if (!rec) {
+        const orig = proto.setAnnotations;
+        rec = {
+          proto,
+          orig,
+          enabled: false,
+          wrapper: function (annotations) {
+            const full = Array.isArray(annotations) ? annotations : [];
+            this.__hteFullAnnotations = full;
+            let render = full;
+            if (rec.enabled) {
+              state.counters.setAnnotations += 1;
+              const hidden = full.filter((a) => state.shouldHideDom(a));
+              state.counters.setAnnotationsHidden += hidden.length;
+              render = full.map((a) =>
+                state.shouldHideDom(a) ? Object.assign({}, a, { comment: null }) : a
+              );
+            }
+            const result = orig.call(this, render);
+            // 弹窗/数据源保持原始 comment
+            if (full.length && this._annotationsByID) {
+              this._annotationsByID = new Map(full.map((a) => [a.id, a]));
+            }
+            return result;
+          },
+        };
+        proto.setAnnotations = rec.wrapper;
+        state.layerPatches.push(rec);
+      }
+      rec.enabled = MODE !== "off";
+      if (MODE === "off") {
+        // 恢复：还原原型并用原始数据重新渲染
+        if (proto.setAnnotations === rec.wrapper) {
+          proto.setAnnotations = rec.orig;
+          if (layer.__hteFullAnnotations) {
+            rec.orig.call(layer, layer.__hteFullAnnotations);
+            layer.__hteFullAnnotations = undefined;
+            changed = true;
+          }
+        }
+      } else {
+        if (proto.setAnnotations !== rec.wrapper) {
+          rec.orig = proto.setAnnotations;
+          proto.setAnnotations = rec.wrapper;
+        }
+        // 立即用当前数据重渲染
+        if (layer._annotations) {
+          rec.wrapper.call(layer, layer.__hteFullAnnotations || layer._annotations);
+          changed = true;
+        }
+      }
+    };
+
+    // ===== 2. canvas 路径：包装 Renderer._drawNote / _drawCommentIcons =====
+    const installRendererPatch = (renderer) => {
+      const prototype = renderer && Object.getPrototypeOf(renderer);
+      if (!prototype) return;
+      let patch = state.rendererPatches.find((p) => p.prototype === prototype);
+      if (!patch) {
+        patch = {
+          prototype,
+          originalDrawNote: null,
+          originalCommentIcons: null,
+          wrapperDrawNote: null,
+          wrapperCommentIcons: null,
+          enabled: false,
+        };
+        if (typeof prototype._drawNote === "function") {
+          patch.originalDrawNote = prototype._drawNote;
+          patch.wrapperDrawNote = function (annotation) {
+            if (patch.enabled) {
+              state.counters.drawNote += 1;
+              if (state.shouldHide(annotation)) {
+                state.counters.drawNoteHidden += 1;
+                return;
+              }
+            }
+            return patch.originalDrawNote.call(this, annotation);
+          };
+        }
+        if (typeof prototype._drawCommentIcons === "function") {
+          patch.originalCommentIcons = prototype._drawCommentIcons;
+          patch.wrapperCommentIcons = function (annotations) {
+            if (patch.enabled && Array.isArray(annotations)) {
+              state.counters.commentIcons += 1;
+              state.counters.commentIconsTotal += annotations.length;
+              const hidden = annotations.filter((a) => state.shouldHide(a));
+              state.counters.commentIconsFiltered += hidden.length;
+              annotations = annotations.filter((a) => !state.shouldHide(a));
+            }
+            return patch.originalCommentIcons.call(this, annotations);
+          };
+        }
+        state.rendererPatches.push(patch);
+      }
+      patch.enabled = MODE !== "off";
+      if (MODE === "off") {
+        if (patch.wrapperDrawNote && prototype._drawNote === patch.wrapperDrawNote) {
+          prototype._drawNote = patch.originalDrawNote;
+          changed = true;
+        }
+        if (patch.wrapperCommentIcons && prototype._drawCommentIcons === patch.wrapperCommentIcons) {
+          prototype._drawCommentIcons = patch.originalCommentIcons;
+          changed = true;
+        }
+      } else {
+        if (patch.wrapperDrawNote && prototype._drawNote !== patch.wrapperDrawNote) {
+          patch.originalDrawNote = prototype._drawNote;
+          prototype._drawNote = patch.wrapperDrawNote;
+          changed = true;
+        }
+        if (patch.wrapperCommentIcons && prototype._drawCommentIcons !== patch.wrapperCommentIcons) {
+          patch.originalCommentIcons = prototype._drawCommentIcons;
+          prototype._drawCommentIcons = patch.wrapperCommentIcons;
+          changed = true;
+        }
+      }
+    };
+
+    // 遍历主/次视图的所有页面
+    const views = [root._reader?._primaryView, root._reader?._secondaryView].filter(Boolean);
+    for (const view of views) {
+      for (const page of view._pages ?? []) {
+        installRendererPatch(page?._pageRenderer);
+        installRendererPatch(page?._detailRenderer);
+        patchLayer(page?._pageRenderer?._layer);
+        patchLayer(page?._detailRenderer?._layer);
+      }
+    }
+
+    // 重渲染：canvas 路径失效签名并重绘；DOM 路径强制同步渲染
+    if (changed) {
+      for (const view of views) {
+        for (const page of view._pages ?? []) {
+          state.counters.redrawPages += 1;
+          page?._pageRenderer?._invalidateSignature?.();
+          page?._detailRenderer?._invalidateSignature?.();
+          page?.render?.();
+          page?._pageRenderer?._layer?._renderAnnotations?.(true);
+        }
+      }
+    }
+    // 诊断：返回自上次注入以来的计数增量 + 环境信息
+    const prevCounters = state.lastCounters || {};
+    const counters = {};
+    for (const k of Object.keys(state.counters)) {
+      counters[k] = (state.counters[k] || 0) - (prevCounters[k] || 0);
+    }
+    state.lastCounters = Object.assign({}, state.counters);
+    // 收集当前 reader 中全部注释的 ID（供主进程对照清理跟踪列表，自愈删除事件遗漏）
+    let liveKeys = [];
+    try {
+      const all = [];
+      for (const view of views) {
+        for (const page of view._pages ?? []) {
+          const layer = page?._pageRenderer?._layer;
+          if (layer && Array.isArray(layer._annotations)) all.push(...layer._annotations);
+        }
+      }
+      liveKeys = [...new Set(all.map((a) => a && a.id).filter(Boolean))];
+    } catch {
+      /* ignore */
+    }
+    return {
+      mode: MODE,
+      hideNotes: HIDE_NOTES,
+      href: String(window.location.href).slice(0, 200),
+      readerFound: !!root._reader,
+      views: views.length,
+      pages: views.reduce((n, v) => n + (v._pages ? v._pages.length : 0), 0),
+      layers: state.layerPatches.length,
+      renderers: state.rendererPatches.length,
+      changed,
+      counters,
+      keys: liveKeys,
+    };
+  })()`;
+}
+
+/** 在单个 reader iframe 中应用/恢复 patch。 */
+function attachToReader(reader: any): boolean {
+  const win = getReaderInnerWindow(reader);
+  if (!win) {
+    noteLog("attach fail: no inner window");
+    return false;
+  }
+  try {
+    const ok = win.eval.call(win, buildPatchSource(getPatchParams()));
+    if (ok && typeof ok === "object") {
+      try {
+        noteLog("attach ok: " + JSON.stringify(ok));
+      } catch (_) {
+        noteLog("attach ok: [json error]");
+      }
+      // 对照自愈：以当前附件的真实注释集合清理跟踪列表中的残留 ID
+      const attachmentID = (reader as any)?.itemID ?? (reader as any)?._itemID ?? (reader as any)?._attachmentItemID;
+      if (Array.isArray(ok.keys)) {
+        pruneTrackedIDsForAttachment(attachmentID, ok.keys);
+      }
+      return true;
+    }
+    noteLog("attach returned non-true: " + String(ok));
+    return false;
+  } catch (e) {
+    noteLog("attach error: " + dumpErr(e));
+    return false;
+  }
+}
+
+/**
+ * 对所有已发现 reader 重新应用当前 pref（pref 变化/插件启用时调用）。
+ *
+ * 注意：必须对每个 reader 每次都重新注入，不能因为已 attach 就跳过。
+ * 注入代码本身幂等：它按最新 pref 更新 iframe 内 patch 状态并重绘/恢复。
+ * 旧实现用 `attachedReaders.has(reader) ||` 短路跳过，导致 pref 变更
+ * （取消勾选/切换 all/word/独立注释开关）永远无法到达 iframe，
+ * 表现为"取消勾选仍隐藏、切 word 仍是 all、独立注释仍隐藏"。
+ */
+function reapplyAll(): number {
+  let okCount = 0;
+  const readers = getAllReaders();
+  for (const reader of readers) {
+    try {
+      if (attachToReader(reader)) {
+        attachedReaders.add(reader);
+        okCount++;
+      }
+    } catch (e) {
+      noteLog("reapply error: " + dumpErr(e));
+    }
+  }
+  noteLog(`reapply done: ${okCount}/${readers.length}`);
+  return okCount;
+}
+
+/** 轮询扫描新打开的 reader（弹窗/标签页切换场景）。 */
+function scanAllReaders(): void {
+  for (const reader of getAllReaders()) {
+    if (attachedReaders.has(reader)) continue;
+    if (attachToReader(reader)) {
+      attachedReaders.add(reader);
+    }
+  }
+}
+
+// 上次观察到的 patch 参数签名（保险丝用）
+let lastParamsKey = "";
+
+/**
+ * 保险丝：即使 pref observer 因任何原因（版本差异、注册失败等）未触发，
+ * 轮询也能在 3 秒内发现 pref 变化并重新应用。
+ * getPatchParams() 按最新 pref 计算，重复应用幂等。
+ */
+function pollPrefParams(): void {
+  const key = JSON.stringify(getPatchParams());
+  if (key !== lastParamsKey) {
+    lastParamsKey = key;
+    noteLog("pref params changed via poll: " + key);
+    try {
+      reapplyAll();
+    } catch (e) {
+      noteLog("reapply error: " + dumpErr(e));
+    }
+  }
+}
+
+/** 初始化：注册 pref observer + 启动轮询 + 立即应用。 */
+export function initHideNoteIcon(): void {
+  if (pollTimer) return;
+  // 规范化历史遗留数据：旧版 menulist 自动绑定可能把 hideNoteIconNotes 写成
+  // 字符串 "true"/"false"，重新写回 boolean，避免 truthy 误判。
+  try {
+    const notesRaw = getPref("hideNoteIconNotes");
+    if (typeof notesRaw !== "boolean") {
+      setPref("hideNoteIconNotes", String(notesRaw) === "true");
+      noteLog("normalized hideNoteIconNotes: " + String(notesRaw));
+    }
+  } catch (e) {
+    noteLog("normalize error: " + dumpErr(e));
+  }
+  lastParamsKey = JSON.stringify(getPatchParams());
+  pollTimer = setInterval(() => {
+    try {
+      scanAllReaders();
+      pollPrefParams();
+    } catch (e) {
+      noteLog("poll error: " + dumpErr(e));
+    }
+  }, 3000);
+
+  for (const key of PREF_KEYS) {
+    const sym = registerPrefObserver(key, () => {
+      lastParamsKey = JSON.stringify(getPatchParams());
+      noteLog("pref changed: " + key + " -> " + lastParamsKey);
+      try {
+        reapplyAll();
+      } catch (e) {
+        noteLog("reapply error: " + dumpErr(e));
+      }
+    });
+    if (sym) prefObservers.push(sym);
+  }
+
+  // 监听注释删除/回收站事件，即时清理跟踪列表
+  registerItemNotifier();
+
+  reapplyAll();
+  noteLog("init done");
+}
+
+/** 清理：移除 observer、停止轮询、恢复所有 reader。 */
+export function cleanupHideNoteIcon(): void {
+  for (const sym of prefObservers) {
+    try {
+      (Zotero.Prefs as any)?.unregisterObserver?.(sym);
+    } catch {
+      /* ignore */
+    }
+  }
+  prefObservers.length = 0;
+
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  unregisterItemNotifier();
+
+  // 恢复：以 off 模式重放 patch，卸载 wrapper
+  for (const reader of attachedReaders) {
+    const win = getReaderInnerWindow(reader);
+    if (!win) continue;
+    try {
+      win.eval.call(win, buildPatchSource({ mode: "off", hideNotes: false, trackedIDs: [] }));
+      noteLog("cleanup restore ok");
+    } catch (e) {
+      noteLog("cleanup restore error: " + dumpErr(e));
+    }
+  }
+  attachedReaders.clear();
+}

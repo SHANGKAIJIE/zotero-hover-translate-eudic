@@ -6,7 +6,7 @@
   html|h3 {
     font-size: 24px !important;
     font-weight: 700 !important;
-    margin: 0 0 6px 0 !important;
+    margin: 16px 0 6px 0 !important;
   }
   /* Consistent label column */
   .pref-label {
@@ -27,7 +27,7 @@
 
   <!-- ============ 3.1 基础功能设置 ============ -->
   <groupbox>
-    <label><html:h3 data-l10n-id="pref-section-basic"></html:h3></label>
+    <label><html:h2 data-l10n-id="pref-section-basic"></html:h2></label>
 
     <checkbox
       id="zotero-prefpane-__addonRef__-enableHighlight"
@@ -40,33 +40,16 @@
       <html:input
         type="color"
         id="zotero-prefpane-__addonRef__-highlightColorPicker"
-        style="width: 40px; height: 24px;"
+        style="width: 40px; height: 24px; padding: 0; border: none; cursor: pointer;"
       />
-      <label data-l10n-id="pref-highlightColorR" style="margin-left: 8px; width: 12px" />
+      <label data-l10n-id="pref-highlightColorHex" style="margin-left: 8px" />
       <html:input
-        type="number"
-        min="0"
-        max="255"
-        id="zotero-prefpane-__addonRef__-highlightColorR"
-        style="width: 50px; margin-left: 2px;"
+        type="text"
+        id="zotero-prefpane-__addonRef__-highlightColorHex"
+        style="width: 70px; margin-left: 4px;"
+        placeholder="#ffd400"
       />
-      <label data-l10n-id="pref-highlightColorG" style="margin-left: 6px; width: 12px" />
-      <html:input
-        type="number"
-        min="0"
-        max="255"
-        id="zotero-prefpane-__addonRef__-highlightColorG"
-        style="width: 50px; margin-left: 2px;"
-      />
-      <label data-l10n-id="pref-highlightColorB" style="margin-left: 6px; width: 12px" />
-      <html:input
-        type="number"
-        min="0"
-        max="255"
-        id="zotero-prefpane-__addonRef__-highlightColorB"
-        style="width: 50px; margin-left: 2px;"
-      />
-      <label data-l10n-id="pref-highlightColorA" style="margin-left: 6px; width: 12px" />
+      <label data-l10n-id="pref-highlightColorAlpha" style="margin-left: 8px" />
       <html:input
         type="number"
         min="0"
@@ -172,7 +155,7 @@
 
   <!-- ============ 3.2 欧路词典生词本设置 ============ -->
   <groupbox>
-    <label><html:h3 data-l10n-id="pref-section-eudic"></html:h3></label>
+    <label><html:h2 data-l10n-id="pref-section-eudic"></html:h2></label>
 
     <checkbox
       id="zotero-prefpane-__addonRef__-enableEudicSync"
@@ -280,6 +263,7 @@
             style="flex: 1; min-width: 240px"
             placeholder="留空则保存在 Zotero 配置目录"
           />
+          <button id="__addonRef__-chooseLocalDirBtn" data-l10n-id="pref-local-chooseDir" />
         </hbox>
       </vbox>
 
@@ -328,6 +312,19 @@
       </hbox>
 
       <hbox align="center">
+        <label class="pref-label" data-l10n-id="pref-wordButtonPosition" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-wordButtonPosition"
+          preference="wordButtonPosition"
+        >
+          <menupopup>
+            <menuitem value="left" data-l10n-id="pref-wordButtonPosition-left" />
+            <menuitem value="right" data-l10n-id="pref-wordButtonPosition-right" />
+          </menupopup>
+        </menulist>
+      </hbox>
+
+      <hbox align="center">
         <label class="pref-label" data-l10n-id="pref-addWordMode" />
         <menulist
           id="zotero-prefpane-__addonRef__-addWordMode"
@@ -360,9 +357,188 @@
     </vbox>
   </groupbox>
 
-  <!-- ============ 3.3 导出生词本 ============ -->
+  <!-- ============ 3.3 注释设置 ============ -->
   <groupbox>
-    <label><html:h3 data-l10n-id="pref-section-export"></html:h3></label>
+    <label><html:h2 data-l10n-id="pref-section-annotation"></html:h2></label>
+
+    <checkbox
+      id="zotero-prefpane-__addonRef__-enableAnnotationSync"
+      preference="enableAnnotationSync"
+      data-l10n-id="pref-enableAnnotationSync"
+    />
+
+    <vbox id="__addonRef__-annotationConfigBox">
+      <checkbox
+        id="zotero-prefpane-__addonRef__-enableAnnotationTranslate"
+        preference="enableAnnotationTranslate"
+        data-l10n-id="pref-enableAnnotationTranslate"
+      />
+
+      <hbox align="center">
+        <label class="pref-label" data-l10n-id="pref-annotationTranslatePosition" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-annotationTranslatePosition"
+          preference="annotationTranslatePosition"
+        >
+          <menupopup>
+            <menuitem value="comment" data-l10n-id="pref-annotationTranslatePosition-comment" />
+            <menuitem value="body" data-l10n-id="pref-annotationTranslatePosition-body" />
+          </menupopup>
+        </menulist>
+      </hbox>
+
+      <!-- 翻译保存顺序 (only when position=body) -->
+      <hbox align="center" id="__addonRef__-annotationTranslatePositionInBodyRow">
+        <label class="pref-label" data-l10n-id="pref-annotationTranslatePositionInBody" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-annotationTranslatePositionInBody"
+          preference="annotationTranslatePositionInBody"
+        >
+          <menupopup>
+            <menuitem value="before" data-l10n-id="pref-annotationTranslatePositionInBody-before" />
+            <menuitem value="after" data-l10n-id="pref-annotationTranslatePositionInBody-after" />
+          </menupopup>
+        </menulist>
+      </hbox>
+
+      <!-- 分隔方式 (only when position=body) -->
+      <hbox align="center" id="__addonRef__-annotationSeparatorModeBodyRow">
+        <label class="pref-label" data-l10n-id="pref-annotationSeparatorMode" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-annotationSeparatorModeBody"
+          preference="annotationSeparatorMode"
+        >
+          <menupopup>
+            <menuitem value="newline" data-l10n-id="pref-annotationSeparatorMode-newline" />
+            <menuitem value="separator" data-l10n-id="pref-annotationSeparatorMode-separator" />
+          </menupopup>
+        </menulist>
+        <html:input
+          type="text"
+          id="zotero-prefpane-__addonRef__-annotationSeparatorBody"
+          preference="annotationSeparator"
+          style="width: 120px; margin-left: 4px;"
+        />
+        <label style="color: #888; font-style: italic; margin-left: 6px" data-l10n-id="pref-annotationSeparator-hint" />
+      </hbox>
+
+      <!-- 单词保存位置 (only when position=comment) -->
+      <hbox align="center" id="__addonRef__-annotationWordPositionRow">
+        <label class="pref-label" data-l10n-id="pref-annotationWordPosition" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-annotationWordPosition"
+          preference="annotationWordPosition"
+        >
+          <menupopup>
+            <menuitem value="none" data-l10n-id="pref-annotationWordPosition-none" />
+            <menuitem value="comment" data-l10n-id="pref-annotationWordPosition-comment" />
+          </menupopup>
+        </menulist>
+      </hbox>
+
+      <!-- 分隔方式 (only when position=comment && wordPosition=comment) -->
+      <hbox align="center" id="__addonRef__-annotationSeparatorModeCommentRow">
+        <label class="pref-label" data-l10n-id="pref-annotationSeparatorMode" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-annotationSeparatorModeComment"
+          preference="annotationSeparatorMode"
+        >
+          <menupopup>
+            <menuitem value="newline" data-l10n-id="pref-annotationSeparatorMode-newline" />
+            <menuitem value="separator" data-l10n-id="pref-annotationSeparatorMode-separator" />
+          </menupopup>
+        </menulist>
+        <html:input
+          type="text"
+          id="zotero-prefpane-__addonRef__-annotationSeparatorComment"
+          preference="annotationSeparator"
+          style="width: 120px; margin-left: 4px;"
+        />
+        <label style="color: #888; font-style: italic; margin-left: 6px" data-l10n-id="pref-annotationSeparator-hint" />
+      </hbox>
+
+      <hbox align="center">
+        <label class="pref-label" data-l10n-id="pref-annotationMarkType" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-annotationMarkType"
+          preference="annotationMarkType"
+        >
+          <menupopup>
+            <menuitem value="highlight" data-l10n-id="pref-annotationMarkType-highlight" />
+            <menuitem value="underline" data-l10n-id="pref-annotationMarkType-underline" />
+          </menupopup>
+        </menulist>
+      </hbox>
+
+      <hbox align="center">
+        <label class="pref-label" data-l10n-id="pref-annotationColor" />
+        <html:input
+          type="color"
+          id="zotero-prefpane-__addonRef__-annotationColorPicker"
+          style="width: 40px; height: 24px; padding: 0; border: none; cursor: pointer;"
+        />
+        <html:input
+          type="text"
+          id="zotero-prefpane-__addonRef__-annotationColorHex"
+          style="width: 70px; margin-left: 4px;"
+          placeholder="#ffd400"
+        />
+      </hbox>
+
+      <checkbox
+        id="zotero-prefpane-__addonRef__-enableAnnotationAutoTag"
+        preference="enableAnnotationAutoTag"
+        data-l10n-id="pref-enableAnnotationAutoTag"
+      />
+      <hbox align="center">
+        <label class="pref-label" data-l10n-id="pref-annotationTagName" />
+        <html:input
+          type="text"
+          id="zotero-prefpane-__addonRef__-annotationTagName"
+          preference="annotationTagName"
+          style="width: 120px"
+        />
+      </hbox>
+
+      <!-- 隐藏高亮/下划线文本便签图标（隐藏范围仅作用于高亮/下划线/图片；
+           独立便签图标由 hideNoteIconNotes 独立控制，不受隐藏范围限制） -->
+      <checkbox
+        id="zotero-prefpane-__addonRef__-hideNoteIcon"
+        preference="hideNoteIcon"
+        data-l10n-id="pref-hideNoteIcon"
+      />
+      <hbox id="__addonRef__-hideNoteIconModeBox" align="center">
+        <label class="pref-label" data-l10n-id="pref-hideNoteIconMode" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-hideNoteIconMode"
+          preference="hideNoteIconMode"
+        >
+          <menupopup>
+            <menuitem value="word" data-l10n-id="pref-hideNoteIconMode-word" />
+            <menuitem value="all" data-l10n-id="pref-hideNoteIconMode-all" />
+          </menupopup>
+        </menulist>
+      </hbox>
+      <hbox id="__addonRef__-hideNoteIconNotesBox" align="center" hidden="true">
+        <label class="pref-label" data-l10n-id="pref-hideNoteIconNotes" />
+        <!-- 注意：hideNoteIconNotes 是 boolean pref，menulist 的 preference 自动绑定
+             会把 pref 写成字符串 "true"/"false"，导致 truthy 误判（!!"false"===true）。
+             因此不启用自动绑定，由 preferenceScript 显式 setPref 写入 boolean。 -->
+        <menulist
+          id="zotero-prefpane-__addonRef__-hideNoteIconNotes"
+        >
+          <menupopup>
+            <menuitem value="false" data-l10n-id="pref-hideNoteIconNotes-keep" />
+            <menuitem value="true" data-l10n-id="pref-hideNoteIconNotes-hide" />
+          </menupopup>
+        </menulist>
+      </hbox>
+    </vbox>
+  </groupbox>
+
+  <!-- ============ 3.4 导出生词本 ============ -->
+  <groupbox>
+    <label><html:h2 data-l10n-id="pref-section-export"></html:h2></label>
 
     <hbox align="center">
       <label class="pref-label" data-l10n-id="pref-export-format" />
@@ -385,6 +561,7 @@
         style="flex: 1; min-width: 200px"
         placeholder="留空则保存在 Zotero 配置目录"
       />
+      <button id="__addonRef__-chooseExportDirBtn" data-l10n-id="pref-export-chooseDir" />
     </hbox>
 
     <hbox id="__addonRef__-maimemoExportHint" hidden="true" style="margin-left: 116px; margin-top: 4px">
@@ -411,7 +588,7 @@
 
   <!-- ============ 3.4 其他设置 ============ -->
   <groupbox>
-    <label><html:h3 data-l10n-id="pref-section-other"></html:h3></label>
+    <label><html:h2 data-l10n-id="pref-section-other"></html:h2></label>
     <hbox>
       <button id="__addonRef__-resetBtn" data-l10n-id="pref-resetBtn" />
       <label

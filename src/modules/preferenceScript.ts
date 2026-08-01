@@ -17,6 +17,7 @@ import { MaimemoClient, createMaimemoClientFromPrefs } from "./maimemo";
 import { ShanbayClient, createShanbayClientFromPrefs } from "./shanbay";
 import { exportWordbook, exportWordEntries } from "./eudicExport";
 import { getWords as getLocalWords } from "./localWordbook";
+import { FilePickerHelper } from "zotero-plugin-toolkit";
 
 const ref = config.addonRef;
 const $ = (id: string, win: Window) =>
@@ -29,7 +30,7 @@ const DEFAULTS: Record<string, any> = {
   modifierAlt: false,
   modifierShift: false,
   enableHighlight: false,
-  highlightColor: "rgba(255,213,79,0.45)",
+  highlightColor: "rgba(255,233,79,1.0)",
   hoverDelay: 900,
   disableOnSelection: true,
   popupAutoCloseDelay: 30,
@@ -51,6 +52,19 @@ const DEFAULTS: Record<string, any> = {
   addWordMode: "manual",
   lemmaMode: "lemma",
   localSavePath: "",
+  // 注释设置
+  enableAnnotationSync: false,
+  enableAnnotationTranslate: false,
+  annotationTranslatePosition: "comment",
+  annotationTranslatePositionInBody: "before",
+  annotationSeparator: "\n\n",
+  annotationMarkType: "highlight",
+  annotationColor: "#ffd400",
+  enableAnnotationAutoTag: false,
+  annotationTagName: "单词",
+  hideNoteIcon: false,
+  hideNoteIconMode: "word",
+  hideNoteIconNotes: false,
   exportAutoReveal: true,
   exportSavePath: "",
 };
@@ -63,6 +77,10 @@ export async function registerPrefsScripts(win: Window) {
   updateTokenVisibility(win);
   syncCategorySelectionUI(win);
   initColorPicker(win);
+  initAnnotationColorPicker(win);
+  updateAnnotationBoxState(win);
+  updateAnnotationTranslatePositionState(win);
+  updateHideNoteIconState(win);
   bindPrefEvents(win);
   // Auto-fetch categories on panel open if token is configured for the active platform.
   const platform = getPref("wordbookPlatform") as string;
@@ -85,13 +103,11 @@ export async function registerPrefsScripts(win: Window) {
   win.setTimeout(() => syncAllMenulists(win), 500);
 }
 
-/** Init the color picker + R/G/B/A inputs from the saved rgba highlight color. */
+/** Init the color picker + hex + alpha inputs from the saved rgba highlight color. */
 function initColorPicker(win: Window) {
   const picker = $(`zotero-prefpane-${ref}-highlightColorPicker`, win) as any;
   const hidden = $(`zotero-prefpane-${ref}-highlightColor`, win) as any;
-  const rInput = $(`zotero-prefpane-${ref}-highlightColorR`, win) as any;
-  const gInput = $(`zotero-prefpane-${ref}-highlightColorG`, win) as any;
-  const bInput = $(`zotero-prefpane-${ref}-highlightColorB`, win) as any;
+  const hexInput = $(`zotero-prefpane-${ref}-highlightColorHex`, win) as any;
   const aInput = $(`zotero-prefpane-${ref}-highlightColorA`, win) as any;
   if (!picker || !hidden) return;
 
@@ -108,51 +124,85 @@ function initColorPicker(win: Window) {
           .map((n) => n.toString(16).padStart(2, "0"))
           .join("");
       picker.value = hex;
-      if (rInput) rInput.value = r;
-      if (gInput) gInput.value = g;
-      if (bInput) bInput.value = b;
+      if (hexInput) hexInput.value = hex;
       if (aInput) aInput.value = a;
     }
   };
   syncFromPref();
 
-  // Write the current R/G/B/A values back to the pref + color picker.
+  // Write the current hex + alpha values back to the pref + color picker.
   const syncToPref = () => {
-    const r = Math.max(0, Math.min(255, parseInt(rInput?.value) || 0));
-    const g = Math.max(0, Math.min(255, parseInt(gInput?.value) || 0));
-    const b = Math.max(0, Math.min(255, parseInt(bInput?.value) || 0));
+    const hexRaw = String(hexInput?.value || "").trim();
+    const hexMatch = hexRaw.match(/^#?([0-9a-fA-F]{6})$/);
+    const hex = hexMatch
+      ? "#" + hexMatch[1].toLowerCase()
+      : "#ffe949";
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
     const aPct = Math.max(0, Math.min(100, parseInt(aInput?.value) || 0));
     const a = (aPct / 100).toFixed(2);
     const rgba = `rgba(${r},${g},${b},${a})`;
     hidden.value = rgba;
     setPref("highlightColor", rgba);
-    const hex =
-      "#" +
-      [r, g, b]
-        .map((n) => n.toString(16).padStart(2, "0"))
-        .join("");
     picker.value = hex;
+    if (hexInput && hexInput.value !== hex) hexInput.value = hex;
   };
 
-  // Color picker → R/G/B inputs + pref.
+  // Color picker → hex input + pref.
   picker.addEventListener("input", () => {
-    const hex = picker.value || "#ffd54f";
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    if (rInput) rInput.value = r;
-    if (gInput) gInput.value = g;
-    if (bInput) bInput.value = b;
+    const hex = picker.value || "#ffe949";
+    if (hexInput) hexInput.value = hex;
     syncToPref();
   });
 
-  // R/G/B/A inputs → pref + color picker.
-  [rInput, gInput, bInput, aInput].forEach((el) => {
-    if (el) {
-      el.addEventListener("input", syncToPref);
-      el.addEventListener("change", syncToPref);
-    }
+  // hex input → pref + color picker.
+  if (hexInput) {
+    hexInput.addEventListener("input", syncToPref);
+    hexInput.addEventListener("change", syncToPref);
+  }
+
+  // alpha input → pref.
+  if (aInput) {
+    aInput.addEventListener("input", syncToPref);
+    aInput.addEventListener("change", syncToPref);
+  }
+}
+
+/** Init the annotation color picker + hex input from the saved hex annotation color. */
+function initAnnotationColorPicker(win: Window) {
+  const picker = $(`zotero-prefpane-${ref}-annotationColorPicker`, win) as any;
+  const hexInput = $(`zotero-prefpane-${ref}-annotationColorHex`, win) as any;
+  if (!picker) return;
+
+  const syncFromPref = () => {
+    const hex = String(getPref("annotationColor") || "#ffd400");
+    picker.value = hex;
+    if (hexInput) hexInput.value = hex;
+  };
+  syncFromPref();
+
+  const syncToPref = () => {
+    const hexRaw = String(hexInput?.value || "").trim();
+    const hexMatch = hexRaw.match(/^#?([0-9a-fA-F]{6})$/);
+    const hex = hexMatch
+      ? "#" + hexMatch[1].toLowerCase()
+      : "#ffd400";
+    setPref("annotationColor", hex);
+    picker.value = hex;
+    if (hexInput && hexInput.value !== hex) hexInput.value = hex;
+  };
+
+  picker.addEventListener("input", () => {
+    const hex = picker.value || "#ffd400";
+    if (hexInput) hexInput.value = hex;
+    syncToPref();
   });
+
+  if (hexInput) {
+    hexInput.addEventListener("input", syncToPref);
+    hexInput.addEventListener("change", syncToPref);
+  }
 }
 
 /** Force every bound menulist to reflect its current pref value's label. */
@@ -250,6 +300,103 @@ function updateTranslateEngineHintVisibility(win: Window) {
   if (hint) hint.hidden = engine !== "translate";
 }
 
+/** Toggle the annotation config box enabled state based on enableAnnotationSync. */
+function updateAnnotationBoxState(win: Window) {
+  const enabled = getPref("enableAnnotationSync");
+  const box = $(`${ref}-annotationConfigBox`, win);
+  if (!box) return;
+  box.style.opacity = enabled ? "1" : "0.45";
+  box.style.pointerEvents = enabled ? "auto" : "none";
+}
+
+/**
+ * Toggle the "hide note icon" sub-rows:
+ *  - 总开关 hideNoteIcon 关闭 → 隐藏范围行 + 独立便签行 置灰
+ *  - 总开关开启 → 隐藏范围行可操作；独立便签行始终显示（不受隐藏范围限制）
+ */
+function updateHideNoteIconState(win: Window) {
+  const enabled = !!getPref("hideNoteIcon");
+  const modeBox = $(`${ref}-hideNoteIconModeBox`, win);
+  const notesBox = $(`${ref}-hideNoteIconNotesBox`, win);
+  if (modeBox) {
+    modeBox.style.opacity = enabled ? "1" : "0.45";
+    modeBox.style.pointerEvents = enabled ? "auto" : "none";
+  }
+  if (notesBox) {
+    notesBox.hidden = !enabled;
+  }
+  // 同步独立便签图标 menulist 选中项（boolean pref 不依赖自动绑定，显式同步；
+  // 用 String() 兼容历史遗留的字符串值）
+  const notesMl = $(`zotero-prefpane-${ref}-hideNoteIconNotes`, win) as any;
+  if (notesMl) {
+    const v = String(getPref("hideNoteIconNotes")) === "true" ? "true" : "false";
+    if (notesMl.value !== v) {
+      notesMl.value = v;
+    }
+  }
+}
+
+/** Toggle annotation sub-rows based on annotationTranslatePosition,
+ *  annotationWordPosition and annotationSeparatorMode.
+ *  - position=body: show "翻译保存顺序" row + "分隔方式(body)" row
+ *  - position=comment: show "单词保存位置" row
+ *    - wordPosition=comment: show "分隔方式(comment)" row
+ *  - separatorMode=newline: hide separator input in the relevant row
+ *  - separatorMode=separator: show separator input in the relevant row
+ *  - Both separator inputs are synced (same pref: annotationSeparator).
+ */
+function updateAnnotationTranslatePositionState(win: Window) {
+  const position = getPref("annotationTranslatePosition") as string;
+  const wordPosition = getPref("annotationWordPosition") as string;
+  const sepMode = getPref("annotationSeparatorMode") as string;
+  const showBody = position === "body";
+  const showComment = position === "comment";
+  const showWordPosRow = showComment;
+  const showCommentSepRow = showComment && wordPosition === "comment";
+  const showSeparatorInput = sepMode === "separator";
+
+  // 1. 翻译保存顺序 row (only when position=body)
+  const orderMl = $(`zotero-prefpane-${ref}-annotationTranslatePositionInBody`, win) as any;
+  const orderHbox = orderMl?.closest?.("hbox") || orderMl?.parentElement;
+  if (orderHbox) orderHbox.hidden = !showBody;
+  if (orderMl) orderMl.disabled = !showBody;
+
+  // 2. 分隔方式 (body) row (only when position=body)
+  const bodySepModeMl = $(`zotero-prefpane-${ref}-annotationSeparatorModeBody`, win) as any;
+  const bodySepHbox = bodySepModeMl?.closest?.("hbox") || bodySepModeMl?.parentElement;
+  if (bodySepHbox) bodySepHbox.hidden = !showBody;
+  if (bodySepModeMl) bodySepModeMl.disabled = !showBody;
+  // Toggle body separator input visibility
+  const bodySepInput = $(`zotero-prefpane-${ref}-annotationSeparatorBody`, win) as any;
+  if (bodySepInput) {
+    bodySepInput.hidden = !showSeparatorInput;
+    bodySepInput.disabled = !showBody || !showSeparatorInput;
+  }
+
+  // 3. 单词保存位置 row (only when position=comment)
+  const wordPosMl = $(`zotero-prefpane-${ref}-annotationWordPosition`, win) as any;
+  const wordPosHbox = wordPosMl?.closest?.("hbox") || wordPosMl?.parentElement;
+  if (wordPosHbox) wordPosHbox.hidden = !showWordPosRow;
+  if (wordPosMl) wordPosMl.disabled = !showWordPosRow;
+
+  // 4. 分隔方式 (comment) row (only when position=comment && wordPosition=comment)
+  const commentSepModeMl = $(`zotero-prefpane-${ref}-annotationSeparatorModeComment`, win) as any;
+  const commentSepHbox = commentSepModeMl?.closest?.("hbox") || commentSepModeMl?.parentElement;
+  if (commentSepHbox) commentSepHbox.hidden = !showCommentSepRow;
+  if (commentSepModeMl) commentSepModeMl.disabled = !showCommentSepRow;
+  // Toggle comment separator input visibility
+  const commentSepInput = $(`zotero-prefpane-${ref}-annotationSeparatorComment`, win) as any;
+  if (commentSepInput) {
+    commentSepInput.hidden = !showSeparatorInput;
+    commentSepInput.disabled = !showCommentSepRow || !showSeparatorInput;
+  }
+
+  // 5. Sync the two separator mode menulists (they share the same pref, but
+  //    we need to keep their displayed value in sync when toggling).
+  if (bodySepModeMl && bodySepModeMl.value !== sepMode) bodySepModeMl.value = sepMode;
+  if (commentSepModeMl && commentSepModeMl.value !== sepMode) commentSepModeMl.value = sepMode;
+}
+
 /** Reflect the currently saved eudicCategoryId in the menulist UI. */
 function syncCategorySelectionUI(win: Window) {
   const menulist = $(`zotero-prefpane-${ref}-eudicCategoryId`, win);
@@ -317,6 +464,118 @@ function bindPrefEvents(win: Window) {
   engineSel?.addEventListener("command", () => {
     setTimeout(() => updateTranslateEngineHintVisibility(win), 0);
   });
+
+  // enableAnnotationSync -> toggle annotation config box
+  const enableAnnoSync = $(`zotero-prefpane-${ref}-enableAnnotationSync`, win);
+  enableAnnoSync?.addEventListener("command", () => {
+    setTimeout(() => updateAnnotationBoxState(win), 0);
+  });
+
+  // annotationTranslatePosition -> toggle sub-rows
+  const annoPos = $(`zotero-prefpane-${ref}-annotationTranslatePosition`, win);
+  annoPos?.addEventListener("command", () => {
+    setTimeout(() => updateAnnotationTranslatePositionState(win), 0);
+  });
+
+  // annotationWordPosition -> toggle "分隔方式(comment)" row
+  const wordPos = $(`zotero-prefpane-${ref}-annotationWordPosition`, win);
+  wordPos?.addEventListener("command", () => {
+    setTimeout(() => updateAnnotationTranslatePositionState(win), 0);
+  });
+
+  // hideNoteIcon -> toggle hide-note-icon sub-rows
+  const hideNoteIcon = $(`zotero-prefpane-${ref}-hideNoteIcon`, win);
+  hideNoteIcon?.addEventListener("command", () => {
+    setTimeout(() => updateHideNoteIconState(win), 0);
+  });
+
+  // hideNoteIconMode -> toggle 独立便签行
+  const hideNoteIconMode = $(`zotero-prefpane-${ref}-hideNoteIconMode`, win);
+  hideNoteIconMode?.addEventListener("command", () => {
+    setTimeout(() => updateHideNoteIconState(win), 0);
+  });
+
+  // hideNoteIconNotes -> 显式写入 boolean pref（menulist 自动绑定会把 boolean
+  // 写成字符串，导致 !!getPref() 恒为 true，独立便签开关失效）
+  const hideNoteIconNotes = $(`zotero-prefpane-${ref}-hideNoteIconNotes`, win) as any;
+  hideNoteIconNotes?.addEventListener("command", () => {
+    setPref("hideNoteIconNotes", hideNoteIconNotes.value === "true");
+  });
+
+  // annotationSeparatorMode (both menulists) -> toggle separator input visibility
+  const sepModeBody = $(`zotero-prefpane-${ref}-annotationSeparatorModeBody`, win);
+  sepModeBody?.addEventListener("command", () => {
+    // Sync the comment menulist value
+    const sepModeComment = $(`zotero-prefpane-${ref}-annotationSeparatorModeComment`, win) as any;
+    if (sepModeComment && sepModeComment.value !== (sepModeBody as any).value) {
+      sepModeComment.value = (sepModeBody as any).value;
+    }
+    setTimeout(() => updateAnnotationTranslatePositionState(win), 0);
+  });
+  const sepModeComment = $(`zotero-prefpane-${ref}-annotationSeparatorModeComment`, win);
+  sepModeComment?.addEventListener("command", () => {
+    // Sync the body menulist value
+    const sepModeBody2 = $(`zotero-prefpane-${ref}-annotationSeparatorModeBody`, win) as any;
+    if (sepModeBody2 && sepModeBody2.value !== (sepModeComment as any).value) {
+      sepModeBody2.value = (sepModeComment as any).value;
+    }
+    setTimeout(() => updateAnnotationTranslatePositionState(win), 0);
+  });
+
+  // Sync the two separator text inputs (they share the same pref, but we
+  // also sync their displayed value when either changes).
+  const sepInputBody = $(`zotero-prefpane-${ref}-annotationSeparatorBody`, win) as any;
+  const sepInputComment = $(`zotero-prefpane-${ref}-annotationSeparatorComment`, win) as any;
+  sepInputBody?.addEventListener("input", () => {
+    if (sepInputComment && sepInputComment.value !== sepInputBody.value) {
+      sepInputComment.value = sepInputBody.value;
+    }
+  });
+  sepInputComment?.addEventListener("input", () => {
+    if (sepInputBody && sepInputBody.value !== sepInputComment.value) {
+      sepInputBody.value = sepInputComment.value;
+    }
+  });
+
+  // export choose directory button
+  const chooseBtn = $(`${ref}-chooseExportDirBtn`, win);
+  if (chooseBtn) {
+    chooseBtn.addEventListener("command", async () => {
+      try {
+        const titleStr =
+          (getString("pref-export-chooseDir-label") as string) ||
+          "选择导出目录";
+        const f = await new FilePickerHelper(titleStr, "folder").open();
+        if (f) {
+          setPref("exportSavePath", f);
+          const input = $(`zotero-prefpane-${ref}-exportSavePath`, win) as any;
+          if (input) input.value = f;
+        }
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+
+  // local save path choose directory button
+  const chooseLocalBtn = $(`${ref}-chooseLocalDirBtn`, win);
+  if (chooseLocalBtn) {
+    chooseLocalBtn.addEventListener("command", async () => {
+      try {
+        const titleStr =
+          (getString("pref-local-chooseDir-label") as string) ||
+          "选择存储目录";
+        const f = await new FilePickerHelper(titleStr, "folder").open();
+        if (f) {
+          setPref("localSavePath", f);
+          const input = $(`zotero-prefpane-${ref}-localSavePath`, win) as any;
+          if (input) input.value = f;
+        }
+      } catch {
+        /* ignore */
+      }
+    });
+  }
 
   // language change -> refresh category list
   const lang = $(`zotero-prefpane-${ref}-eudicLanguage`, win);
@@ -875,8 +1134,12 @@ function resetDefaults(win: Window) {
   updateHoverConfigState(win);
   updateEudicBoxState(win);
   updateTokenVisibility(win);
-  // Re-sync color picker + R/G/B/A inputs from the reset pref.
+  updateAnnotationBoxState(win);
+  updateAnnotationTranslatePositionState(win);
+  updateHideNoteIconState(win);
+  // Re-sync color picker + hex/alpha inputs from the reset pref.
   initColorPicker(win);
+  initAnnotationColorPicker(win);
   // Reload the panel so bound controls re-read prefs.
   try {
     // Force menulists/checkboxes to refresh from prefs.

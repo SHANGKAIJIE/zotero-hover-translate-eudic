@@ -12,6 +12,10 @@ import {
   unregisterSelectionButton,
 } from "./modules/selectionButton";
 import { registerServer, unregisterServer } from "./modules/server";
+import {
+  initHideNoteIcon,
+  cleanupHideNoteIcon,
+} from "./modules/hideNoteIcon";
 
 let notifierID: string | null = null;
 
@@ -52,6 +56,11 @@ async function onStartup() {
     initHoverTranslate();
   } catch (e) {
     ztoolkit.log("hooks: initHoverTranslate failed", e);
+  }
+  try {
+    initHideNoteIcon();
+  } catch (e) {
+    ztoolkit.log("hooks: initHideNoteIcon failed", e);
   }
 
   await Promise.all(
@@ -105,6 +114,7 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 function onShutdown(): void {
   ztoolkit.unregisterAll();
   hoverCleanupAll();
+  cleanupHideNoteIcon();
   unregisterSelectionButton();
   unregisterServer();
   if (notifierID) {

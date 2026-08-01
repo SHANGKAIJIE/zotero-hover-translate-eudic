@@ -19,6 +19,7 @@ import { createMaimemoClientFromPrefs } from "./maimemo";
 import { createShanbayClientFromPrefs } from "./shanbay";
 import { addWord as addWordToLocal } from "./localWordbook";
 import { getAllReaders, getReaderInnerWindow } from "../utils/window";
+import { fetchDictResult } from "./hoverTranslate";
 
 let registered = false;
 let listener: ((event: any) => void) | null = null;
@@ -99,8 +100,10 @@ function onRenderTextSelectionPopup(event: any) {
   const selectedText: string = (event?.params?.annotation?.text || "").trim();
   const annot = event?.params?.annotation;
   const pageIndex = annot?.position?.pageIndex;
-  /** Bounding rects of the selection in PDF viewport space. */
-  const rects: { top: number; left: number; width: number; height: number }[] | undefined = annot?.position?.rects;
+  /** PDF user-space rects [x1,y1,x2,y2] from Zotero annotation position. */
+  const pdfRects: [number, number, number, number][] | undefined = annot?.position?.rects;
+  // Resolve the reader instance for this event (for attachmentID).
+  const reader: any = event?.reader || event?.params?.reader || null;
 
   if (!getPref("enableEudicSync")) return;
   const scenePref = getPref("buttonShowScene");
@@ -151,8 +154,51 @@ function onRenderTextSelectionPopup(event: any) {
         if (match) phon = match[1];
       }
     } catch { /* ignore */ }
-    const contextLine = findContextFromReaders(selectedText, rects, pageIndex);
-    const ok = await addWordToEudic(selectedText, trResult, phon);
+    // When annotation sync + annotation translate is enabled, fetch the full
+    // dictionary entry (instead of the short translation from the textarea)
+    // so the annotation comment/body contains the complete dictionary content.
+    if (trResult && reader && getPref("enableAnnotationSync") &&
+        getPref("enableAnnotationTranslate")) {
+      try {
+        (globalThis as any).Zotero?.debug?.(
+          `[hte-ann] selectionButton: fetching dict result for annotation, ` +
+          `word="${selectedText}"`,
+        );
+        const dict = await fetchDictResult(selectedText, reader);
+        if (dict?.result) {
+          (globalThis as any).Zotero?.debug?.(
+            `[hte-ann] selectionButton: dict result len=${dict.result.length}, ` +
+            `using dict result as trResult for annotation`,
+          );
+          trResult = dict.result;
+        } else {
+          (globalThis as any).Zotero?.debug?.(
+            `[hte-ann] selectionButton: dict result empty, keeping textarea trResult`,
+          );
+        }
+      } catch (e) {
+        (globalThis as any).Zotero?.debug?.(
+          `[hte-ann] selectionButton: fetchDictResult error: ${String(e)}`,
+        );
+      }
+    }
+    const contextLine = findContextFromReaders(selectedText, undefined, pageIndex);
+    // Build annotation context for syncWordAnnotation (selection scene).
+    let annotationCtx: any = undefined;
+    try {
+      const attachmentID = reader?.itemID ?? reader?._item?.id;
+      try {
+        (globalThis as any).Zotero?.debug?.(
+          `[hte-ann] selectionButton: building ctx, reader.itemID=${reader?.itemID}, ` +
+          `reader._item?.id=${reader?._item?.id}, resolved attachmentID=${attachmentID}, ` +
+          `pdfRectsLen=${pdfRects?.length}, pageIndex=${pageIndex}`,
+        );
+      } catch { /* ignore */ }
+      if (attachmentID && pdfRects && pdfRects.length > 0 && pageIndex != null) {
+        annotationCtx = { attachmentID, reader, pdfRects, pageIndex };
+      }
+    } catch { /* ignore */ }
+    const ok = await addWordToEudic(selectedText, trResult, phon, annotationCtx);
     btn.textContent = ok
       ? getString("wordbtn-added")
       : getString("wordbtn-failed");
@@ -194,7 +240,22 @@ function onRenderTextSelectionPopup(event: any) {
   // Use retry to wait for pdf-translate's async textarea population.
   if (getPref("addWordMode") === "auto") {
     // Capture context_line once (readers don't change between retries)
-    const contextLine = findContextFromReaders(selectedText, rects, pageIndex);
+    const contextLine = findContextFromReaders(selectedText, undefined, pageIndex);
+    // Build annotation context for syncWordAnnotation (selection scene).
+    let autoAnnotationCtx: any = undefined;
+    try {
+      const attachmentID = reader?.itemID ?? reader?._item?.id;
+      try {
+        (globalThis as any).Zotero?.debug?.(
+          `[hte-ann] selectionButton(auto): building ctx, reader.itemID=${reader?.itemID}, ` +
+          `reader._item?.id=${reader?._item?.id}, resolved attachmentID=${attachmentID}, ` +
+          `pdfRectsLen=${pdfRects?.length}, pageIndex=${pageIndex}`,
+        );
+      } catch { /* ignore */ }
+      if (attachmentID && pdfRects && pdfRects.length > 0 && pageIndex != null) {
+        autoAnnotationCtx = { attachmentID, reader, pdfRects, pageIndex };
+      }
+    } catch { /* ignore */ }
     const tryAutoAdd = (attempt: number) => {
       let trResult = "";
       let phon = "";
@@ -209,14 +270,43 @@ function onRenderTextSelectionPopup(event: any) {
         }
       } catch { /* ignore */ }
       if (trResult) {
-        void addWordToEudic(selectedText, trResult, phon);
+        // When annotation sync + annotation translate is enabled, fetch the
+        // full dictionary entry for the annotation comment/body.
+        if (reader && getPref("enableAnnotationSync") &&
+            getPref("enableAnnotationTranslate")) {
+          (globalThis as any).Zotero?.debug?.(
+            `[hte-ann] selectionButton(auto): fetching dict result for annotation, ` +
+            `word="${selectedText}"`,
+          );
+          fetchDictResult(selectedText, reader).then((dict) => {
+            if (dict?.result) {
+              (globalThis as any).Zotero?.debug?.(
+                `[hte-ann] selectionButton(auto): dict result len=${dict.result.length}, ` +
+                `using dict result as trResult for annotation`,
+              );
+              trResult = dict.result;
+            } else {
+              (globalThis as any).Zotero?.debug?.(
+                `[hte-ann] selectionButton(auto): dict result empty, keeping textarea trResult`,
+              );
+            }
+            void addWordToEudic(selectedText, trResult, phon, autoAnnotationCtx);
+          }).catch((e) => {
+            (globalThis as any).Zotero?.debug?.(
+              `[hte-ann] selectionButton(auto): fetchDictResult error: ${String(e)}`,
+            );
+            void addWordToEudic(selectedText, trResult, phon, autoAnnotationCtx);
+          });
+        } else {
+          void addWordToEudic(selectedText, trResult, phon, autoAnnotationCtx);
+        }
       } else if (attempt < 3) {
         // Retry with progressive delay: 150ms → 400ms
         const delay = attempt === 1 ? 150 : 400;
         setTimeout(() => tryAutoAdd(attempt + 1), delay);
       } else {
         // Fallback: add word without phon/exp
-        void addWordToEudic(selectedText);
+        void addWordToEudic(selectedText, "", "", autoAnnotationCtx);
       }
     };
     tryAutoAdd(1);
@@ -227,6 +317,12 @@ async function addWordToEudic(
   word: string,
   translateResult?: string,
   phon?: string,
+  annotationCtx?: {
+    attachmentID: number;
+    reader?: any;
+    pdfRects?: [number, number, number, number][];
+    pageIndex?: number;
+  },
 ): Promise<boolean> {
   // Lemmatise inflected forms to dictionary headwords before API call
   // when lemmaMode is "lemma"; skip lemmatisation when "inflected".
@@ -245,36 +341,66 @@ async function addWordToEudic(
     } catch { /* ignore */ }
   }
   const platform = getPref("wordbookPlatform") as string;
+  let ok = false;
   if (platform === "maimemo") {
     const client = createMaimemoClientFromPrefs();
     if (!client) return false;
     const categoryId = getPref("maimemoCategoryId") as string;
     const res = await client.addWord(word.toLowerCase(), categoryId);
-    return res.success;
-  }
-  if (platform === "local") {
-    return addWordToLocal({
+    ok = res.success;
+  } else if (platform === "local") {
+    ok = await addWordToLocal({
       word: lemma,
       phon: phon || "",
       exp: translateResult || "",
     });
-  }
-  if (platform === "shanbay") {
+  } else if (platform === "shanbay") {
     const client = createShanbayClientFromPrefs();
     if (!client) return false;
     const res = await client.addWord(word.toLowerCase());
-    return res.success;
+    ok = res.success;
+  } else {
+    // platform === "eudic" (explicit guard, not fallthrough)
+    if (platform !== "eudic") {
+      Zotero.debug(`[hover-translate-eudic/selection] unknown platform="${platform}", skipping`);
+      return false;
+    }
+    const client = createEudicClientFromPrefs();
+    if (!client) return false;
+    const categoryId = getPref("eudicCategoryId");
+    const res = await client.addWord(lemma, categoryId);
+    ok = res.success;
   }
-  // platform === "eudic" (explicit guard, not fallthrough)
-  if (platform !== "eudic") {
-    Zotero.debug(`[hover-translate-eudic/selection] unknown platform="${platform}", skipping`);
-    return false;
+
+  // Sync annotation after successful wordbook add (best-effort, never throws).
+  if (ok && annotationCtx) {
+    try {
+      try {
+        (globalThis as any).Zotero?.debug?.(
+          `[hte-ann] selectionButton: wordbook add ok, calling syncWordAnnotation, ` +
+          `attachmentID=${annotationCtx.attachmentID}, ` +
+          `pdfRectsLen=${annotationCtx.pdfRects?.length ?? 0}, ` +
+          `pageIndex=${annotationCtx.pageIndex}, hasReader=${!!annotationCtx.reader}`,
+        );
+      } catch { /* ignore */ }
+      const { syncWordAnnotation } = await import("./annotationSync");
+      void syncWordAnnotation({
+        attachmentID: annotationCtx.attachmentID,
+        word,
+        translation: translateResult || "",
+        reader: annotationCtx.reader,
+        pdfRects: annotationCtx.pdfRects,
+        pageIndex: annotationCtx.pageIndex,
+      });
+    } catch { /* ignore annotation errors */ }
+  } else {
+    try {
+      (globalThis as any).Zotero?.debug?.(
+        `[hte-ann] selectionButton: skip sync (ok=${ok}, hasCtx=${!!annotationCtx})`,
+      );
+    } catch { /* ignore */ }
   }
-  const client = createEudicClientFromPrefs();
-  if (!client) return false;
-  const categoryId = getPref("eudicCategoryId");
-  const res = await client.addWord(lemma, categoryId);
-  return res.success;
+  return ok;
 }
 
 /** Extract sentence from text around the word at the given offset. */
@@ -318,10 +444,28 @@ function findContextFromReaders(
       // This is the same mechanism as the hover path, giving exact text node.
       if (rects && rects.length > 0) {
         try {
-          const cp: any = (iw.document as any).caretPositionFromPoint?.(
-            rects[0].left,
-            rects[0].top,
-          );
+          // 同上：取词期间临时禁用 annotation layer 的 pointer-events 以穿透
+          // 覆盖层（Zotero 高亮/划线标注渲染其中），取词后立即恢复。
+          // 不用 reading-caret-position：Zotero 7 中并不存在该 class。
+          const layers = iw.document.querySelectorAll(
+            ".annotationLayer",
+          ) as NodeListOf<HTMLElement>;
+          const prevPointerEvents: string[] = [];
+          layers.forEach((el: HTMLElement) => {
+            prevPointerEvents.push(el.style.pointerEvents);
+            el.style.pointerEvents = "none";
+          });
+          let cp: any = null;
+          try {
+            cp = (iw.document as any).caretPositionFromPoint?.(
+              rects[0].left,
+              rects[0].top,
+            );
+          } finally {
+            layers.forEach((el: HTMLElement, i: number) => {
+              el.style.pointerEvents = prevPointerEvents[i];
+            });
+          }
           if (cp?.offsetNode?.nodeType === 3) {
             const text = cp.offsetNode.data || "";
             const wp = wordRangeAtOffset(text, cp.offset);

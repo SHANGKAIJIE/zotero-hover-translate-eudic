@@ -242,7 +242,8 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     // the popup shows the translation instantly.
     hoverTimer = win.setTimeout(() => {
       hoverTimer = null;
-      doTranslate(activeWinRef.win, reader, word, lastWordRef, contextLineRef);
+      const hitRange = lastHitRef.get()?.range;
+      doTranslate(activeWinRef.win, reader, word, lastWordRef, contextLineRef, hitRange);
     }, Math.max(0, getPref("hoverDelay") | 0));
   };
 
@@ -264,12 +265,14 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     // D6: update last pointer pos here (merged from injectPopupStyle's
     // extra mousemove listener — one listener instead of two per window).
     (win as any).__hoverLastPos = { x: ev.clientX, y: ev.clientY };
-    // If user is selecting text, suppress hover entirely. Prevents the
-    // hover popup from appearing alongside the selection popup.
+    // While the user is actively selecting text (mouse down + dragging),
+    // suppress hover so it does not fight the selection gesture. Annotation
+    // ranges kept live by Zotero in the textLayer selection are NOT treated
+    // as "selecting" (no mouse button pressed), so annotated text stays
+    // hoverable — no click needed to recover.
     if (getPref("disableOnSelection")) {
       try {
-        const sel = win.getSelection();
-        if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
+        if (isSelectingText(ev, activeWinRef.win)) {
           clearHover(activeWinRef.win);
           return;
         }
@@ -331,10 +334,16 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       if (popup && target && popup.contains(target)) {
         return;
       }
-      // Yield if there is a real selection (let Translate handle it).
+      // Yield to Zotero's selection toolbar / Translate's selection popup
+      // while visible (let its buttons handle the click); annotated text
+      // without a popup remains click-to-translate as usual.
       if (getPref("disableOnSelection")) {
-        const sel = activeWinRef.win.getSelection();
-        if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
+        if (
+          isSelectionPopupActive(activeWinRef.win) ||
+          isTranslatePopupVisible(activeWinRef.win)
+        ) {
+          return;
+        }
       }
       const win = (ev.view as Window) || activeWinRef.win;
       activeWinRef.win = win;
@@ -348,7 +357,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
         applyHighlight(win, hit.range);
       }
       // Translate immediately (no debounce for click mode).
-      void doTranslate(win, reader, hit.word, lastWordRef, contextLineRef);
+      void doTranslate(win, reader, hit.word, lastWordRef, contextLineRef, hit.range);
     } catch {
       /* suppress */
     }
@@ -381,7 +390,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       if (getPref("enableHighlight")) {
         applyHighlight(activeWinRef.win, hit.range);
       }
-      void doTranslate(activeWinRef.win, reader, hit.word, lastWordRef, contextLineRef);
+      void doTranslate(activeWinRef.win, reader, hit.word, lastWordRef, contextLineRef, hit.range);
     } catch {
       /* suppress */
     }
@@ -550,14 +559,22 @@ function onReaderMouseMove(
       return;
     }
 
-    // Pause while a selection exists (yields to Translate's selection popup).
-    if (getPref("disableOnSelection")) {
-      const sel = innerWin.getSelection();
-      if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
-        clearHover(innerWin);
-        return;
-      }
+    // While the user is actively selecting text (mouse down + dragging),
+    // suppress the whole hover (highlight + popup) so it does not fight the
+    // selection gesture. Annotation ranges kept live by Zotero in the textLayer
+    // selection are NOT "selecting" (no button pressed) → annotated text stays
+    // hoverable.
+    if (getPref("disableOnSelection") && isSelectingText(ev, innerWin)) {
+      clearHover(innerWin);
+      return;
     }
+    // Zotero's selection toolbar / Translate's selection popup visible
+    // (user just finished selecting) → keep word highlighting but skip the
+    // hover translate popup (avoid popup overlap). The toolbar check covers
+    // the gap before Translate sets translate-task-id.
+    const selectionPopupVisible =
+      getPref("disableOnSelection") &&
+      (isSelectionPopupActive(innerWin) || isTranslatePopupVisible(innerWin));
 
     const hit = getWordAtPoint(innerWin.document, ev.clientX, ev.clientY);
     if (!hit) {
@@ -599,6 +616,13 @@ function onReaderMouseMove(
       applyHighlight(innerWin, hit.range);
     } else {
       clearHighlight(innerWin);
+    }
+
+    // Translate's selection popup is visible → show the word highlight but
+    // NOT the hover translate popup (the two popups would overlap).
+    if (selectionPopupVisible) {
+      clearPopup(innerWin);
+      return;
     }
 
     // Translation requires the master switch + trigger mode.
@@ -655,15 +679,158 @@ function popupShown(innerWin: Window, word: string): boolean {
 
 /* ----------------------------- word extraction ----------------------------- */
 
+/**
+ * 是否正在划词（用户按住鼠标左键）。
+ *
+ * 以「左键按下」为判据（ev.buttons & 1）：覆盖按下未拖动、拖动中、暂停
+ * 等全部划词阶段，不要求选区已形成。注释常驻选区悬停时无按键（buttons=0），
+ * 不会被误判——已高亮的句子可以正常悬停取词。
+ */
+function isSelectingText(ev: MouseEvent, _fallbackWin?: Window): boolean {
+  try {
+    return !!ev && (ev.buttons & 1) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 沿窗口链查找选区工具栏/Translate 弹窗元素（.selection-popup）。
+ *
+ * Zotero 9 的选区工具栏（SelectionPopup）渲染在 reader iframe 的
+ * #annotation-overlay 的 shadow DOM 中（annotationOverlay.attachShadow
+ * ({mode:"open"})），document.querySelector 无法穿透 shadow DOM，必须通过
+ * shadowRoot 查询；同时保留普通 DOM 查询（不同版本/视图渲染位置可能不同，
+ * 例如 Translate 弹窗容器）。事件窗口（textLayer 嵌套 iframe）没有
+ * #annotation-overlay，需沿 window.parent 链向上找。
+ */
+function findSelectionPopupEl(win: Window): HTMLElement | null {
+  let w: Window | null = win;
+  for (let depth = 0; w && depth < 6; depth++, w = w.parent as Window | null) {
+    try {
+      const doc = w.document;
+      if (!doc) continue;
+      // 1) 普通 DOM
+      const direct = doc.querySelector(".selection-popup") as HTMLElement | null;
+      if (direct) return direct;
+      // 2) #annotation-overlay 的 shadow DOM
+      const overlay = doc.getElementById("annotation-overlay");
+      const shadow = overlay ? (overlay as any).shadowRoot : null;
+      if (shadow) {
+        const popup = shadow.querySelector(".selection-popup") as HTMLElement | null;
+        if (popup) return popup;
+      }
+    } catch {
+      /* cross-origin — try parent */
+    }
+  }
+  return null;
+}
+
+/**
+ * 划词后 Zotero 的选区工具栏（.selection-popup）是否可见。
+ *
+ * Zotero 在用户划词（创建新选区）后立即显示浮动选区工具栏（高亮/划线按钮），
+ * 点击其他位置才消失；而注释常驻选区（悬停时）不会唤出该工具栏。
+ * 用它覆盖「划词完成但 Translate 翻译尚未返回」的空白期——此时
+ * translate-task-id 属性尚未设置，仅靠 Translate 弹窗检测会漏掉。
+ */
+function isSelectionPopupActive(win: Window): boolean {
+  try {
+    const popup = findSelectionPopupEl(win);
+    if (!popup || popup.hidden) return false;
+    const doc = popup.ownerDocument;
+    const style = doc?.defaultView?.getComputedStyle(popup);
+    if (!style) return false;
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Translate for Zotero（划词翻译）弹窗是否可见。
+ *
+ * 该插件复用 Zotero reader 的 .selection-popup 容器，翻译完成后在容器上设置
+ * translate-task-id 属性（zotero-pdf-translate 源码 src/modules/popup.ts）。
+ * 有划词翻译弹窗时：允许显示本插件的取词高亮，但抑制悬停翻译弹窗，
+ * 避免两个弹窗重叠冲突。
+ */
+function isTranslatePopupVisible(win: Window): boolean {
+  try {
+    const popup = findSelectionPopupEl(win);
+    if (!popup || popup.hidden) return false;
+    if (!popup.hasAttribute("translate-task-id")) return false;
+    const doc = popup.ownerDocument;
+    const style = doc?.defaultView?.getComputedStyle(popup);
+    if (!style) return false;
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the given viewport point lies inside the current text selection.
+ *
+ * Zotero keeps the annotation selection (highlight/underline/strikeout created
+ * by dragging) as a live DOM selection in the PDF textLayer (setTextLayerSelection).
+ * We must only yield to the native selection popup while the pointer is actually
+ * over the selected text — otherwise hover lookup would be suppressed forever
+ * after any annotation is created (until the user clicks to collapse the range).
+ */
+function isPointInSelection(win: Window, x: number, y: number): boolean {
+  try {
+    const sel = win.getSelection();
+    if (!sel || sel.isCollapsed) return false;
+    for (let i = 0; i < sel.rangeCount; i++) {
+      const range = sel.getRangeAt(i);
+      const rects = range.getClientRects() ?? [];
+      for (let j = 0; j < rects.length; j++) {
+        const r = rects[j];
+        if (r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+          return true;
+        }
+      }
+    }
+  } catch {
+    /* cross-origin or detached — ignore */
+  }
+  return false;
+}
+
 function getWordAtPoint(
   doc: Document,
   x: number,
   y: number,
 ): { word: string; range: Range } | null {
-  // Gecko exposes caretPositionFromPoint.
-  const cp: any = (doc as any).caretPositionFromPoint
-    ? (doc as any).caretPositionFromPoint(x, y)
-    : null;
+  // Gecko exposes caretPositionFromPoint. Zotero Reader 在用户手动创建高亮/
+  // 划线标注后会在文本层上方叠加 annotation layer（SVG 覆盖元素），它拦截
+  // caretPositionFromPoint 的命中测试，返回 annotation 元素而非文本节点，
+  // 导致取词失效（必须先点击一下才能恢复）。
+  // 注意：Zotero 并没有内置 "reading-caret-position" class（Zotero 7 源码中
+  // 不存在，之前的修复因此无效）。这里改为在取词期间临时禁用 annotation
+  // layer 的 pointer-events，取词后立即恢复，不依赖任何 Zotero 内部实现。
+  const layers = doc.querySelectorAll(
+    ".annotationLayer",
+  ) as NodeListOf<HTMLElement>;
+  const prevPointerEvents: string[] = [];
+  layers.forEach((el: HTMLElement) => {
+    prevPointerEvents.push(el.style.pointerEvents);
+    el.style.pointerEvents = "none";
+  });
+  let cp: any = null;
+  try {
+    cp = (doc as any).caretPositionFromPoint
+      ? (doc as any).caretPositionFromPoint(x, y)
+      : null;
+  } finally {
+    layers.forEach((el: HTMLElement, i: number) => {
+      el.style.pointerEvents = prevPointerEvents[i];
+    });
+  }
   if (!cp || !cp.offsetNode) return null;
   const node = cp.offsetNode;
   if (node.nodeType !== 3 /* TEXT_NODE */) return null;
@@ -729,7 +896,7 @@ function findPageElement(node: Node | null): HTMLElement | null {
 function applyHighlight(innerWin: Window, range: Range) {
   clearHighlight(innerWin);
   const doc = innerWin.document;
-  const color = getPref("highlightColor") || "rgba(255,213,79,0.45)";
+  const color = getPref("highlightColor") || "rgba(255,233,79,1.0)";
   const pageEl = findPageElement(range.startContainer);
 
   if (!pageEl) {
@@ -783,6 +950,7 @@ async function doTranslate(
   word: string,
   lastWordRef: { get: () => string; set: (v: string) => void },
   contextLineRef: { get: () => string; set: (v: string) => void },
+  range?: Range,
 ) {
   if (word !== lastWordRef.get()) return; // user already moved away
   dbg(`translating word="${word}"`);
@@ -799,7 +967,7 @@ async function doTranslate(
   popup.style.cssText = [
     "position:fixed",
     "z-index:2147483647",
-    "min-width:120px",
+    "min-width:90px",
     "max-width:380px",
     `background:${tc.bg}`,
     `border:1px solid ${tc.border}`,
@@ -822,9 +990,19 @@ async function doTranslate(
   const result = doc.createElement("div");
   result.style.cssText = `color:${tc.primary};white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};font-weight:400;padding-left:4px;`;
 
-  // Flex row: left column (word + translation) + right circular button
+  // Flex row: left column (word + translation) + right circular button.
+  // 简洁(仅译文)模式：保持原布局，row 铺满弹窗内容宽度（弹窗宽度自适应内容，
+  // 下限 90px / 上限 380px），leftCol flex:1 占满剩余空间，+ 按钮位于弹窗
+  // 内容区右缘 —— 单词/译文较短时，按钮与文字之间自然保留一段间距。
+  // 完整(译文+字典释义)模式：字典释义会把弹窗撑到很宽，若 row 仍铺满则
+  // + 按钮会被推到弹窗最右端。因此让 row 收缩为与简洁模式相同的自适应宽度
+  // （width:fit-content + 同样的 90/380 上下限），leftCol 保持 flex:1，
+  // 使 + 按钮始终位于与简洁模式相同的水平位置，文字与按钮之间的间距也保留。
+  const isFullMode = getPref("translateDisplayMode") === "full";
   const row = doc.createElement("div");
-  row.style.cssText = "display:flex;align-items:center;gap:6px;";
+  row.style.cssText = isFullMode
+    ? "display:flex;align-items:center;gap:6px;width:fit-content;min-width:90px;max-width:380px;"
+    : "display:flex;align-items:center;gap:6px;";
 
   const leftCol = doc.createElement("div");
   leftCol.style.cssText = "flex:1;min-width:0;";
@@ -834,15 +1012,22 @@ async function doTranslate(
   leftCol.appendChild(result);
   row.appendChild(leftCol);
   popup.appendChild(row);
-
-  // Position near cursor (use last known mouse pos stored on dataset via window).
-  positionPopup(innerWin, popup);
+  // 字典释义独立区域：放在 row 之后（popup 底部），避免撑高 leftCol，
+  // 使 + 按钮始终与"单词+译文"垂直居中对齐（与简洁模式一致）。
+  const dictArea = doc.createElement("div");
+  popup.appendChild(dictArea);
 
   doc.body?.appendChild(popup);
 
   // +生词本 button — create immediately with the popup shell, before
   // translation completes.  Keep a ref so auto-add can drive states.
-  const wordBtn = maybeAddWordButton(innerWin, row, word, "hover");
+  const wordBtn = maybeAddWordButton(innerWin, row, word, "hover", reader, range);
+
+  // Position anchored to the word's Range bounding box (same coordinates as the
+  // highlight) so the popup stays close to the hovered word; falls back to the
+  // last mouse position when no range is available.  Called after the popup is
+  // in the document so its real size can be measured.
+  positionPopup(innerWin, popup, range);
 
   // Perform translation via Translate for Zotero.
   let tr: any;
@@ -897,7 +1082,12 @@ function extractPhonetic(text: string): string {
   // For local platform, fetch full dictionary result for exp + phon
   let expText = (tr.result || "").trim();
   let phonText = "";
-  if (wordBtn && getPref("wordbookPlatform") === "local") {
+  // Also fetch full dictionary result when annotation sync + annotation
+  // translate is enabled, so the annotation comment/body contains the full
+  // dictionary entry instead of just the short translation.
+  const needDictForAnnotation = getPref("enableAnnotationSync") &&
+    getPref("enableAnnotationTranslate");
+  if (wordBtn && (getPref("wordbookPlatform") === "local" || needDictForAnnotation)) {
     // Determine which word to query: when lemma mode is on, use the
     // headword so phon/exp match the stored word (not the inflected form).
     const dictWord = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
@@ -940,7 +1130,7 @@ function extractPhonetic(text: string): string {
   // Full mode: also query Translate for Zotero's dictionary service for a
   // richer, dictionary-style result (matches the selection popup output).
   if (getPref("translateDisplayMode") === "full") {
-    void fillDictionaryResult(word, reader, doc, popup, fontSize, lineHeight);
+    void fillDictionaryResult(word, reader, doc, dictArea, fontSize, lineHeight);
   }
 
   // Start auto-close timer now that the translation is visible.
@@ -953,7 +1143,7 @@ function extractPhonetic(text: string): string {
     isSingleEnglishWord(word) &&
     wordBtn
   ) {
-    void autoAddWordWithButton(word, wordBtn, expText, phonText);
+    void autoAddWordWithButton(word, wordBtn, expText, phonText, reader, range);
   }
 }
 
@@ -963,13 +1153,29 @@ async function autoAddWordWithButton(
   btn: HTMLButtonElement,
   trResult?: string,
   phonText?: string,
+  reader?: _ZoteroTypes.ReaderInstance,
+  range?: Range,
 ) {
   try {
     const win = btn.ownerDocument?.defaultView as Window | null;
     if (win) _cancelAutoClose(win);
     btn.textContent = "+";
     btn.setAttribute("disabled", "true");
-    const ok = await addWordToEudic(word, trResult || "", phonText || "");
+    // Build annotation context (same as manual click path).
+    const annotationCtx = reader
+      ? {
+          attachmentID: (reader as any).itemID as number,
+          reader,
+          range,
+        }
+      : undefined;
+    try {
+      (globalThis as any).Zotero?.debug?.(
+        `[hte-ann] hoverTranslate(auto): building ctx, reader.itemID=${(reader as any)?.itemID}, ` +
+        `hasReader=${!!reader}, hasRange=${!!range}`,
+      );
+    } catch { /* ignore */ }
+    const ok = await addWordToEudic(word, trResult || "", phonText || "", annotationCtx);
     if (ok) {
       btn.textContent = "✓";
       btn.style.color = "#22c55e";
@@ -1086,7 +1292,7 @@ async function fillDictionaryResult(
   word: string,
   reader: _ZoteroTypes.ReaderInstance,
   doc: Document,
-  popup: HTMLElement,
+  container: HTMLElement,
   fontSize: string,
   lineHeight: string,
 ) {
@@ -1131,7 +1337,7 @@ async function fillDictionaryResult(
         .replace(/\s+(n\.|adj\.|adv\.|v\.|vi\.|vt\.|prep\.|conj\.|pron\.|int\.|网络释义)\s*/gi,
           (_: string, pos: string) => `\n<span style="color:${tc.primary}">${pos}</span> `)
         .replace(/^\n+/, '');
-      appendExtraResult(doc, popup, formatted, fontSize, lineHeight, true);
+      appendExtraResult(doc, container, formatted, fontSize, lineHeight, true);
     }
   } catch (e: any) {
     dbg(`dict query failed: ${e?.message || e}`);
@@ -1158,11 +1364,39 @@ async function translateWord(
   // auto-detect and stabilises the cache key.
   const langfrom = "en";
   const langto = getPdfTranslateTargetLang();
-  // D1/D2: use pdf-translate's current translateSource (the engine
-  // the user selected). This is already the default in api.translate;
-  // we pass it explicitly so the cache key is deterministic.
-  const service = getPdfTranslateSource() || "";
-  const cacheKey = makeCacheKey(word, service, langfrom, langto);
+  // 服务选择：与插件的"译文引擎"设置联动，语义同 pdf-translate 面板的
+  // "使用字典服务翻译词语"——
+  //   - 译文引擎 = 字典引擎（更快，取首条释义）：单词优先用词典源
+  //     dictSource（如必应词典，免费且稳定），失败自动回退翻译源（传
+  //     service 数组让 pdf-translate 处理回退）；
+  //   - 译文引擎 = 翻译引擎（稍慢，释义更贴切）：一律直接用翻译源
+  //     translateSource，不再经过词典源。
+  const translateSource = getPdfTranslateSource() || "";
+  let service: string | string[] | undefined = translateSource || undefined;
+  try {
+    if (
+      getPref("translateEngine") === "dict" &&
+      isSingleEnglishWord(word)
+    ) {
+      const enableDict = Zotero.Prefs.get(
+        "extensions.zotero.ZoteroPDFTranslate.enableDict",
+        true,
+      );
+      const dictSource = Zotero.Prefs.get(
+        "extensions.zotero.ZoteroPDFTranslate.dictSource",
+        true,
+      );
+      if (enableDict && dictSource && dictSource !== translateSource) {
+        service = [String(dictSource), translateSource];
+      }
+    }
+  } catch {
+    /* keep translateSource */
+  }
+  const cacheServiceKey = Array.isArray(service)
+    ? service.join("|")
+    : service || "";
+  const cacheKey = makeCacheKey(word, cacheServiceKey, langfrom, langto);
 
   // D2: dedup concurrent requests by caching the promise itself.
   const cached = translateCache.get(cacheKey);
@@ -1176,7 +1410,7 @@ async function translateWord(
       const task = await pdf.api.translate(word, {
         pluginID: config.addonID,
         itemID: reader.itemID,
-        service: service || undefined,
+        service,
         langfrom,
         langto,
       });
@@ -1200,21 +1434,66 @@ async function translateWord(
   return promise;
 }
 
-function positionPopup(innerWin: Window, popup: HTMLElement) {
-  // Use last pointer position stored on the inner window by mousemove handler.
-  const last = (innerWin as any).__hoverLastPos as
-    | { x: number; y: number }
-    | undefined;
+function positionPopup(innerWin: Window, popup: HTMLElement, range?: Range) {
   const vw = innerWin.innerWidth;
   const vh = innerWin.innerHeight;
   const EST_W = 240;
   const EST_H = 120;
-  let x = (last?.x ?? vw / 2) + 14;
-  let y = (last?.y ?? vh / 2) + 18;
-  if (x + EST_W > vw) x = (last?.x ?? vw / 2) - EST_W - 14;
-  if (x < 4) x = 4;
-  if (y + EST_H > vh) y = (last?.y ?? vh / 2) - EST_H - 10;
-  if (y < 4) y = 4;
+  const GAP = 8;
+
+  // 优先锚定单词 Range 的包围盒（与高亮同一套坐标，弹窗永远贴近文本）。
+  let anchor: { x: number; top: number; bottom: number } | null = null;
+  if (range) {
+    const rects = range.getClientRects();
+    if (rects?.length) {
+      let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+      for (const r of rects) {
+        if (r.width === 0 && r.height === 0) continue;
+        left = Math.min(left, r.left);
+        right = Math.max(right, r.right);
+        top = Math.min(top, r.top);
+        bottom = Math.max(bottom, r.bottom);
+      }
+      if (isFinite(left)) anchor = { x: left, top, bottom };
+    }
+  }
+
+  let x: number;
+  let y: number;
+
+  if (anchor) {
+    // 弹窗此时已在文档中（调用方先挂载再定位），实测实际宽高，
+    // 避免估算误差导致上方翻转时弹窗离文本太远。
+    const W = popup.offsetWidth || EST_W;
+    const H = popup.offsetHeight || EST_H;
+    // 垂直：优先放文本下方，空间不足则翻转到上方（间距均为 GAP）。
+    const spaceBelow = vh - anchor.bottom;
+    const spaceAbove = anchor.top;
+    const placeBelow = spaceBelow >= spaceAbove || spaceBelow >= Math.min(H, 132);
+    if (placeBelow) {
+      y = anchor.bottom + GAP;
+    } else {
+      y = anchor.top - H - GAP;
+    }
+    // 水平：左边缘对齐文本左边缘，越界则收进视口。
+    x = anchor.x;
+    if (x + W > vw) x = Math.max(4, vw - W - 4);
+    if (x < 4) x = 4;
+    if (y < 4) y = 4;
+    if (y + H > vh) y = Math.max(4, vh - H - 4);
+  } else {
+    // 回退：用鼠标最后位置（原逻辑）。
+    const last = (innerWin as any).__hoverLastPos as
+      | { x: number; y: number }
+      | undefined;
+    x = (last?.x ?? vw / 2) + 14;
+    y = (last?.y ?? vh / 2) + 18;
+    if (x + EST_W > vw) x = (last?.x ?? vw / 2) - EST_W - 14;
+    if (x < 4) x = 4;
+    if (y + EST_H > vh) y = (last?.y ?? vh / 2) - EST_H - 10;
+    if (y < 4) y = 4;
+  }
+
   popup.style.left = `${x}px`;
   popup.style.top = `${y}px`;
 }
@@ -1226,6 +1505,8 @@ function maybeAddWordButton(
   container: HTMLElement,
   word: string,
   scene: "hover" | "selection",
+  reader?: _ZoteroTypes.ReaderInstance,
+  range?: Range,
 ): HTMLButtonElement | null {
   if (!getPref("enableEudicSync")) return null;
   const scenePref = getPref("buttonShowScene");
@@ -1246,7 +1527,7 @@ function maybeAddWordButton(
 
   const btn = doc.createElement("button");
   btn.textContent = "+";
-  // Circular outline button, placed to the right of word + translation.
+  // Circular outline button, placed to the left of word + translation.
   btn.style.cssText = [
     "width:28px",
     "height:28px",
@@ -1273,7 +1554,20 @@ function maybeAddWordButton(
     btn.setAttribute("disabled", "true");
     const trResult = btn.dataset.trResult || "";
     const phon = btn.dataset.phon || "";
-    const ok = await addWordToEudic(word, trResult, phon);
+    const annotationCtx = reader
+      ? {
+          attachmentID: (reader as any).itemID as number,
+          reader,
+          range,
+        }
+      : undefined;
+    try {
+      (globalThis as any).Zotero?.debug?.(
+        `[hte-ann] hoverTranslate: building ctx, reader.itemID=${(reader as any)?.itemID}, ` +
+        `hasReader=${!!reader}, hasRange=${!!range}`,
+      );
+    } catch { /* ignore */ }
+    const ok = await addWordToEudic(word, trResult, phon, annotationCtx);
     if (ok) {
       btn.textContent = "✓";
       btn.style.color = "#22c55e";
@@ -1292,7 +1586,13 @@ function maybeAddWordButton(
     }, 1000);
   });
 
-  container.appendChild(btn);
+  // + 按钮位置：左侧 → 插入到行首（单词和译文前面）；右侧 → 追加到行尾（默认）。
+  const btnPos = (getPref("wordButtonPosition") as string) || "right";
+  if (btnPos === "left") {
+    container.insertBefore(btn, container.firstChild);
+  } else {
+    container.appendChild(btn);
+  }
   return btn;
 }
 
@@ -1305,7 +1605,7 @@ function maybeAddWordButton(
  * services (e.g. BingDict) ONLY populate audio with IPA but NOT the
  * result text.
  */
-async function fetchDictResult(
+export async function fetchDictResult(
   word: string,
   reader: _ZoteroTypes.ReaderInstance,
 ): Promise<{ result: string; audio: { text: string; url: string }[] } | null> {
@@ -1434,6 +1734,13 @@ async function addWordToEudic(
   word: string,
   translateResult?: string,
   phon?: string,
+  annotationCtx?: {
+    attachmentID: number;
+    reader?: any;
+    range?: Range;
+    viewportRects?: { top: number; left: number; width: number; height: number }[];
+    pageIndex?: number;
+  },
 ): Promise<boolean> {
   // Lemmatise inflected forms to dictionary headwords before API call
   // when lemmaMode is "lemma"; skip lemmatisation when "inflected".
@@ -1452,36 +1759,66 @@ async function addWordToEudic(
     } catch { /* ignore */ }
   }
   const platform = getPref("wordbookPlatform") as string;
+  let ok = false;
   if (platform === "maimemo") {
     const client = createMaimemoClientFromPrefs();
     if (!client) return false;
     const categoryId = getPref("maimemoCategoryId") as string;
     const res = await client.addWord(word.toLowerCase(), categoryId);
-    return res.success;
-  }
-  if (platform === "local") {
-    return addWordToLocal({
+    ok = res.success;
+  } else if (platform === "local") {
+    ok = await addWordToLocal({
       word: lemma,
       phon: phon || "",
       exp: translateResult || "",
     });
-  }
-  if (platform === "shanbay") {
+  } else if (platform === "shanbay") {
     const client = createShanbayClientFromPrefs();
     if (!client) return false;
     const res = await client.addWord(word.toLowerCase());
-    return res.success;
+    ok = res.success;
+  } else {
+    // platform === "eudic" (explicit guard, not fallthrough)
+    if (platform !== "eudic") {
+      Zotero.debug(`[hover-translate-eudic] unknown platform="${platform}", skipping`);
+      return false;
+    }
+    const client = createEudicClientFromPrefs();
+    if (!client) return false;
+    const categoryId = getPref("eudicCategoryId");
+    const res = await client.addWord(lemma, categoryId);
+    ok = res.success;
   }
-  // platform === "eudic" (explicit guard, not fallthrough)
-  if (platform !== "eudic") {
-    Zotero.debug(`[hover-translate-eudic] unknown platform="${platform}", skipping`);
-    return false;
+
+  // Sync annotation after successful wordbook add (best-effort, never throws).
+  if (ok && annotationCtx) {
+    try {
+      try {
+        (globalThis as any).Zotero?.debug?.(
+          `[hte-ann] hoverTranslate: wordbook add ok, calling syncWordAnnotation, ` +
+          `attachmentID=${annotationCtx.attachmentID}, hasRange=${!!annotationCtx.range}, ` +
+          `hasReader=${!!annotationCtx.reader}`,
+        );
+      } catch { /* ignore */ }
+      const { syncWordAnnotation } = await import("./annotationSync");
+      void syncWordAnnotation({
+        attachmentID: annotationCtx.attachmentID,
+        word,
+        translation: translateResult || "",
+        reader: annotationCtx.reader,
+        range: annotationCtx.range,
+        viewportRects: annotationCtx.viewportRects,
+        pageIndex: annotationCtx.pageIndex,
+      });
+    } catch { /* ignore annotation errors */ }
+  } else {
+    try {
+      (globalThis as any).Zotero?.debug?.(
+        `[hte-ann] hoverTranslate: skip sync (ok=${ok}, hasCtx=${!!annotationCtx})`,
+      );
+    } catch { /* ignore */ }
   }
-  const client = createEudicClientFromPrefs();
-  if (!client) return false;
-  const categoryId = getPref("eudicCategoryId");
-  const res = await client.addWord(lemma, categoryId);
-  return res.success;
+  return ok;
 }
 
 /* ----------------------------- helpers ----------------------------- */
