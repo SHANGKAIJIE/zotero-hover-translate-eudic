@@ -199,9 +199,46 @@ export function recordAnnotationID(attachmentID: number, key: string): void {
   }
 }
 
+/**
+ * 补录候选注释 ID 到跟踪列表（自动识别旧插件注释）。
+ * 打开 PDF 时,把「单词型 highlight/underline」注释(本插件创建特征)
+ * 补录到 annotationTrackedIDs——解决升级前创建的旧注释未被记录、
+ * word 模式下便签无法隐藏的问题。返回是否有新增(供调用方重注入)。
+ */
+function backfillTrackedIDs(
+  attachmentID: number | string | undefined,
+  candidateKeys: string[],
+): boolean {
+  if (!attachmentID || !Array.isArray(candidateKeys) || !candidateKeys.length) {
+    return false;
+  }
+  try {
+    const map = readTrackedMap();
+    const aid = String(attachmentID);
+    const list = Array.isArray(map[aid]) ? map[aid] : [];
+    let changed = false;
+    for (const k of candidateKeys) {
+      if (typeof k === "string" && k && !list.includes(k)) {
+        list.push(k);
+        changed = true;
+      }
+    }
+    if (changed) {
+      map[aid] = list;
+      writeTrackedMap(map);
+      noteLog(
+        `backfilled plugin annotations: +${candidateKeys.length} candidates for attachment=${aid}`,
+      );
+    }
+    return changed;
+  } catch (e) {
+    noteLog("backfillTrackedIDs error: " + dumpErr(e));
+    return false;
+  }
+}
+
 /** 扁平化全部跟踪 ID（供注入判定使用）。 */
-function getAllTrackedIDs(): string[] {
-  const map = readTrackedMap();
+function getAllTrackedIDs(): string[] {  const map = readTrackedMap();
   const set = new Set<string>();
   for (const list of Object.values(map)) {
     if (Array.isArray(list)) {
@@ -502,6 +539,7 @@ function buildPatchSource(params: PatchParams): string {
     state.lastCounters = Object.assign({}, state.counters);
     // 收集当前 reader 中全部注释的 ID（供主进程对照清理跟踪列表，自愈删除事件遗漏）
     let liveKeys = [];
+    let pluginCandidates = [];
     try {
       const all = [];
       for (const view of views) {
@@ -511,6 +549,20 @@ function buildPatchSource(params: PatchParams): string {
         }
       }
       liveKeys = [...new Set(all.map((a) => a && a.id).filter(Boolean))];
+      // 自动补录候选:本插件创建特征的注释(单词型 highlight/underline)——
+      // 供主进程补录到 annotationTrackedIDs,解决升级前创建的旧注释
+      // 未被记录、word 模式下便签无法隐藏的问题。
+      const cands = [];
+      for (const a of all) {
+        if (!a || !a.id) continue;
+        const t = String(a.type || "");
+        if (t !== "highlight" && t !== "underline") continue;
+        const txt = String(a.text || "").trim();
+        if (/^[A-Za-z\u00C0-\u024F]+(?:['’-][A-Za-z\u00C0-\u024F]+)*$/.test(txt)) {
+          cands.push(a.id);
+        }
+      }
+      pluginCandidates = [...new Set(cands)];
     } catch {
       /* ignore */
     }
@@ -526,6 +578,7 @@ function buildPatchSource(params: PatchParams): string {
       changed,
       counters,
       keys: liveKeys,
+      pluginCandidates,
     };
   })()`;
 }
@@ -549,6 +602,22 @@ function attachToReader(reader: any): boolean {
       const attachmentID = (reader as any)?.itemID ?? (reader as any)?._itemID ?? (reader as any)?._attachmentItemID;
       if (Array.isArray(ok.keys)) {
         pruneTrackedIDsForAttachment(attachmentID, ok.keys);
+      }
+      // 自动补录旧注释:word 模式下,把「单词型高亮/下划线」候选补录到
+      // 跟踪列表;有新增则用更新后的 trackedIDs 重新注入一次(应用隐藏)。
+      if (
+        getPatchParams().mode === "word" &&
+        Array.isArray(ok.pluginCandidates) &&
+        ok.pluginCandidates.length
+      ) {
+        if (backfillTrackedIDs(attachmentID, ok.pluginCandidates)) {
+          try {
+            const ok2 = win.eval.call(win, buildPatchSource(getPatchParams()));
+            return !!ok2;
+          } catch (e) {
+            noteLog("backfill re-inject error: " + dumpErr(e));
+          }
+        }
       }
       return true;
     }

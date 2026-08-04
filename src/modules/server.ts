@@ -15,6 +15,7 @@
  */
 
 import { setPref } from "../utils/prefs";
+import pkg from "../../package.json";
 
 class ShanbayPingEndpoint {
   supportedMethods = ["GET"];
@@ -24,7 +25,7 @@ class ShanbayPingEndpoint {
   init(_urlObj: any, _data: any, sendResponse: Function) {
     sendResponse(200, "application/json", JSON.stringify({
       plugin: "hover-translate-eudic",
-      version: __env__,
+      version: pkg.version,
       alive: true,
     }));
   }
@@ -63,7 +64,7 @@ class MaimemoPingEndpoint {
   init(_urlObj: any, _data: any, sendResponse: Function) {
     sendResponse(200, "application/json", JSON.stringify({
       plugin: "hover-translate-eudic",
-      version: __env__,
+      version: pkg.version,
       alive: true,
     }));
   }

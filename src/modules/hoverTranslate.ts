@@ -29,6 +29,14 @@ import { createEudicClientFromPrefs } from "./eudic";
 import { createMaimemoClientFromPrefs } from "./maimemo";
 import { createShanbayClientFromPrefs } from "./shanbay";
 import { addWord as addWordToLocal } from "./localWordbook";
+import {
+  locateWordHybrid,
+  pdfRectsToViewport,
+  wordAnchorFromLocated,
+  clearPageLocatorCache,
+  getPdfViewerApp,
+  type LocatedWord,
+} from "./wordLocator";
 
 const HIGHLIGHT_OVERLAY_ID = `${config.addonRef}-highlight-overlay`;
 const HIGHLIGHT_CLASS = `${config.addonRef}-highlight`;
@@ -90,18 +98,72 @@ function getPdfTranslateTargetLang(): string {
 
 // --- D5: cached dark-mode detection ---
 let _cachedDark: boolean | null = null;
+let _themeObserver: MutationObserver | null = null;
 
 function initThemeWatcher() {
   try {
     const mainWin = Zotero.getMainWindow();
+    // 系统级兜底：OS 主题变化时清缓存
     const mql = mainWin.matchMedia("(prefers-color-scheme: dark)");
     if (mql) {
       mql.addEventListener("change", () => {
         _cachedDark = null;
+        refreshAllPopupThemes();
+      });
+    }
+    // Zotero 级（zotero-style 约定）：主窗口 <window> 根元素上的
+    // theme="dark"/"light" 属性是用户切换日间/夜间的权威信号。
+    // 用 MutationObserver 监听该属性变化，实时清缓存 + 重绘已打开弹窗。
+    const root = mainWin.document.documentElement;
+    if (root && typeof MutationObserver !== "undefined") {
+      _themeObserver = new MutationObserver(() => {
+        _cachedDark = null;
+        refreshAllPopupThemes();
+      });
+      _themeObserver.observe(root, {
+        attributes: true,
+        attributeFilter: ["theme", "data-theme", "class"],
       });
     }
   } catch {
     /* ignore */
+  }
+}
+
+function stopThemeWatcher() {
+  try {
+    _themeObserver?.disconnect();
+  } catch {
+    /* ignore */
+  }
+  _themeObserver = null;
+}
+
+/**
+ * 主题切换后重绘所有已打开的 hover 弹窗与悬停高亮
+ * （跟随 zotero-style：window[theme="dark"] 变化 → 实时更新，无需重新翻译）。
+ */
+function refreshAllPopupThemes() {
+  for (const { innerWin } of attached.values()) {
+    try {
+      // 弹窗换肤：更新根元素 CSS 变量
+      const popup = innerWin.document.getElementById(POPUP_ID) as HTMLElement | null;
+      if (popup) applyThemeVars(popup, getThemeColors(innerWin));
+      // 悬停高亮换色：夜间 normal+半透明（白字可读），日间 multiply+原色
+      const dark = isDarkMode(innerWin);
+      const blend = dark ? "normal" : "multiply";
+      const baseColor = getPref("highlightColor") || "rgba(255,233,79,1.0)";
+      const bg = dark ? toTranslucent(baseColor, 0.4) : baseColor;
+      const hl = innerWin.document.querySelectorAll(
+        `.${HIGHLIGHT_CLASS}, #${HIGHLIGHT_OVERLAY_ID}`,
+      );
+      for (const el of hl) {
+        (el as HTMLElement).style.mixBlendMode = blend;
+        (el as HTMLElement).style.background = bg;
+      }
+    } catch {
+      /* ignore detached reader */
+    }
   }
 }
 
@@ -158,6 +220,7 @@ export function cleanupAll() {
     }
     pollTimer = null;
   }
+  stopThemeWatcher();
   for (const [, info] of attached) {
     try {
       info.cleanup();
@@ -267,6 +330,21 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     // D6: update last pointer pos here (merged from injectPopupStyle's
     // extra mousemove listener — one listener instead of two per window).
     (win as any).__hoverLastPos = { x: ev.clientX, y: ev.clientY };
+    // 仅对 PDF 渲染窗口处理取词:鼠标移到左侧注释/笔记面板等非 PDF 区域时,
+    // 不取词,并清除所有已监控窗口的高亮——避免注释面板文本被误取词后
+    // 在 PDF 上反查到词导致高亮莫名出现、位置混乱。
+    if (!isPdfViewerWindow(win)) {
+      for (const w of targets) {
+        try {
+          (w as any).__hteHighlightSeq = ((w as any).__hteHighlightSeq || 0) + 1;
+          clearHighlight(w);
+        } catch {
+          /* ignore */
+        }
+      }
+      lastHitRef.set(null);
+      return;
+    }
     // While the user is actively selecting text (mouse down + dragging),
     // suppress hover so it does not fight the selection gesture. Annotation
     // ranges kept live by Zotero in the textLayer selection are NOT treated
@@ -312,6 +390,8 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       if (!getPref("enableHoverTranslate")) return;
       if (getPref("triggerMode") !== "click") return;
       const win = (ev.view as Window) || activeWinRef.win;
+      // 仅 PDF 渲染窗口取词(注释面板点击不触发 preheat)
+      if (!isPdfViewerWindow(win)) return;
       const hit = getWordAtPoint(win.document, ev.clientX, ev.clientY);
       if (hit) {
         // translateWord checks D2 cache internally; if already running or
@@ -349,6 +429,11 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       }
       const win = (ev.view as Window) || activeWinRef.win;
       activeWinRef.win = win;
+      // 仅 PDF 渲染窗口取词(点击注释面板不触发翻译/高亮)
+      if (!isPdfViewerWindow(win)) {
+        clearHover(win);
+        return;
+      }
       const hit = getWordAtPoint(win.document, ev.clientX, ev.clientY);
       if (!hit) {
         clearHover(win);
@@ -356,7 +441,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       }
       lastWord = hit.word;
       if (getPref("enableHighlight")) {
-        applyHighlight(win, hit.range);
+        void highlightHit(win, reader, hit, ev.clientX, ev.clientY);
       }
       // Translate immediately (no debounce for click mode).
       void doTranslate(win, reader, hit.word, lastWordRef, contextLineRef, hit.range);
@@ -390,7 +475,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       if (popupShown(activeWinRef.win, hit.word)) return;
       lastWordRef.set(hit.word);
       if (getPref("enableHighlight")) {
-        applyHighlight(activeWinRef.win, hit.range);
+        void highlightHit(activeWinRef.win, reader, hit);
       }
       void doTranslate(activeWinRef.win, reader, hit.word, lastWordRef, contextLineRef, hit.range);
     } catch {
@@ -415,6 +500,8 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
         activeWinRef.win.clearTimeout(sweepPreheatTimer);
         sweepPreheatTimer = null;
       }
+      // 递增序号使飞行中的 highlightHit 失效,避免其完成后复活已清除的高亮
+      (activeWinRef.win as any).__hteHighlightSeq = ((activeWinRef.win as any).__hteHighlightSeq || 0) + 1;
       clearHighlight(activeWinRef.win);
     } catch {
       /* suppress */
@@ -460,7 +547,62 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     }
   }
 
+  // ── scalechange reflow:缩放变化时用 C 字符 rect 重算高亮 + 重定位弹窗 ──
+  // 参考 sentence-translator 的 reflow 机制,消除缩放后高亮/弹窗漂移。
+  const onScaleChange = () => {
+    try {
+      const located = (activeWinRef.win as any).__hteLastLocated as LocatedWord | null | undefined;
+      const range = (activeWinRef.win as any).__hteLastRange as Range | null | undefined;
+      if (!located || !range) return;
+      // 先清空旧高亮,再按当前 viewport 重算(位置跟随新缩放)
+      applyHighlight(activeWinRef.win, range, located);
+      const popup = activeWinRef.win.document.getElementById(POPUP_ID) as HTMLElement | null;
+      if (popup) {
+        try {
+          repositionHoverPopup(activeWinRef.win, popup, range);
+        } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+  };
+  let scaleEventBus: any = null;
+  let scaleRetryTimer: number | null = null;
+  const tryRegisterScale = () => {
+    try {
+      const app = getPdfViewerApp(innerWin);
+      const eb = app?.eventBus ?? null;
+      if (eb?.on) {
+        eb.on("scalechanging", onScaleChange);
+        eb.on("scalechanged", onScaleChange);
+        scaleEventBus = eb;
+        dbg(`scalechange reflow registered`);
+      } else {
+        // viewer iframe 可能尚未就绪,延迟重试(attach 时 iframe 常未加载完)
+        dbg(`scalechange register retry: no eventBus yet (app=${!!app})`);
+        scaleRetryTimer = (innerWin as any).setTimeout?.(tryRegisterScale, 1000) ?? null;
+      }
+    } catch (e) {
+      dbg(`scalechange register error: ${e}`);
+      scaleRetryTimer = (innerWin as any).setTimeout?.(tryRegisterScale, 1000) ?? null;
+    }
+  };
+  tryRegisterScale();
+
   const cleanup = () => {
+    try {
+      if (scaleRetryTimer != null) {
+        (innerWin as any).clearTimeout?.(scaleRetryTimer);
+        scaleRetryTimer = null;
+      }
+    } catch { /* ignore */ }
+    try {
+      if (scaleEventBus?.off) {
+        scaleEventBus.off("scalechanging", onScaleChange);
+        scaleEventBus.off("scalechanged", onScaleChange);
+      }
+    } catch { /* ignore */ }
+    try {
+      clearPageLocatorCache(reader);
+    } catch { /* ignore */ }
     try {
       if (hoverTimer) activeWinRef.win.clearTimeout(hoverTimer);
     } catch {
@@ -490,6 +632,10 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       // Clear any popup/highlight left in every window.
       clearHover(win);
     }
+    try {
+      delete (innerWin as any).__hteLastLocated;
+      delete (innerWin as any).__hteLastRange;
+    } catch { /* ignore */ }
   };
 
   attached.set(reader, { innerWin, cleanup });
@@ -526,6 +672,25 @@ function safeHref(win: any): string {
     return win?.document?.location?.href || win?.location?.href || "?";
   } catch {
     return "?";
+  }
+}
+
+/**
+ * 是否为 PDF 渲染窗口(reader 的 viewer iframe:含 .textLayer / .page,
+ * 或暴露 PDFViewerApplication)。左侧注释/笔记面板、reader 顶层窗口等
+ * 非 PDF 区域一律返回 false —— 取词高亮仅针对 PDF 界面。
+ */
+function isPdfViewerWindow(win: Window): boolean {
+  try {
+    if (!win?.document) return false;
+    if ((win as any).PDFViewerApplication) return true;
+    const doc = win.document;
+    return (
+      !!doc.querySelector(".textLayer") ||
+      !!doc.querySelector(".page[data-page-number]")
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -581,6 +746,8 @@ function onReaderMouseMove(
     const hit = getWordAtPoint(innerWin.document, ev.clientX, ev.clientY);
     if (!hit) {
       // Moved off a word — clear highlight but keep popup (timer closes it).
+      // 递增序号使飞行中的 highlightHit 失效,避免其完成后复活已清除的高亮。
+      (innerWin as any).__hteHighlightSeq = ((innerWin as any).__hteHighlightSeq || 0) + 1;
       clearHighlight(innerWin);
       // Clear last hit so keydown doesn't trigger on empty space.
       lastHitRef.set(null);
@@ -615,7 +782,8 @@ function onReaderMouseMove(
 
     // Highlight is INDEPENDENT of the hover-translate master switch.
     if (highlightEnabled) {
-      applyHighlight(innerWin, hit.range);
+      // C 通道优先(字符 rect 精确),A 通道(range)兜底——渐进增强
+      void highlightHit(innerWin, reader, hit, ev.clientX, ev.clientY);
     } else {
       clearHighlight(innerWin);
     }
@@ -895,10 +1063,66 @@ function findPageElement(node: Node | null): HTMLElement | null {
   return null;
 }
 
-function applyHighlight(innerWin: Window, range: Range) {
+function applyHighlight(
+  innerWin: Window,
+  range: Range,
+  located?: LocatedWord | null,
+) {
   clearHighlight(innerWin);
   const doc = innerWin.document;
   const color = getPref("highlightColor") || "rgba(255,233,79,1.0)";
+  const dark = isDarkMode(innerWin);
+  // 混合模式/不透明度跟随主题：
+  //  - 日间：multiply + 原色。pdf.js 阅读器文字画在 canvas 上（黑字），
+  //    multiply 让黑字保持深色可读、白底被压成黄色。
+  //  - 夜间：normal + 半透明。Zotero 反色后文字是白色，任何混合模式
+  //    （multiply/screen）都会破坏白字；改用半透明覆盖层，白字透过
+  //    半透明黄色依然清晰，黄色块在黑底上也醒目。
+  const blend = dark ? "normal" : "multiply";
+  const bg = dark ? toTranslucent(color, 0.4) : color;
+
+  // ── C 通道优先：字符 rect 渲染（PDF 数据层，消除浏览器度量偏差）──
+  // 坐标基准:convertToViewportPoint 返回【page 元素局部坐标】,
+  // 高亮 div 挂 pageEl 内 position:absolute,直接赋值 left/top,
+  // 【不要再减 pageEl 位置】——否则双重偏移,高亮完全错位
+  // (sentence-translator 的 positionPdfRect 同此逻辑,已验证)。
+  if (located) {
+    // 坐标基准:convertToViewportPoint 返回 page 局部坐标,挂到
+    // 【同一个 pageEl】(pdfRectsToViewport 返回的,与 viewport 同源)
+    // 上,position:absolute 直接赋值 left/top。不能用 range 的 pageEl——
+    // 两者 document 可能不同导致整体偏移。
+    const { rects: vp, pageEl } = pdfRectsToViewport(innerWin, located.locator, located.rects);
+    if (vp.length) {
+      dbg(`highlight C: ${vp.length} rects, pageEl=${!!pageEl}, first=(${vp[0].left.toFixed(1)},${vp[0].top.toFixed(1)},${vp[0].width.toFixed(1)}x${vp[0].height.toFixed(1)})`);
+      for (const r of vp) {
+        const el = doc.createElement("div");
+        el.className = HIGHLIGHT_CLASS;
+        if (pageEl) {
+          el.style.cssText = [
+            "position:absolute",
+            `left:${r.left}px`, `top:${r.top}px`,
+            `width:${r.width}px`, `height:${r.height}px`,
+            `background:${bg}`, "border-radius:2px",
+            "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
+          ].join(";");
+          pageEl.appendChild(el);
+        } else {
+          el.style.cssText = [
+            "position:fixed", `left:${r.left}px`, `top:${r.top}px`,
+            `width:${r.width}px`, `height:${r.height}px`,
+            `background:${bg}`, "border-radius:2px",
+            "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
+          ].join(";");
+          doc.body?.appendChild(el);
+        }
+      }
+    }
+    // 记录 C 命中结果，供弹窗锚定 / scalechange reflow 复用
+    (innerWin as any).__hteLastLocated = located;
+    return;
+  }
+  (innerWin as any).__hteLastLocated = null;
+
   const pageEl = findPageElement(range.startContainer);
 
   if (!pageEl) {
@@ -910,8 +1134,8 @@ function applyHighlight(innerWin: Window, range: Range) {
       "position:fixed",
       `left:${rect.left}px`, `top:${rect.top}px`,
       `width:${rect.width}px`, `height:${rect.height}px`,
-      `background:${color}`, "border-radius:2px",
-      "pointer-events:none", "z-index:20", "mix-blend-mode:multiply",
+      `background:${bg}`, "border-radius:2px",
+      "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
     ].join(";");
     doc.body?.appendChild(overlay);
     return;
@@ -929,11 +1153,75 @@ function applyHighlight(innerWin: Window, range: Range) {
       "position:absolute",
       `left:${r.left - pageRect.left}px`, `top:${r.top - pageRect.top}px`,
       `width:${r.width}px`, `height:${r.height}px`,
-      `background:${color}`, "border-radius:2px",
-      "pointer-events:none", "z-index:20", "mix-blend-mode:multiply",
+      `background:${bg}`, "border-radius:2px",
+      "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
     ].join(";");
     pageEl.appendChild(el);
   }
+}
+
+/**
+ * 高亮辅助:C 通道(字符 rect)优先,A 通道(range)兜底。
+ * 命中时把 C 结果写入 win 供弹窗锚定 / reflow 复用。
+ */
+async function highlightHit(
+  innerWin: Window,
+  reader: _ZoteroTypes.ReaderInstance,
+  hit: { word: string; range: Range },
+  mouseX?: number,
+  mouseY?: number,
+): Promise<void> {
+  // 竞态防护:C 通道首次构建页定位器耗时较长(注入桥接 + getPageData),
+  // 快速移动时多个 highlightHit 并发,后发起的不一定后完成,会乱序覆盖
+  // 高亮。用 per-window 递增序号标记:任何新的 mousemove / 主动清除都会
+  // 递增序号,使旧任务失效,只有「最新一次」允许落盘(applyHighlight/清除)。
+  const seq = ((innerWin as any).__hteHighlightSeq || 0) + 1;
+  (innerWin as any).__hteHighlightSeq = seq;
+  (innerWin as any).__hteLastRange = hit.range;
+  let located: LocatedWord | null = null;
+  try {
+    // 传鼠标坐标:让 C 通道用真实鼠标位置定位,而非 A 的 range 中心
+    // (range 是浏览器度量,可能带偏差;鼠标坐标直接转 PDF 更准)
+    const result = await locateWordHybrid(reader, innerWin, hit, mouseX, mouseY);
+    if ((innerWin as any).__hteHighlightSeq !== seq) return; // 过期,丢弃
+    // 词间隙(gap):鼠标在词与词之间的空白处 → 不高亮、不显示弹窗
+    if (result && (result as { gap?: boolean }).gap) {
+      clearHighlight(innerWin);
+      clearPopup(innerWin);
+      (innerWin as any).__hteLastLocated = null;
+      return;
+    }
+    located = result as LocatedWord | null;
+  } catch {
+    if ((innerWin as any).__hteHighlightSeq !== seq) return; // 过期,丢弃
+    located = null;
+  }
+  if ((innerWin as any).__hteHighlightSeq !== seq) return; // 过期,丢弃
+  applyHighlight(innerWin, hit.range, located);
+}
+
+/**
+ * 把颜色转为指定 alpha 的半透明 rgba（支持 #rgb / #rrggbb / rgb() / rgba()）。
+ * 解析失败时原样返回。用于夜间模式下高亮改为半透明覆盖层，
+ * 保证白色文字透过高亮依然可读。
+ */
+function toTranslucent(color: string, alpha: number): string {  const c = color.trim();
+  // hex: #rgb / #rrggbb
+  const hex = c.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3) h = h.split("").map((x) => x + x).join("");
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  // rgb() / rgba()
+  const rgb = c.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (rgb) {
+    return `rgba(${rgb[1]}, ${rgb[2]}, ${rgb[3]}, ${alpha})`;
+  }
+  return color;
 }
 
 function clearHighlight(innerWin: Window) {
@@ -971,26 +1259,29 @@ async function doTranslate(
     "z-index:2147483647",
     "min-width:90px",
     "max-width:380px",
-    `background:${tc.bg}`,
-    `border:1px solid ${tc.border}`,
+    "background:var(--hte-bg, #ffffff)",
+    "border:1px solid var(--hte-border, #d4d4d4)",
     "border-radius:8px",
-    `box-shadow:${tc.shadow}`,
+    "box-shadow:var(--hte-shadow, 0 4px 16px rgba(0,0,0,0.18))",
     "padding:6px 8px",
     "font-family:inherit",
+    "transition:background-color .2s, border-color .2s, color .2s",
   ].join(";");
+  // 主题色板写入 CSS 变量必须在 cssText 赋值之后（cssText 会整体替换 style 属性）
+  applyThemeVars(popup, tc);
 
   const raw = doc.createElement("div");
   raw.textContent = word;
   raw.style.cssText =
-    `color:${tc.raw};font-size:12px;margin-bottom:2px;word-break:break-word;`;
+    "color:var(--hte-raw, #666666);font-size:12px;margin-bottom:2px;word-break:break-word;transition:color .2s;";
 
   const status = doc.createElement("div");
   status.textContent = getString("hover-popup-translating");
   status.style.cssText =
-    `color:${tc.status};font-size:12px;font-style:italic;`;
+    "color:var(--hte-status, #888888);font-size:12px;font-style:italic;transition:color .2s;";
 
   const result = doc.createElement("div");
-  result.style.cssText = `color:${tc.primary};white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};font-weight:400;padding-left:4px;`;
+  result.style.cssText = `color:var(--hte-primary, #1a1a1a);white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};font-weight:400;padding-left:4px;transition:color .2s;`;
 
   // Flex row: left column (word + translation) + right circular button.
   // 简洁(仅译文)模式：保持原布局，row 铺满弹窗内容宽度（弹窗宽度自适应内容，
@@ -1211,11 +1502,15 @@ async function autoAddWordWithButton(
     btn.textContent = "+";
     btn.setAttribute("disabled", "true");
     // Build annotation context (same as manual click path).
+    const lastPos = (win as any)?.__hoverLastPos as { x?: number; y?: number } | undefined;
     const annotationCtx = reader
       ? {
           attachmentID: (reader as any).itemID as number,
           reader,
           range,
+          // 传鼠标坐标:C 通道定位批注几何用真实鼠标位置,不受 textLayer 错位影响
+          mouseX: lastPos?.x,
+          mouseY: lastPos?.y,
         }
       : undefined;
     try {
@@ -1236,10 +1531,9 @@ async function autoAddWordWithButton(
     }
     if (win) _resumeAutoClose(win);
     setTimeout(() => {
-      const tc = getThemeColors(win || undefined);
       btn.textContent = "+";
-      btn.style.color = tc.raw;
-      btn.style.borderColor = tc.btnBorder;
+      btn.style.color = "var(--hte-raw, #666666)";
+      btn.style.borderColor = "var(--hte-btn-border, rgba(130,130,130,0.38))";
       btn.removeAttribute("disabled");
     }, 1000);
   } catch {
@@ -1327,7 +1621,6 @@ function appendExtraResult(
   /** 分割线方向：top=分隔线在释义上方（释义位于核心区下方时）；bottom=在释义下方（释义位于核心区上方时） */
   dividerPos: "top" | "bottom" = "top",
 ) {
-  const tc = getThemeColors(doc.defaultView || undefined);
   const ex = doc.createElement("div");
   if (isHtml) {
     ex.innerHTML = text;
@@ -1336,9 +1629,9 @@ function appendExtraResult(
   }
   const divider =
     dividerPos === "bottom"
-      ? `margin-bottom:4px;border-bottom:1px solid ${tc.divider};padding-bottom:4px;`
-      : `margin-top:4px;border-top:1px solid ${tc.divider};padding-top:4px;`;
-  ex.style.cssText = `color:${tc.secondary};white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};${divider}`;
+      ? "margin-bottom:4px;border-bottom:1px solid var(--hte-divider, #e0e0e0);padding-bottom:4px;"
+      : "margin-top:4px;border-top:1px solid var(--hte-divider, #e0e0e0);padding-top:4px;";
+  ex.style.cssText = `color:var(--hte-secondary, #555555);white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};${divider}transition:color .2s;`;
   popup.appendChild(ex);
 }
 
@@ -1386,11 +1679,10 @@ async function fillDictionaryResult(
       itemID: reader.itemID,
     });
     if (task && task.status === "success" && task.result) {
-      const tc = getThemeColors(doc.defaultView || undefined);
       const formatted = task.result
         .replace(/;\s*/g, '\n')
         .replace(/\s+(n\.|adj\.|adv\.|v\.|vi\.|vt\.|prep\.|conj\.|pron\.|int\.|网络释义)\s*/gi,
-          (_: string, pos: string) => `\n<span style="color:${tc.primary}">${pos}</span> `)
+          (_: string, pos: string) => `\n<span style="color:var(--hte-primary, #1a1a1a)">${pos}</span> `)
         .replace(/^\n+/, '');
       appendExtraResult(
         doc,
@@ -1565,18 +1857,17 @@ function syncPopupLayout(popup: HTMLElement, placeBelow: boolean): void {
     // 移动，也要修正异步填充的释义元素方向：释义创建时按设置偏好设方向，
     // 翻转场景下可能与实际位置不一致，如偏好上方但翻转下方时释义在核心区
     // 之后，分割线必须是 border-top 而不是创建时的 border-bottom）
-    const tc = getThemeColors(popup.ownerDocument?.defaultView || undefined);
     for (const ex of Array.from(dictArea.children) as HTMLElement[]) {
       if (placeBelow) {
         ex.style.marginTop = "4px";
-        ex.style.borderTop = `1px solid ${tc.divider}`;
+        ex.style.borderTop = "1px solid var(--hte-divider, #e0e0e0)";
         ex.style.paddingTop = "4px";
         ex.style.marginBottom = "";
         ex.style.borderBottom = "";
         ex.style.paddingBottom = "";
       } else {
         ex.style.marginBottom = "4px";
-        ex.style.borderBottom = `1px solid ${tc.divider}`;
+        ex.style.borderBottom = "1px solid var(--hte-divider, #e0e0e0)";
         ex.style.paddingBottom = "4px";
         ex.style.marginTop = "";
         ex.style.borderTop = "";
@@ -1596,8 +1887,17 @@ function positionPopup(innerWin: Window, popup: HTMLElement, range?: Range) {
   const GAP = 8;
 
   // 优先锚定单词 Range 的包围盒（与高亮同一套坐标，弹窗永远贴近文本）。
+  // C 通道优先：用字符 rect 的视口坐标（精确）；否则回退 range 几何。
   let anchor: { x: number; top: number; bottom: number } | null = null;
-  if (range) {
+  const located = (innerWin as any).__hteLastLocated as LocatedWord | null | undefined;
+  if (located) {
+    try {
+      anchor = wordAnchorFromLocated(innerWin, located);
+    } catch {
+      anchor = null;
+    }
+  }
+  if (!anchor && range) {
     const rects = range.getClientRects();
     if (rects?.length) {
       let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
@@ -1693,7 +1993,6 @@ function maybeAddWordButton(
   if (!hasStorage) return null;
 
   const doc = container.ownerDocument!;
-  const tc = getThemeColors(innerWin);
 
   const btn = doc.createElement("button");
   btn.textContent = "+";
@@ -1705,10 +2004,10 @@ function maybeAddWordButton(
     "flex-shrink:0",
     "border-radius:6px",
     "box-shadow:0 0 4px rgba(128,128,128,0.15)",
-    `border:1.5px solid ${tc.btnBorder}`,
-    "background:transparent",
+    "border:1.5px solid var(--hte-btn-border, rgba(130,130,130,0.38))",
+    "background:var(--hte-btn-bg, rgba(255,255,255,0.04))",
     "padding:0",
-    `color:${tc.raw}`,
+    "color:var(--hte-raw, #666666)",
     "font-size:16px",
     "font-weight:bold",
     "cursor:pointer",
@@ -1724,11 +2023,15 @@ function maybeAddWordButton(
     btn.setAttribute("disabled", "true");
     const trResult = btn.dataset.trResult || "";
     const phon = btn.dataset.phon || "";
+    const lastPos = (innerWin as any)?.__hoverLastPos as { x?: number; y?: number } | undefined;
     const annotationCtx = reader
       ? {
           attachmentID: (reader as any).itemID as number,
           reader,
           range,
+          // 传鼠标坐标:C 通道定位批注几何用真实鼠标位置,不受 textLayer 错位影响
+          mouseX: lastPos?.x,
+          mouseY: lastPos?.y,
         }
       : undefined;
     try {
@@ -1750,8 +2053,8 @@ function maybeAddWordButton(
     _resumeAutoClose(innerWin);
     setTimeout(() => {
       btn.textContent = "+";
-      btn.style.color = tc.raw;
-      btn.style.borderColor = tc.btnBorder;
+      btn.style.color = "var(--hte-raw, #666666)";
+      btn.style.borderColor = "var(--hte-btn-border, rgba(130,130,130,0.38))";
       btn.removeAttribute("disabled");
     }, 1000);
   });
@@ -2083,7 +2386,25 @@ async function addWordToEudic(
 
 /** Detect if Zotero is in dark mode using multiple strategies. */
 function isDarkMode(innerWin?: Window): boolean {
-  // Strategy 1: Check the inner window's matchMedia (most reliable for iframe).
+  // Strategy 1 (zotero-style 约定): main window <window> root `theme`
+  // attribute — the authoritative signal for Zotero's own day/night toggle
+  // (Preferences → Appearance → theme). zotero-style follows it via the
+  // `window[theme="dark"]` CSS selector; we read the same attribute.
+  try {
+    const mainWin = Zotero.getMainWindow();
+    const docEl = mainWin.document.documentElement;
+    if (docEl) {
+      const theme = docEl.getAttribute("theme");
+      dbg(`isDarkMode: mainWin theme="${theme}"`);
+      if (theme === "dark") return true;
+      // 显式 light 也直接采用（Zotero 手动切换日间，不跟随系统）
+      if (theme === "light") return false;
+    }
+  } catch {
+    /* ignore */
+  }
+  // Strategy 2: Check the inner window's matchMedia (system-level fallback,
+  // only consulted when the main window has no theme attribute).
   if (innerWin) {
     try {
       const mql = innerWin.matchMedia("(prefers-color-scheme: dark)");
@@ -2094,18 +2415,6 @@ function isDarkMode(innerWin?: Window): boolean {
     } catch {
       /* matchMedia not available */
     }
-  }
-  // Strategy 2: Check main window's <window> theme attribute.
-  try {
-    const mainWin = Zotero.getMainWindow();
-    const docEl = mainWin.document.documentElement;
-    if (docEl) {
-      const theme = docEl.getAttribute("theme");
-      dbg(`isDarkMode: mainWin theme="${theme}"`);
-      if (theme === "dark") return true;
-    }
-  } catch {
-    /* ignore */
   }
   // Strategy 3: Check the computed background color of the reader's body.
   if (innerWin) {
@@ -2171,6 +2480,26 @@ function getThemeColors(innerWin?: Window) {
   };
 }
 
+/**
+ * 把主题色板写入弹窗根元素的 CSS 变量。所有子元素通过
+ * `var(--hte-*)` 引用颜色，主题切换（zotero-style 的
+ * window[theme="dark"] 变化）时只需调用本函数重设根元素变量，
+ * 已打开的弹窗即可实时换肤，无需重建 DOM 或重新翻译。
+ */
+function applyThemeVars(popup: HTMLElement, tc: ReturnType<typeof getThemeColors>) {
+  const s = popup.style;
+  s.setProperty("--hte-bg", tc.bg);
+  s.setProperty("--hte-border", tc.border);
+  s.setProperty("--hte-raw", tc.raw);
+  s.setProperty("--hte-status", tc.status);
+  s.setProperty("--hte-primary", tc.primary);
+  s.setProperty("--hte-secondary", tc.secondary);
+  s.setProperty("--hte-btn-bg", tc.btnBg);
+  s.setProperty("--hte-btn-border", tc.btnBorder);
+  s.setProperty("--hte-divider", tc.divider);
+  s.setProperty("--hte-shadow", tc.shadow);
+}
+
 function getTranslateFontPrefs(): { fontSize: string; lineHeight: string } {
   try {
     const fs = Zotero.Prefs.get(
@@ -2199,6 +2528,8 @@ function injectPopupStyle(innerWin: Window) {
 }
 
 function clearHover(innerWin: Window) {
+  // 使飞行中的 highlightHit 任务失效(递增序号),避免其完成后复活已清除的高亮
+  (innerWin as any).__hteHighlightSeq = ((innerWin as any).__hteHighlightSeq || 0) + 1;
   clearHighlight(innerWin);
   clearPopup(innerWin);
 }

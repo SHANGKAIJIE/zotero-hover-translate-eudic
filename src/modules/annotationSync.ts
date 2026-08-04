@@ -28,6 +28,9 @@ export interface AnnotationContext {
   translation: string;
   /** hover scene: DOM Range of the word. */
   range?: Range;
+  /** hover scene: 鼠标坐标(视口系),供 C 通道(字符 rect)定位更准确。 */
+  mouseX?: number;
+  mouseY?: number;
   /** selection scene: viewport rects {top,left,width,height}. */
   viewportRects?: { top: number; left: number; width: number; height: number }[];
   /** selection scene: 0-based page index. */
@@ -116,8 +119,8 @@ export async function syncWordAnnotation(
     }
 
     // ---- 3. 解析 PDF rects + pageIndex ----
-    let rects: PdfRect[];
-    let pageIndex: number;
+    let rects: PdfRect[] | undefined;
+    let pageIndex: number | undefined;
 
     if (ctx.pdfRects && ctx.pdfRects.length > 0) {
       // selection scene — rects are already in PDF user space, no conversion.
@@ -140,16 +143,41 @@ export async function syncWordAnnotation(
       annLog(`PDFViewerApplication window found successfully`);
 
       if (ctx.range) {
-      // hover scene — convert DOM Range to PDF coords.
-      annLog(`hover scene: converting DOM Range to PDF rects`);
-      const conv = domRectsToPdfRects(ctx.range, viewerWin);
-      if (!conv) {
-        annLog(`syncWordAnnotation FAIL: failed to convert DOM Range to PDF rects`);
-        return false;
+      // hover scene — C 通道优先：字符 rect（PDF 数据层）直接作为批注几何。
+      // 修复:Zotero 9 批注渲染(getPageRects)与 A 通道同源,都基于 textLayer
+      // range 的浏览器度量,textLayer span 错位时批注位置偏移。C 通道的
+      // LocatedWord.rects 本身就是 PDF 用户坐标,无需再做 range→PDF 转换,
+      // 且不受 textLayer 错位影响(与取词高亮 trust C 同一数据源)。
+      try {
+        const { locateWordHybrid } = await import("./wordLocator");
+        const located = await locateWordHybrid(
+          ctx.reader,
+          viewerWin,
+          { word: ctx.word, range: ctx.range },
+          ctx.mouseX,
+          ctx.mouseY,
+        );
+        if (located && !(located as { gap?: boolean }).gap) {
+          const loc = located as { rects: PdfRect[]; locator: { pageIndex: number } };
+          rects = loc.rects;
+          pageIndex = loc.locator.pageIndex;
+          annLog(`hover scene: C-channel char rects, pageIndex=${pageIndex}, rects=${dump(rects)}`);
+        }
+      } catch (e) {
+        annLog(`hover scene: C-channel error (${dumpErr(e)}), fallback DOM range`);
       }
-      rects = conv.rects;
-      pageIndex = conv.pageIndex;
-      annLog(`hover scene: pageIndex=${pageIndex}, rects=${dump(rects)}`);
+      if (!rects) {
+        // C 通道不可用(API 缺失 / 页未构建 / 定位失败)→ 回退 DOM Range 转换
+        annLog(`hover scene: converting DOM Range to PDF rects`);
+        const conv = domRectsToPdfRects(ctx.range, viewerWin);
+        if (!conv) {
+          annLog(`syncWordAnnotation FAIL: failed to convert DOM Range to PDF rects`);
+          return false;
+        }
+        rects = conv.rects;
+        pageIndex = conv.pageIndex;
+        annLog(`hover scene: pageIndex=${pageIndex}, rects=${dump(rects)}`);
+      }
       } else if (
         ctx.viewportRects && ctx.viewportRects.length > 0 &&
         ctx.pageIndex != null
@@ -179,7 +207,7 @@ export async function syncWordAnnotation(
     // ---- 5. 构建 sortIndex ----
     const top = Math.max(...rects.map((r) => r[3]));
     const sortIndex = [
-      String(pageIndex).padStart(5, "0"),
+      String(pageIndex ?? 0).padStart(5, "0"),
       "000000",
       String(Math.floor(Math.abs(top))).padStart(5, "0"),
     ].join("|");
@@ -260,10 +288,10 @@ export async function syncWordAnnotation(
       text: annotationText,
       comment,
       color,
-      pageLabel: String(pageIndex + 1),
+      pageLabel: String((pageIndex ?? 0) + 1),
       sortIndex,
       position: {
-        pageIndex,
+        pageIndex: pageIndex ?? 0,
         rects,
       },
     };
@@ -274,7 +302,7 @@ export async function syncWordAnnotation(
       annLog(`json.tags set to [{name:"${autoTagName}"}]`);
     }
     annLog(`saving annotation: key=${key}, type=${markType}, color=${color}, ` +
-      `pageIndex=${pageIndex}, pageLabel=${json.pageLabel}, rects=${dump(rects)}`);
+      `pageIndex=${pageIndex ?? 0}, pageLabel=${json.pageLabel}, rects=${dump(rects)}`);
 
     const safeJson = cloneIntoChrome(json);
     annLog(`cloneIntoChrome done, safeJson keys=${dump(Object.keys(safeJson))}`);

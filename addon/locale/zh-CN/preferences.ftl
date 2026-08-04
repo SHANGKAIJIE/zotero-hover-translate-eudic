@@ -20,7 +20,6 @@ pref-modifierShift =
 pref-enableHighlight =
     .label = 取词高亮（临时高亮匹配单词，不修改 PDF）
 pref-highlightColor = 高亮颜色：
-pref-highlightColorHex = Color:
 pref-highlightColorAlpha = 透明度：
 pref-highlightColorA-unit = %
 pref-hoverDelay = 悬停触发延迟：

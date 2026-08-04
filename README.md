@@ -4,7 +4,8 @@
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.9-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.3.0-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
 
 <img width="731" height="331" alt="微信图片_20260801191142_62_119_看图王" src="https://github.com/user-attachments/assets/61c1bbaa-706a-4d03-93a6-9e964e6eaed1" />
 
@@ -20,6 +21,7 @@
 - **一键同步欧路 / 扇贝 / 墨墨 / 本地生词本**：翻译弹窗内点击圆形 `+` 按钮，将当前单词加入云端指定生词本或本地 CSV 文件（添加后切换为 `✓` 或 `✗` 状态反馈）。支持**欧路词典**、**扇贝单词**、**墨墨背单词**与**本地生词本**四平台切换。
 - **编辑云端生词本**：设置面板中直接浏览所有生词本，支持添加、重命名、删除操作。
 - **精准取词高亮**：取词时可选对单词施加高亮，颜色（Color 十六进制 + 透明度）与开关完全独立配置。高亮使用 canvas 级 PDF 坐标定位（基于 `_pdfPages.chars` 字符级数据），与文字精确对齐。
+- **C 通道渐进增强定位**（v0.3.0）：取词（A 通道 DOM 命中）与定位（C 通道 PDF 字符 rect）分离——C 后台按页构建字符索引，就绪后高亮/弹窗/批注全部跟随字符级几何；坐标定位失败时以取词文本在字符流中匹配兜底（锚点取文本流偏移，重复词悬停第 N 个即高亮第 N 个）；仅当 C 数据缺失时才降级 A 的 DOM 几何，高亮永不缺席。
 - **深色模式自适应**：翻译弹窗跟随 Zotero（含 zotero-style 等主题插件）的深色 / 浅色模式自动切换配色。
 - **加词同步创建 PDF 注释**：将单词加入生词本时，自动在 PDF 上创建高亮/下划线注释，支持翻译写入评论或正文、自动添加标签（v0.2.8）。
 - **隐藏便签图标**：按需隐藏 PDF 中高亮/下划线/图片注释的便签图标（支持仅本插件注释 / 全部文本注释两种范围），独立便签图标可单独控制，注释 ID 自动跟踪与清理（v0.2.8）。

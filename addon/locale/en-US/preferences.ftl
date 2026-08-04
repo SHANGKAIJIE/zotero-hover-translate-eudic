@@ -20,7 +20,6 @@ pref-modifierShift =
 pref-enableHighlight =
     .label = Highlight word on hover (temporary, does not modify PDF)
 pref-highlightColor = Highlight color:
-pref-highlightColorHex = Color:
 pref-highlightColorAlpha = Opacity:
 pref-highlightColorA-unit = %
 pref-hoverDelay = Hover delay:
