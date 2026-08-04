@@ -591,7 +591,8 @@ function attachToReader(reader: any): boolean {
     return false;
   }
   try {
-    const ok = win.eval.call(win, buildPatchSource(getPatchParams()));
+    const params = getPatchParams();
+    const ok = win.eval.call(win, buildPatchSource(params));
     if (ok && typeof ok === "object") {
       try {
         noteLog("attach ok: " + JSON.stringify(ok));
@@ -603,10 +604,30 @@ function attachToReader(reader: any): boolean {
       if (Array.isArray(ok.keys)) {
         pruneTrackedIDsForAttachment(attachmentID, ok.keys);
       }
+      // ===== 关键修复：patch 必须真正安装到 layer/renderer 原型上才算 attach 成功 =====
+      // 重启 Zotero 恢复标签页 / 新开 PDF 时，reader iframe 先于 PDF 页面初始化，
+      // 首次注入可能发生在 root._reader / _pages / _pageRenderer._layer 尚未创建时——
+      // 注入代码遍历不到任何实例，prototype 未被替换，便签图标不会被隐藏。
+      // 旧实现只要 eval 返回对象就视为 attach 成功并加入 attachedReaders，
+      // scanAllReaders 轮询因此永久跳过该 reader，表现为"重启后图标仍显示，
+      // 必须手动切换 pref 或新增生词（触发全量 reapplyAll）才生效"。
+      // 修复：未就绪时返回 false，由轮询在 PDF 页面就绪后重试，直到 patch 安装成功。
+      if (params.mode !== "off") {
+        const ready =
+          !!ok.readerFound &&
+          (ok.pages as number) > 0 &&
+          ((ok.layers as number) > 0 || (ok.renderers as number) > 0);
+        if (!ready) {
+          noteLog(
+            `attach deferred (reader/page not ready): readerFound=${ok.readerFound} pages=${ok.pages} layers=${ok.layers} renderers=${ok.renderers}`,
+          );
+          return false;
+        }
+      }
       // 自动补录旧注释:word 模式下,把「单词型高亮/下划线」候选补录到
       // 跟踪列表;有新增则用更新后的 trackedIDs 重新注入一次(应用隐藏)。
       if (
-        getPatchParams().mode === "word" &&
+        params.mode === "word" &&
         Array.isArray(ok.pluginCandidates) &&
         ok.pluginCandidates.length
       ) {
