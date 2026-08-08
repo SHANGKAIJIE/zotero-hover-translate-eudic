@@ -17,6 +17,8 @@ import { MaimemoClient, createMaimemoClientFromPrefs } from "./maimemo";
 import { ShanbayClient, createShanbayClientFromPrefs } from "./shanbay";
 import { exportWordbook, exportWordEntries } from "./eudicExport";
 import { getWords as getLocalWords } from "./localWordbook";
+import { getWordsFromNote, openNoteForEditing, listNotes, createNoteWordbook, renameNoteWordbook, deleteNoteWordbook, getNoteTitle } from "./zoteroNote";
+import { parseKeybinding } from "./addWordShortcut";
 import { FilePickerHelper } from "zotero-plugin-toolkit";
 
 const ref = config.addonRef;
@@ -51,8 +53,18 @@ const DEFAULTS: Record<string, any> = {
   eudicLanguage: "en",
   buttonShowScene: "both",
   addWordMode: "manual",
+  addWordShortcut: "",
   lemmaMode: "lemma",
   localSavePath: "",
+  zoteroNoteTitle: "生词本",
+  // 生词本面板设置
+  enableWordbookPanel: false,
+  panelFontSize: 15,
+  panelHidePhon: false,
+  panelHideExp: false,
+  panelHidePlay: false,
+  panelWordScope: "current",
+  panelSortMode: "reverse",
   // 注释设置
   enableAnnotationSync: false,
   enableAnnotationTranslate: false,
@@ -90,7 +102,8 @@ export async function registerPrefsScripts(win: Window) {
   else if (platform === "shanbay") token = getPref("shanbayToken") as string;
   else token = getPref("eudicToken") as string;
   const autoFetch = getPref("enableEudicSync") && !!token;
-  if (autoFetch) {
+  // Zotero 笔记平台：无需 token，直接填充笔记标题下拉
+  if (autoFetch || platform === "zotero") {
     win.setTimeout(() => void refreshCategories(win, true), 200);
   }
   updateTranslateEngineHintVisibility(win);
@@ -208,9 +221,12 @@ function initAnnotationColorPicker(win: Window) {
 
 /** Force every bound menulist to reflect its current pref value's label. */
 function syncAllMenulists(win: Window) {
+  const isZoteroPlatform = (getPref("wordbookPlatform") as string) === "zotero";
   win.document.querySelectorAll("menulist[preference]").forEach((ml: any) => {
     const key = ml.getAttribute("preference");
     if (!key) return;
+    // Zotero 笔记平台：eudicCategoryId 下拉实际承载笔记标题（由 refreshCategories 管理），跳过强制同步
+    if (isZoteroPlatform && key === "eudicCategoryId") return;
     const val = getPref(key as any);
     if (val == null) return;
     const v = String(val);
@@ -292,6 +308,41 @@ function updateTokenVisibility(win: Window) {
   if (localPathBox) localPathBox.hidden = platform !== "local";
   const categoryRow = $(`${ref}-categoryRow`, win);
   if (categoryRow) categoryRow.hidden = platform === "local";
+
+  // Zotero 笔记平台 UI：
+  //  - 「选择生词本」文字改为「笔记名称」，固定为「生词本」（menulist 禁用）
+  //  - 去掉「刷新列表」「编辑词本」按钮，保留「打开笔记」按钮
+  const isZotero = platform === "zotero";
+  const eudicCatLabel = $(`${ref}-eudicCategoryLabel`, win);
+  const zoteroCatLabel = $(`${ref}-zoteroCategoryLabel`, win);
+  if (eudicCatLabel) eudicCatLabel.hidden = isZotero;
+  if (zoteroCatLabel) zoteroCatLabel.hidden = !isZotero;
+  const catMenulist = $(`zotero-prefpane-${ref}-eudicCategoryId`, win);
+  if (catMenulist) {
+    catMenulist.disabled = isZotero;
+    if (isZotero) {
+      // 固定显示「生词本」（不随 eudicCategoryId pref 变化）
+      try {
+        catMenulist.value = "生词本";
+        catMenulist.label = "生词本";
+      } catch { /* ignore */ }
+    }
+  }
+  const refreshBtn = $(`${ref}-refreshCategoryBtn`, win);
+  if (refreshBtn) refreshBtn.hidden = isZotero;
+  const editCatBtn = $(`${ref}-editCategoryBtn`, win);
+  if (editCatBtn) editCatBtn.hidden = isZotero;
+  const editNoteBtn = $(`${ref}-editNoteBtn`, win);
+  if (editNoteBtn) editNoteBtn.hidden = !isZotero;
+
+  // 生词本面板设置区块：始终显示（「开启右侧信息栏的生词本面板」与提示
+  // 「仅当生词本平台为本地生词表、Zotero 笔记时可使用」一直可见）。
+  // 实际启用由面板 setEnabled 逻辑控制：平台 ∈ {local, zotero} 且勾选
+  // enableWordbookPanel 时才启用信息栏的面板与面板开启按钮。
+  const panelSectionBox = $(`${ref}-panelSectionBox`, win);
+  if (panelSectionBox) {
+    panelSectionBox.hidden = false;
+  }
 }
 
 /** Show/hide the translate engine hint — only visible when engine is "translate". */
@@ -402,6 +453,8 @@ function updateAnnotationTranslatePositionState(win: Window) {
 function syncCategorySelectionUI(win: Window) {
   const menulist = $(`zotero-prefpane-${ref}-eudicCategoryId`, win);
   if (!menulist) return;
+  // Zotero 笔记平台：下拉值即笔记标题，由 refreshCategories 填充，无需按 ID 同步
+  if ((getPref("wordbookPlatform") as string) === "zotero") return;
   const savedId = getPref("eudicCategoryId");
   // Ensure the popup contains an item for the saved id.
   const popup = menulist.menupopup || menulist.querySelector("menupopup");
@@ -600,6 +653,10 @@ function bindPrefEvents(win: Window) {
         }
       }
     }
+    // Zotero 笔记平台：下拉已禁用且固定为「生词本」，不写 zoteroNoteTitle
+    if ((getPref("wordbookPlatform") as string) === "zotero") {
+      return;
+    }
     setPref("eudicCategoryId", String(v));
     setPref("eudicCategoryName", String(name));
   });
@@ -702,11 +759,111 @@ function bindPrefEvents(win: Window) {
   if (editBtn) {
     editBtn.addEventListener("command", () => void handleEditWordbooks(win));
   }
+  // Zotero 笔记平台：打开笔记按钮
+  const editNoteBtn = $(`${ref}-editNoteBtn`, win);
+  if (editNoteBtn) {
+    editNoteBtn.addEventListener("command", () => {
+      const title = getNoteTitle();
+      void openNoteForEditing(title).then((opened) => {
+        if (!opened) win.alert("未找到或无法打开笔记，请先添加一个单词以创建笔记");
+      });
+    });
+  }
+  // 加词快捷键输入框：聚焦即录（点击后直接按单字母/组合键即可识别）。
+  bindShortcutInputCapture(win, `zotero-prefpane-${ref}-addWordShortcut`);
   // export button
   const exportBtn = $(`${ref}-exportBtn`, win);
   if (exportBtn) {
     exportBtn.addEventListener("command", () => void handleExport(win));
   }
+}
+
+/* ------------------- add-word shortcut input capture ------------------- */
+
+const SHORTCUT_MODIFIER_KEYS = new Set(["Control", "Alt", "Shift", "Meta"]);
+
+/**
+ * 聚焦即录快捷键输入框：点击输入框后直接按下按键（单字母或组合键）即
+ * 自动识别并写入；Backspace/Delete 清空（= 留空不启用）；Escape 取消。
+ * 中文输入法激活时 Firefox keydown.key 为 "Process"，用 ev.code 回退
+ * （KeyA→A / Digit1→1 / Numpad1→1）；死键（Dead）忽略。
+ */
+function bindShortcutInputCapture(win: Window, inputId: string) {
+  const input = $(inputId, win) as any;
+  if (!input) return;
+
+  const keyFromEvent = (ev: KeyboardEvent): string => {
+    const key = ev.key;
+    if (key && key !== "Process" && key !== "Dead") return key;
+    const code = ev.code || "";
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+    if (/^Numpad[0-9]$/.test(code)) return code.slice(6);
+    return "";
+  };
+
+  const commit = () => {
+    const raw = (input.value || "").toString().trim();
+    if (!raw) {
+      setPref("addWordShortcut", "");
+      return;
+    }
+    // 规范化：统一大写显示（单字母场景），保留组合键顺序。
+    const kb = parseKeybinding(raw);
+    if (!kb) {
+      input.value = (getPref("addWordShortcut") as string) || "";
+      return;
+    }
+    const parts: string[] = [];
+    if (kb.ctrl) parts.push("Ctrl");
+    if (kb.alt) parts.push("Alt");
+    if (kb.shift) parts.push("Shift");
+    if (kb.meta) parts.push("Meta");
+    parts.push(kb.key.length === 1 ? kb.key.toUpperCase() : kb.key);
+    const normalized = parts.join("+");
+    input.value = normalized;
+    setPref("addWordShortcut", normalized);
+  };
+
+  // 初始化显示当前保存值
+  const saved = (getPref("addWordShortcut") as string) || "";
+  input.value = saved;
+
+  const onKeyDown = (ev: KeyboardEvent) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const key = keyFromEvent(ev);
+    if (!key) return;
+    if (key === "Backspace" || key === "Delete") {
+      input.value = "";
+      setPref("addWordShortcut", "");
+      return;
+    }
+    if (key === "Escape") {
+      input.value = (getPref("addWordShortcut") as string) || "";
+      input.blur();
+      return;
+    }
+    if (SHORTCUT_MODIFIER_KEYS.has(key)) return; // 等待主键
+    const parts: string[] = [];
+    if (ev.ctrlKey) parts.push("Ctrl");
+    if (ev.altKey) parts.push("Alt");
+    if (ev.shiftKey) parts.push("Shift");
+    if (ev.metaKey) parts.push("Meta");
+    parts.push(key.length === 1 ? key.toUpperCase() : key);
+    input.value = parts.join("+");
+    commit();
+    input.blur();
+  };
+
+  input.addEventListener("focus", () => {
+    input.classList.add("hte-shortcut-recording");
+  });
+  input.addEventListener("blur", () => {
+    input.classList.remove("hte-shortcut-recording");
+    commit();
+  });
+  input.addEventListener("keydown", onKeyDown, true);
 }
 
 /* ----------------------------- export ----------------------------- */
@@ -716,6 +873,7 @@ function getExportBaseName(): string {
   if (p === "maimemo") return "maimemo-wordbook";
   if (p === "shanbay") return "shanbay-wordbook";
   if (p === "local") return "local-wordbook";
+  if (p === "zotero") return "zotero-note-wordbook";
   return "eudic-wordbook";
 }
 
@@ -762,6 +920,61 @@ async function handleExport(win: Window) {
       const words = await getLocalWords();
       if (words.length === 0) {
         win.alert("本地生词本为空，无内容可导出");
+        return;
+      }
+      const msg = await exportWordEntries(words, format as any, {
+        outFile: outFile || undefined,
+        autoReveal,
+        compact: true,
+        baseName: getExportBaseName(),
+      });
+      win.alert(msg);
+    } catch (e: any) {
+      win.alert(`导出失败：${e?.message || "未知错误"}`);
+    }
+    return;
+  }
+
+  // Zotero 笔记平台：从笔记读取词条导出（复用同一导出管线）
+  if (platform === "zotero") {
+    const formatEl = $(`${ref}-exportFormat`, win) as any;
+    const format: string = formatEl?.value || "csv";
+    const autoReveal = getPref("exportAutoReveal") as boolean;
+    const savePath = (getPref("exportSavePath") as string || "").trim();
+
+    const extMap: Record<string, string> = {
+      csv: "csv", tsv: "tsv", txt: "txt", json: "json",
+    };
+    const ext = extMap[format] || "csv";
+
+    let outFile: any = null;
+    if (savePath) {
+      try {
+        const nsIFile = (Components as any).interfaces.nsIFile;
+        const file = (Components as any).classes["@mozilla.org/file/local;1"]
+          .createInstance(nsIFile);
+        file.initWithPath(savePath);
+        if (file.exists() && !file.isDirectory()) {
+          const parent = file.parent;
+          if (parent) {
+            parent.append(`${getExportBaseName()}.${ext}`);
+            outFile = parent;
+          }
+        } else {
+          if (!file.exists()) {
+            file.create((Components as any).interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
+          }
+          file.append(`${getExportBaseName()}.${ext}`);
+          outFile = file;
+        }
+      } catch { /* fall through */ }
+    }
+
+    try {
+      const title = getNoteTitle();
+      const words = await getWordsFromNote(title);
+      if (words.length === 0) {
+        win.alert("笔记生词本为空，无内容可导出");
         return;
       }
       const msg = await exportWordEntries(words, format as any, {
@@ -917,6 +1130,35 @@ async function handleEditWordbooks(win: Window) {
     }
   } else if (platform === "shanbay") {
     win.alert("扇贝单词仅支持默认生词本，无需编辑。");
+  } else if (platform === "zotero") {
+    // Zotero 笔记平台：复用编辑词本对话框，这里的"生词本"即笔记
+    const api = {
+      getCategories: async () => {
+        const notes = await listNotes();
+        return notes.map((n) => ({ id: n.id, name: n.name, language: "note" }));
+      },
+      createCategory: async (name: string) => {
+        await createNoteWordbook(name);
+      },
+      renameCategory: async (id: string, currentName: string, newName: string) => {
+        await renameNoteWordbook(id, currentName, newName);
+      },
+      deleteCategory: async (id: string, name: string) => {
+        await deleteNoteWordbook(id, name);
+      },
+    };
+    const args = { api, categories: [] };
+    const mainWin = Zotero.getMainWindow() as any;
+    try {
+      mainWin.openDialog(
+        "chrome://hovertranslateeudic/content/edit-wordbook-dialog.xhtml",
+        "edit-wordbook",
+        "centerscreen,resizable,width=520,height=400",
+        args,
+      );
+    } catch {
+      win.alert("无法打开编辑窗口，请确认插件已正确安装。");
+    }
   } else {
     // Eudic
     const token = getPref("eudicToken") as string;
@@ -989,6 +1231,33 @@ async function refreshCategories(win: Window, silent: boolean) {
   pdbg("refreshCategories start");
 
   const platform = getPref("wordbookPlatform") as string;
+
+  // Zotero 笔记平台：笔记名称固定为「生词本」，下拉禁用，无需远程列表
+  if (platform === "zotero") {
+    try {
+      const menulist = $(`zotero-prefpane-${ref}-eudicCategoryId`, win);
+      if (menulist) {
+        const popup: any =
+          menulist.menupopup || menulist.querySelector("menupopup");
+        if (popup) {
+          while (popup.firstChild) popup.removeChild(popup.firstChild);
+          const item = (win.document as any).createXULElement("menuitem") as any;
+          item.setAttribute("value", "生词本");
+          item.setAttribute("label", "生词本");
+          popup.appendChild(item);
+        }
+        try {
+          menulist.value = "生词本";
+          menulist.label = "生词本";
+        } catch { /* ignore */ }
+      }
+    } catch (e: any) {
+      pdbg(`zotero titles refresh error: ${e?.message || e}`);
+    }
+    refreshInProgress = false;
+    return;
+  }
+
   let token: string;
   let client: EudicClient | MaimemoClient | ShanbayClient;
 

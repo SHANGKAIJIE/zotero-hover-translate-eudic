@@ -187,6 +187,7 @@
             <menuitem value="shanbay" data-l10n-id="pref-wordbookPlatform-shanbay" />
             <menuitem value="maimemo" data-l10n-id="pref-wordbookPlatform-maimemo" />
             <menuitem value="local" data-l10n-id="pref-wordbookPlatform-local" />
+            <menuitem value="zotero" data-l10n-id="pref-wordbookPlatform-zotero" />
           </menupopup>
         </menulist>
       </hbox>
@@ -280,7 +281,8 @@
       </vbox>
 
       <hbox id="__addonRef__-categoryRow" align="center">
-        <label class="pref-label" data-l10n-id="pref-eudicCategory" />
+        <label class="pref-label" data-l10n-id="pref-eudicCategory" id="__addonRef__-eudicCategoryLabel" />
+        <label class="pref-label" data-l10n-id="pref-zoteroNoteName" id="__addonRef__-zoteroCategoryLabel" hidden="true" />
         <menulist
           id="zotero-prefpane-__addonRef__-eudicCategoryId"
           preference="eudicCategoryId"
@@ -292,6 +294,8 @@
         </menulist>
         <button id="__addonRef__-refreshCategoryBtn" data-l10n-id="pref-eudicCategory-refresh" />
         <button id="__addonRef__-editCategoryBtn" data-l10n-id="pref-eudicCategory-edit" style="margin-left: 6px" />
+        <!-- Zotero 笔记平台：打开笔记按钮（位于编辑词本按钮后方） -->
+        <button id="__addonRef__-editNoteBtn" data-l10n-id="pref-zoteroNote-edit" hidden="true" style="margin-left: 6px" />
       </hbox>
 
       <hbox align="center">
@@ -349,6 +353,18 @@
         </menulist>
       </hbox>
 
+      <hbox align="center">
+        <label class="pref-label" data-l10n-id="pref-addWordShortcut" />
+        <html:input
+          type="text"
+          id="zotero-prefpane-__addonRef__-addWordShortcut"
+          preference="addWordShortcut"
+          style="width: 160px"
+          placeholder="点击后直接按下键盘按键"
+        />
+        <label style="color: #888; font-style: italic; margin-left: 8px" data-l10n-id="pref-addWordShortcut-hint" />
+      </hbox>
+
       <vbox id="__addonRef__-lemmaModeBox">
         <hbox align="center">
           <label class="pref-label" data-l10n-id="pref-lemmaMode" />
@@ -366,6 +382,22 @@
           <label style="color: #888; font-style: italic; margin-left: 116px" data-l10n-id="pref-lemmaMode-hint" />
         </hbox>
       </vbox>
+    </vbox>
+  </groupbox>
+
+  <!-- ============ 3.2.5 生词本面板设置 ============ -->
+  <groupbox>
+    <label><html:h2 data-l10n-id="pref-section-panel"></html:h2></label>
+
+    <vbox id="__addonRef__-panelSectionBox">
+      <checkbox
+        id="zotero-prefpane-__addonRef__-enableWordbookPanel"
+        preference="enableWordbookPanel"
+        data-l10n-id="pref-enableWordbookPanel"
+      />
+      <hbox style="margin-top: 2px">
+        <label style="color: #888; font-style: italic" data-l10n-id="pref-panel-hint-platform" />
+      </hbox>
     </vbox>
   </groupbox>
 

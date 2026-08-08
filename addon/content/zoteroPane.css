@@ -73,3 +73,16 @@
   background-color: rgba(255, 213, 79, 0.55);
   border-radius: 2px;
 }
+
+/* 生词本面板（PDF 右侧 Item Pane） */
+.__addonRef__-panel-body {
+  font-family: inherit;
+}
+
+.__addonRef__-panel-body button:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.__addonRef__-panel-body a:hover {
+  text-decoration: underline;
+}

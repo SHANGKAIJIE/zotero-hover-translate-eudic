@@ -18,10 +18,13 @@ pref("translateDisplayMode", "simple"); // simple | full
 pref("translateEngine", "dict");          // "dict" | "translate"
 
 // ---- 3.2 生词本设置 ----
-pref("wordbookPlatform", "eudic"); // "eudic" | "maimemo" | "local" | "shanbay"
+pref("wordbookPlatform", "eudic"); // "eudic" | "maimemo" | "local" | "shanbay" | "zotero"
 // Local
 pref("localSavePath", "");
 pref("enableEudicSync", false);
+// Zotero 笔记
+pref("zoteroNoteTitle", "生词本"); // Zotero 笔记平台：笔记标题（= 生词本名）
+pref("addWordShortcut", "");       // 加词快捷键：留空不启用；如 "A" 或 "Ctrl+Shift+A"
 // Eudic
 pref("eudicToken", "");
 pref("eudicCategoryId", "0");
@@ -39,6 +42,15 @@ pref("buttonShowScene", "both"); // both | hover | selection
 pref("wordButtonPosition", "right"); // left | right
 pref("addWordMode", "manual"); // manual | auto
 pref("lemmaMode", "lemma"); // lemma | inflected
+
+// ---- 3.2.5 生词本面板设置 ----
+pref("enableWordbookPanel", false);  // 开启右侧信息栏的生词本面板
+pref("panelFontSize", 15);           // 面板卡片字体大小（9-24）
+pref("panelHidePhon", false);        // 隐藏音标（跨重启记忆）
+pref("panelHideExp", false);         // 隐藏释义（跨重启记忆）
+pref("panelHidePlay", false);        // 隐藏发音播放图标（跨重启记忆）
+pref("panelWordScope", "current");   // 面板生词范围：all=所有条目 | current=仅当前条目（默认）
+pref("panelSortMode", "reverse");    // 面板排序：reverse=倒序(默认,最新在前) | forward=顺序 | alpha=字母序
 
 // ---- 3.3 注释设置 ----
 pref("enableAnnotationSync", false);              // 加入生词本时同步添加到注释（总开关）

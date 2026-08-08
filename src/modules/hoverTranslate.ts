@@ -29,6 +29,8 @@ import { createEudicClientFromPrefs } from "./eudic";
 import { createMaimemoClientFromPrefs } from "./maimemo";
 import { createShanbayClientFromPrefs } from "./shanbay";
 import { addWord as addWordToLocal } from "./localWordbook";
+import { addWordToNote as addWordToZoteroNote, getNoteTitle } from "./zoteroNote";
+import { setActiveAddBtn, installAddWordShortcut } from "./addWordShortcut";
 import {
   locateWordHybrid,
   pdfRectsToViewport,
@@ -221,6 +223,7 @@ export function cleanupAll() {
     pollTimer = null;
   }
   stopThemeWatcher();
+  setActiveAddBtn(null); // 清除快捷键活跃按钮引用
   for (const [, info] of attached) {
     try {
       info.cleanup();
@@ -534,6 +537,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
   }
 
   // Register on every collected window (capture phase).
+  const shortcutCleanups: (() => void)[] = [];
   for (const win of targets) {
     try {
       win.addEventListener("mousemove", onMouseMove as any, true);
@@ -542,6 +546,8 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       win.addEventListener("keydown", onKeyDown as any, true);
       win.addEventListener("mouseout", onMouseLeave as any, true);
       win.document.addEventListener("selectionchange", onSelectionChange as any);
+      // 加词快捷键：独立 capture 监听（命中后 activeBtn.click()，不干扰现有 onKeyDown）。
+      shortcutCleanups.push(installAddWordShortcut(win));
     } catch (e) {
       dbg(`register failed on ${safeHref(win)}: ${e}`);
     }
@@ -632,6 +638,12 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       // Clear any popup/highlight left in every window.
       clearHover(win);
     }
+    for (const off of shortcutCleanups) {
+      try {
+        off();
+      } catch { /* ignore */ }
+    }
+    shortcutCleanups.length = 0;
     try {
       delete (innerWin as any).__hteLastLocated;
       delete (innerWin as any).__hteLastRange;
@@ -1361,25 +1373,36 @@ async function doTranslate(
 
   // Perform translation via Translate for Zotero.
   let tr: any;
+  // +生词本按钮可能在翻译完成前就被点击——把翻译 Promise 挂在按钮上，
+  // 点击时若翻译未完成则等待其完成（见 maybeAddWordButton click 处理）。
+  const setTrPromise = (p: Promise<any>) => {
+    try {
+      if (wordBtn) (wordBtn as any)._trPromise = p;
+    } catch { /* ignore */ }
+    return p;
+  };
   if (getPref("translateEngine") === "dict") {
     // Dict engine (faster): query dictSource and extract first definition.
     // 直接查询用户悬停的原文词，不做词形还原——词形还原（lemmaMode）只用于
     // 「加生词本」流程（下方 wordBtn 路径）。悬停翻译要查的是当前悬停的具体词
     // （如 imager），还原成词根（imag）会查到无关词条（如 imag 的「复数虚部」）
     // 或查空导致回退显示完整词典条目。
-    const dictR = await fetchDictResult(word, reader);
-    if (dictR?.result) {
-      tr = {
-        ok: true,
-        result: extractFirstDefinition(dictR.result, dictR.service),
-        task: { audio: dictR.audio },
-      };
-    } else {
-      // Fallback: use translateSource if dictSource returns nothing
-      tr = await translateWord(word, reader);
-    }
+    const dictPromise = (async () => {
+      const dictR = await fetchDictResult(word, reader);
+      if (dictR?.result) {
+        return {
+          ok: true,
+          result: extractFirstDefinition(dictR.result, dictR.service),
+          task: { audio: dictR.audio },
+        };
+      }
+      return translateWord(word, reader);
+    })();
+    // 整个 dict 流程挂到按钮（含 fetchDictResult 阶段）
+    setTrPromise(dictPromise);
+    tr = await dictPromise;
   } else {
-    tr = await translateWord(word, reader);
+    tr = await setTrPromise(translateWord(word, reader));
   }
   if (word !== lastWordRef.get()) return; // moved away during request
 
@@ -1395,27 +1418,6 @@ async function doTranslate(
   // 译文已填入 → 显式重定位一次，保持与单词固定间距（多行译文不盖住单词）
   repositionHoverPopup(innerWin, popup, range);
 
-/** Check if a string looks like IPA phonetic notation (contains Unicode IPA characters). */
-function looksLikeIPA(s: string): boolean {
-  return /[ˈˌa-zA-Zəɜɪʊɔɒæɛʌθðʃʒŋɡʔɑɝɚɘɵɤɨ]{4,}/.test(s);
-}
-
-/** Extract phonetic notation from a dictionary/translation result string. */
-function extractPhonetic(text: string): string {
-  if (!text) return "";
-  // 1. Try [...] (e.g. 英 [ˈkɒmpjʊtə])
-  let m = text.match(/\[([^\]]+?)\]/);
-  if (m) return m[1];
-  // 2. Try /.../ (e.g. /ˈkɒmpjʊtə/)
-  m = text.match(/\/([^\/]+?)\//);
-  if (m) return m[1];
-  // 3. Try the first word of the first line if it looks like IPA
-  const firstLine = text.split("\n")[0].trim();
-  const firstWord = firstLine.split(/[\s,;]/)[0];
-  if (firstWord && looksLikeIPA(firstWord)) return firstWord;
-  return "";
-}
-
   // For local platform, fetch full dictionary result for exp + phon
   let expText = (tr.result || "").trim();
   let phonText = "";
@@ -1424,7 +1426,9 @@ function extractPhonetic(text: string): string {
   // dictionary entry instead of just the short translation.
   const needDictForAnnotation = getPref("enableAnnotationSync") &&
     getPref("enableAnnotationTranslate");
-  if (wordBtn && (getPref("wordbookPlatform") === "local" || needDictForAnnotation)) {
+  if (wordBtn && (getPref("wordbookPlatform") === "local" ||
+                  getPref("wordbookPlatform") === "zotero" ||
+                  needDictForAnnotation)) {
     // Determine which word to query: when lemma mode is on, use the
     // headword so phon/exp match the stored word (not the inflected form).
     const dictWord = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
@@ -1503,6 +1507,10 @@ async function autoAddWordWithButton(
     btn.setAttribute("disabled", "true");
     // Build annotation context (same as manual click path).
     const lastPos = (win as any)?.__hoverLastPos as { x?: number; y?: number } | undefined;
+    const lastLocated = (win as any)?.__hteLastLocated as
+      | { rects?: [number, number, number, number][]; locator?: { pageIndex?: number } }
+      | null
+      | undefined;
     const annotationCtx = reader
       ? {
           attachmentID: (reader as any).itemID as number,
@@ -1511,6 +1519,8 @@ async function autoAddWordWithButton(
           // 传鼠标坐标:C 通道定位批注几何用真实鼠标位置,不受 textLayer 错位影响
           mouseX: lastPos?.x,
           mouseY: lastPos?.y,
+          pdfRects: lastLocated?.rects,
+          pageIndex: lastLocated?.locator?.pageIndex,
         }
       : undefined;
     try {
@@ -2021,9 +2031,39 @@ function maybeAddWordButton(
     _cancelAutoClose(innerWin);
     btn.textContent = "+";
     btn.setAttribute("disabled", "true");
+
+    // 等待翻译加载完成（最多 WAIT_TRANSLATION_MS 毫秒）：
+    // 若用户点击时翻译还没加载出来，等加载完成后再添加生词，
+    // 避免把空翻译 / 简译写入生词本 / 注释。
+    // 注意：不能拿 _trPromise 的 result（简译）补写 dataset——主流程在
+    // 翻译完成后还会 fetchDictResult 取完整字典释义并写入 dataset.trResult
+    // （expText 优先字典释义）。这里只等翻译主体完成，然后轮询等主流程
+    // 把字典释义写入 dataset，保证落库的是字典释义而非简译。
+    const WAIT_TRANSLATION_MS = 12000;
+    try {
+      const pending = (btn as any)._trPromise as Promise<any> | undefined;
+      if (pending) {
+        // 等翻译主体完成（简译显示；随后主流程继续取字典释义写 dataset）
+        await Promise.race([
+          pending,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), WAIT_TRANSLATION_MS)),
+        ]);
+      }
+      // 轮询等待主流程把字典释义写入 dataset.trResult（200ms 间隔，超时兜底）
+      const deadline = Date.now() + WAIT_TRANSLATION_MS;
+      while (!btn.dataset.trResult && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    } catch { /* ignore */ }
+
     const trResult = btn.dataset.trResult || "";
     const phon = btn.dataset.phon || "";
     const lastPos = (innerWin as any)?.__hoverLastPos as { x?: number; y?: number } | undefined;
+    // 取当前高亮词的 PDF 坐标（position 精确定位用）
+    const lastLocated = (innerWin as any)?.__hteLastLocated as
+      | { rects?: [number, number, number, number][]; locator?: { pageIndex?: number } }
+      | null
+      | undefined;
     const annotationCtx = reader
       ? {
           attachmentID: (reader as any).itemID as number,
@@ -2032,6 +2072,9 @@ function maybeAddWordButton(
           // 传鼠标坐标:C 通道定位批注几何用真实鼠标位置,不受 textLayer 错位影响
           mouseX: lastPos?.x,
           mouseY: lastPos?.y,
+          // PDF 用户空间坐标 rects + 页码（zotero://open-pdf position 参数）
+          pdfRects: lastLocated?.rects,
+          pageIndex: lastLocated?.locator?.pageIndex,
         }
       : undefined;
     try {
@@ -2066,6 +2109,8 @@ function maybeAddWordButton(
   } else {
     container.appendChild(btn);
   }
+  // 加词快捷键：注册为当前活跃按钮（弹窗可见期间按下快捷键即触发本按钮）。
+  setActiveAddBtn(btn);
   return btn;
 }
 
@@ -2282,7 +2327,28 @@ function cleanDefinition(r: string, jp: boolean): string {
   return r;
 }
 
-function stripAudioText(raw: string): string {
+/** Check if a string looks like IPA phonetic notation (contains Unicode IPA characters). */
+function looksLikeIPA(s: string): boolean {
+  return /[ˈˌa-zA-Zəɜɪʊɔɒæɛʌθðʃʒŋɡʔɑɝɚɘɵɤɨ]{4,}/.test(s);
+}
+
+/** Extract phonetic notation from a dictionary/translation result string. */
+export function extractPhonetic(text: string): string {
+  if (!text) return "";
+  // 1. Try [...] (e.g. 英 [ˈkɒmpjʊtə])
+  let m = text.match(/\[([^\]]+?)\]/);
+  if (m) return m[1];
+  // 2. Try /.../ (e.g. /ˈkɒmpjʊtə/)
+  m = text.match(/\/([^\/]+?)\//);
+  if (m) return m[1];
+  // 3. Try the first word of the first line if it looks like IPA
+  const firstLine = text.split("\n")[0].trim();
+  const firstWord = firstLine.split(/[\s,;]/)[0];
+  if (firstWord && looksLikeIPA(firstWord)) return firstWord;
+  return "";
+}
+
+export function stripAudioText(raw: string): string {
   // Try brackets first: "英 [ˈkɒmpjʊtə]" → "ˈkɒmpjʊtə"
   const bracketM = raw.match(/\[([^\]]+?)\]/);
   if (bracketM) return bracketM[1];
@@ -2301,6 +2367,7 @@ async function addWordToEudic(
     range?: Range;
     viewportRects?: { top: number; left: number; width: number; height: number }[];
     pageIndex?: number;
+    pdfRects?: [number, number, number, number][];
   },
 ): Promise<boolean> {
   // Lemmatise inflected forms to dictionary headwords before API call
@@ -2320,6 +2387,24 @@ async function addWordToEudic(
     } catch { /* ignore */ }
   }
   const platform = getPref("wordbookPlatform") as string;
+  // 构建原文跳转链接（zotero://open-pdf/...），供本地生词表 / Zotero 笔记条目跳转使用
+  let src = "";
+  try {
+    const readerAny: any = (annotationCtx as any)?.reader;
+    const item: any = readerAny?.item ?? readerAny?._item;
+    const pageIndex = (annotationCtx as any)?.pageIndex
+      ?? readerAny?.state?.pageIndex;
+    const rects = (annotationCtx as any)?.pdfRects;
+    if (item?.key) {
+      const { buildSourceLink } = await import("./zoteroNote");
+      src = buildSourceLink({
+        attachmentKey: item.key,
+        libraryID: item.libraryID,
+        pageIndex: Number.isInteger(pageIndex) ? pageIndex : undefined,
+        rects: Array.isArray(rects) && rects.length ? rects : undefined,
+      });
+    }
+  } catch { /* ignore */ }
   let ok = false;
   if (platform === "maimemo") {
     const client = createMaimemoClientFromPrefs();
@@ -2328,16 +2413,34 @@ async function addWordToEudic(
     const res = await client.addWord(word.toLowerCase(), categoryId);
     ok = res.success;
   } else if (platform === "local") {
+    // 翻译成功（有释义）→ 正常行；失败 → status=failed, tries=1，
+    // 重启 Zotero 后自动重试补全（见 localWordbook.retryFailedLocalWords）
+    const hasResult = !!(translateResult && translateResult.trim());
     ok = await addWordToLocal({
       word: lemma,
       phon: phon || "",
       exp: translateResult || "",
+      src,
+      status: hasResult ? "" : "failed",
+      tries: hasResult ? 0 : 1,
     });
   } else if (platform === "shanbay") {
     const client = createShanbayClientFromPrefs();
     if (!client) return false;
     const res = await client.addWord(word.toLowerCase());
     ok = res.success;
+  } else if (platform === "zotero") {
+    // 翻译成功（有释义）→ completed（不渲染图标）；失败 → failed（渲染 ❌）
+    const hasResult = !!(translateResult && translateResult.trim());
+    ok = await addWordToZoteroNote({
+      title: getNoteTitle(),
+      word: lemma,
+      phon: phon || "",
+      exp: translateResult || "",
+      src,
+      status: hasResult ? "completed" : "failed",
+      tries: hasResult ? 0 : 1,
+    });
   } else {
     // platform === "eudic" (explicit guard, not fallthrough)
     if (platform !== "eudic") {
@@ -2349,6 +2452,15 @@ async function addWordToEudic(
     const categoryId = getPref("eudicCategoryId");
     const res = await client.addWord(lemma, categoryId);
     ok = res.success;
+  }
+
+  // 加词成功后刷新所有窗口（主窗口 + PDF reader）的生词本面板。
+  // 走 Zotero 原生 Notifier("refresh","itempane")，一次刷新所有窗口。
+  if (ok) {
+    try {
+      const { refreshAllPanels } = await import("./wordbookPanel");
+      refreshAllPanels();
+    } catch { /* ignore */ }
   }
 
   // Sync annotation after successful wordbook add (best-effort, never throws).

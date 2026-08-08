@@ -16,8 +16,18 @@ import {
   initHideNoteIcon,
   cleanupHideNoteIcon,
 } from "./modules/hideNoteIcon";
+import {
+  registerWordbookPanel,
+  unregisterWordbookPanel,
+} from "./modules/wordbookPanel";
+import { attachNoteEditorLinks, retryFailedWords, retryOfflineAnnotations } from "./modules/zoteroNote";
+import { retryFailedLocalWords } from "./modules/localWordbook";
+import { getPref, registerPrefObserver } from "./utils/prefs";
 
 let notifierID: string | null = null;
+let noteLinkTimer: ReturnType<typeof setInterval> | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let panelPrefObserver: symbol | null = null;
 
 async function onStartup() {
   await Promise.all([
@@ -61,6 +71,76 @@ async function onStartup() {
     initHideNoteIcon();
   } catch (e) {
     ztoolkit.log("hooks: initHideNoteIcon failed", e);
+  }
+
+  // 生词本面板（PDF 右侧 Item Pane）：受 enableWordbookPanel pref 控制，
+  // 开启时注册，关闭时注销；监听 pref 变化动态切换。
+  try {
+    if (getPref("enableWordbookPanel")) {
+      registerWordbookPanel();
+    }
+    panelPrefObserver = registerPrefObserver("enableWordbookPanel", (value) => {
+      if (value) {
+        registerWordbookPanel();
+      } else {
+        unregisterWordbookPanel();
+      }
+    });
+  } catch (e) {
+    ztoolkit.log("hooks: registerWordbookPanel failed", e);
+  }
+
+  // 笔记编辑器 ↗ 链接跳转：轮询挂载 click 监听（笔记编辑器可能随时打开）
+  try {
+    attachNoteEditorLinks();
+    noteLinkTimer = setInterval(attachNoteEditorLinks, 1500);
+  } catch (e) {
+    ztoolkit.log("hooks: attachNoteEditorLinks failed", e);
+  }
+
+  // 重启后自动重试翻译失败的单词（仅 Zotero 笔记平台；最多 3 次尝试）
+  // 延迟等待 PDFTranslate 插件就绪后执行；若未就绪则稍后重试
+  try {
+    const runRetry = (attempt = 0) => {
+      const pdfReady = !!(Zotero as any).PDFTranslate?.api?.translate;
+      try {
+        Zotero.debug(
+          `[hover-translate-eudic] retry attempt=${attempt} pdfReady=${pdfReady} (PDFTranslate.api.translate=${typeof (Zotero as any).PDFTranslate?.api?.translate})`,
+        );
+      } catch { /* ignore */ }
+      if (!pdfReady && attempt < 10) {
+        retryTimer = setTimeout(() => runRetry(attempt + 1), 3000);
+        return;
+      }
+      if (!pdfReady) {
+        try {
+          Zotero.debug("[hover-translate-eudic] retry aborted: PDFTranslate not ready after 10 attempts");
+        } catch { /* ignore */ }
+        return;
+      }
+      // 笔记重试：扫描生词本笔记中 failed/pending 词条
+      void retryFailedWords().then((count) => {
+        try {
+          Zotero.debug(`[hover-translate-eudic] retryFinished count=${count}`);
+        } catch { /* ignore */ }
+      });
+      // 注释独立补全：扫描所有含离线提示标记的注释（与笔记状态解耦，
+      // 即使笔记中该词已完成或生词本不在 Zotero 平台也能补全）
+      void retryOfflineAnnotations().then((count) => {
+        try {
+          Zotero.debug(`[hover-translate-eudic] annotationRetryFinished count=${count}`);
+        } catch { /* ignore */ }
+      });
+      // 本地生词表补全：重试 exp 为空且 tries<3 的行（与笔记/注释解耦）
+      void retryFailedLocalWords().then((count) => {
+        try {
+          Zotero.debug(`[hover-translate-eudic] localRetryFinished count=${count}`);
+        } catch { /* ignore */ }
+      });
+    };
+    retryTimer = setTimeout(() => runRetry(), 3000);
+  } catch (e) {
+    ztoolkit.log("hooks: retryFailedWords failed", e);
   }
 
   await Promise.all(
@@ -113,10 +193,35 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 
 function onShutdown(): void {
   ztoolkit.unregisterAll();
+  if (noteLinkTimer) {
+    try {
+      clearInterval(noteLinkTimer);
+    } catch {
+      /* ignore */
+    }
+    noteLinkTimer = null;
+  }
+  if (retryTimer) {
+    try {
+      clearTimeout(retryTimer);
+    } catch {
+      /* ignore */
+    }
+    retryTimer = null;
+  }
   hoverCleanupAll();
   cleanupHideNoteIcon();
   unregisterSelectionButton();
   unregisterServer();
+  try {
+    unregisterWordbookPanel();
+  } catch { /* ignore */ }
+  if (panelPrefObserver) {
+    try {
+      Zotero.Prefs.unregisterObserver(panelPrefObserver);
+    } catch { /* ignore */ }
+    panelPrefObserver = null;
+  }
   if (notifierID) {
     try {
       Zotero.Notifier.unregisterObserver(notifierID);

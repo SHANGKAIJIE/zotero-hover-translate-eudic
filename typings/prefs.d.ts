@@ -23,6 +23,8 @@ declare namespace _ZoteroTypes {
       "wordbookPlatform": string;
       "localSavePath": string;
       "enableEudicSync": boolean;
+      "zoteroNoteTitle": string;
+      "addWordShortcut": string;
       "eudicToken": string;
       "eudicCategoryId": string;
       "eudicCategoryName": string;
@@ -37,6 +39,13 @@ declare namespace _ZoteroTypes {
       "wordButtonPosition": string;
       "addWordMode": string;
       "lemmaMode": string;
+      "enableWordbookPanel": boolean;
+      "panelFontSize": number;
+      "panelHidePhon": boolean;
+      "panelHideExp": boolean;
+      "panelHidePlay": boolean;
+      "panelWordScope": string;
+      "panelSortMode": string;
       "enableAnnotationSync": boolean;
       "enableAnnotationTranslate": boolean;
       "annotationTranslatePosition": string;

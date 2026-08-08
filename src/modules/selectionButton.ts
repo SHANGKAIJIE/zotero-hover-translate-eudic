@@ -18,8 +18,9 @@ import { createEudicClientFromPrefs } from "./eudic";
 import { createMaimemoClientFromPrefs } from "./maimemo";
 import { createShanbayClientFromPrefs } from "./shanbay";
 import { addWord as addWordToLocal } from "./localWordbook";
+import { setActiveAddBtn } from "./addWordShortcut";
 import { getAllReaders, getReaderInnerWindow } from "../utils/window";
-import { fetchDictResult } from "./hoverTranslate";
+import { fetchDictResult, extractPhonetic, stripAudioText } from "./hoverTranslate";
 
 let registered = false;
 let listener: ((event: any) => void) | null = null;
@@ -154,27 +155,38 @@ function onRenderTextSelectionPopup(event: any) {
         if (match) phon = match[1];
       }
     } catch { /* ignore */ }
-    // When annotation sync + annotation translate is enabled, fetch the full
-    // dictionary entry (instead of the short translation from the textarea)
-    // so the annotation comment/body contains the complete dictionary content.
-    if (trResult && reader && getPref("enableAnnotationSync") &&
-        getPref("enableAnnotationTranslate")) {
+    // When the wordbook platform is zotero/local (or annotation translate is
+    // enabled), fetch the full dictionary entry — it carries the phonetic
+    // (audio/text) that the short textarea translation lacks, so the note
+    // gets a 音标 line just like the hover path.
+    const platform = getPref("wordbookPlatform") as string;
+    if (trResult && reader && (platform === "zotero" || platform === "local" ||
+        (getPref("enableAnnotationSync") && getPref("enableAnnotationTranslate")))) {
       try {
         (globalThis as any).Zotero?.debug?.(
-          `[hte-ann] selectionButton: fetching dict result for annotation, ` +
+          `[hte-ann] selectionButton: fetching dict result for wordbook/annotation, ` +
           `word="${selectedText}"`,
         );
         const dict = await fetchDictResult(selectedText, reader);
         if (dict?.result) {
           (globalThis as any).Zotero?.debug?.(
             `[hte-ann] selectionButton: dict result len=${dict.result.length}, ` +
-            `using dict result as trResult for annotation`,
+            `using dict result as trResult for wordbook`,
           );
           trResult = dict.result;
         } else {
           (globalThis as any).Zotero?.debug?.(
             `[hte-ann] selectionButton: dict result empty, keeping textarea trResult`,
           );
+        }
+        // 音标：与悬停路径一致（audio → stripAudioText → extractPhonetic → /.../）
+        if (dict) {
+          if (!phon && dict.audio?.length > 0) {
+            const raw = (dict.audio[0].text || "").trim();
+            if (raw) phon = stripAudioText(raw);
+          }
+          if (!phon) phon = extractPhonetic(dict.result || "");
+          if (phon) phon = "/" + phon + "/";
         }
       } catch (e) {
         (globalThis as any).Zotero?.debug?.(
@@ -209,6 +221,8 @@ function onRenderTextSelectionPopup(event: any) {
   });
 
   append(btn);
+  // 加词快捷键：注册为当前活跃按钮（划词弹窗可见期间按下快捷键即触发）。
+  setActiveAddBtn(btn);
 
   // Place the button right after Translate for Zotero's translation textarea
   // (class "zoteropdftranslate-popup-textarea"). The textarea may be created
@@ -270,25 +284,36 @@ function onRenderTextSelectionPopup(event: any) {
         }
       } catch { /* ignore */ }
       if (trResult) {
-        // When annotation sync + annotation translate is enabled, fetch the
-        // full dictionary entry for the annotation comment/body.
-        if (reader && getPref("enableAnnotationSync") &&
-            getPref("enableAnnotationTranslate")) {
+        // When the wordbook platform is zotero/local (or annotation translate
+        // is enabled), fetch the full dictionary entry for the note/annotation
+        // content AND extract the phonetic from it.
+        const platform = getPref("wordbookPlatform") as string;
+        if (reader && (platform === "zotero" || platform === "local" ||
+            (getPref("enableAnnotationSync") && getPref("enableAnnotationTranslate")))) {
           (globalThis as any).Zotero?.debug?.(
-            `[hte-ann] selectionButton(auto): fetching dict result for annotation, ` +
+            `[hte-ann] selectionButton(auto): fetching dict result for wordbook/annotation, ` +
             `word="${selectedText}"`,
           );
           fetchDictResult(selectedText, reader).then((dict) => {
             if (dict?.result) {
               (globalThis as any).Zotero?.debug?.(
                 `[hte-ann] selectionButton(auto): dict result len=${dict.result.length}, ` +
-                `using dict result as trResult for annotation`,
+                `using dict result as trResult for wordbook`,
               );
               trResult = dict.result;
             } else {
               (globalThis as any).Zotero?.debug?.(
                 `[hte-ann] selectionButton(auto): dict result empty, keeping textarea trResult`,
               );
+            }
+            // 音标：与悬停路径一致（audio → stripAudioText → extractPhonetic → /.../）
+            if (dict) {
+              if (!phon && dict.audio?.length > 0) {
+                const raw = (dict.audio[0].text || "").trim();
+                if (raw) phon = stripAudioText(raw);
+              }
+              if (!phon) phon = extractPhonetic(dict.result || "");
+              if (phon) phon = "/" + phon + "/";
             }
             void addWordToEudic(selectedText, trResult, phon, autoAnnotationCtx);
           }).catch((e) => {
@@ -341,6 +366,20 @@ async function addWordToEudic(
     } catch { /* ignore */ }
   }
   const platform = getPref("wordbookPlatform") as string;
+  // 构建原文跳转链接（zotero://open-pdf/...），供本地生词表 / Zotero 笔记条目跳转使用
+  let src = "";
+  try {
+    const item: any = annotationCtx?.reader?.item ?? annotationCtx?.reader?._item;
+    if (item?.key) {
+      const { buildSourceLink } = await import("./zoteroNote");
+      src = buildSourceLink({
+        attachmentKey: item.key,
+        libraryID: item.libraryID,
+        pageIndex: annotationCtx?.pageIndex,
+        rects: annotationCtx?.pdfRects,
+      });
+    }
+  } catch { /* ignore */ }
   let ok = false;
   if (platform === "maimemo") {
     const client = createMaimemoClientFromPrefs();
@@ -349,16 +388,36 @@ async function addWordToEudic(
     const res = await client.addWord(word.toLowerCase(), categoryId);
     ok = res.success;
   } else if (platform === "local") {
+    // 翻译成功（有释义）→ 正常行；失败 → status=failed, tries=1，
+    // 重启 Zotero 后自动重试补全（见 localWordbook.retryFailedLocalWords）
+    const hasResult = !!(translateResult && translateResult.trim());
     ok = await addWordToLocal({
       word: lemma,
       phon: phon || "",
       exp: translateResult || "",
+      src,
+      status: hasResult ? "" : "failed",
+      tries: hasResult ? 0 : 1,
     });
   } else if (platform === "shanbay") {
     const client = createShanbayClientFromPrefs();
     if (!client) return false;
     const res = await client.addWord(word.toLowerCase());
     ok = res.success;
+  } else if (platform === "zotero") {
+    // 划词场景：写入 Zotero 笔记（与悬停场景同一实现）
+    const { addWordToNote, getNoteTitle } = await import("./zoteroNote");
+    // 翻译成功（有释义）→ completed（不渲染图标）；失败 → failed（渲染 ❌）
+    const hasResult = !!(translateResult && translateResult.trim());
+    ok = await addWordToNote({
+      title: getNoteTitle(),
+      word: lemma,
+      phon: phon || "",
+      exp: translateResult || "",
+      src,
+      status: hasResult ? "completed" : "failed",
+      tries: hasResult ? 0 : 1,
+    });
   } else {
     // platform === "eudic" (explicit guard, not fallthrough)
     if (platform !== "eudic") {
@@ -370,6 +429,15 @@ async function addWordToEudic(
     const categoryId = getPref("eudicCategoryId");
     const res = await client.addWord(lemma, categoryId);
     ok = res.success;
+  }
+
+  // 加词成功后刷新所有窗口（主窗口 + PDF reader）的生词本面板。
+  // 走 Zotero 原生 Notifier("refresh","itempane")，一次刷新所有窗口。
+  if (ok) {
+    try {
+      const { refreshAllPanels } = await import("./wordbookPanel");
+      refreshAllPanels();
+    } catch { /* ignore */ }
   }
 
   // Sync annotation after successful wordbook add (best-effort, never throws).

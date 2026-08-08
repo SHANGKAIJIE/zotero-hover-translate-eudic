@@ -20,3 +20,23 @@ hint-token-invalid = Token invalid, please re-enter
 hint-category-load-failed = Failed to load wordbook categories, fell back to default
 hint-reset-done = Settings reset to default
 hint-not-word = Only a single English word is supported
+
+# Wordbook panel (right side of PDF)
+hte-panel-title = Wordbook
+hte-panel-sidenav = Wordbook
+hte-panel-empty = No words yet. Hover / click a word in the PDF and press "+" to add.
+hte-panel-empty-current = No words for the current item. Hover / click a word in the PDF and press "+" to add.
+hte-panel-platform-hint = The current wordbook platform does not support the panel. Switch to Local Wordbook or Zotero Note.
+hte-panel-load-failed = Failed to load words. Please try again later.
+hte-panel-edit-title = Edit Word
+hte-panel-edit-word = Word
+hte-panel-edit-phon = Phonetic
+hte-panel-edit-exp = Definition
+hte-panel-edit-save = Save
+hte-panel-edit-cancel = Cancel
+hte-panel-del-title = Delete Word
+hte-panel-del-msg = Delete "{ $word }"?
+hte-panel-clear-title = Clear Wordbook
+hte-panel-clear-msg = Clear all words of the current item? This cannot be undone.
+hte-panel-confirm-ok = OK
+hte-panel-confirm-cancel = Cancel

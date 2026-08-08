@@ -263,7 +263,26 @@ export async function syncWordAnnotation(
           `annotationText=${dump(body.slice(0, 80))}`);
       }
     } else {
-      annLog(`build: no translation added (tr empty=${!tr}, enableTranslate=${enableTranslate})`);
+      if (!tr && enableTranslate) {
+        // 翻译失败（如离线）：注释中补充「联网重启后自动重试补全，也可手动更改」
+        // 提示（联网后重启 Zotero 会自动补全释义）。前缀 ❌ 与笔记条目失败
+        // 图标（STATUS_SYMBOLS.failed）保持一致，一眼可辨哪些注释尚未补全。
+        const hint = "\u274c 联网重启后自动重试补全，也可手动更改";
+        annLog(`build: translation failed (tr empty), adding offline retry hint "${hint}"`);
+        if (position === "comment") {
+          annotationText = ctx.word;
+          comment = wordPosition === "comment"
+            ? `${ctx.word}${joinSep}${hint}`
+            : hint;
+        } else {
+          annotationText = posInBody === "before"
+            ? `${hint}${joinSep}${ctx.word}`
+            : `${ctx.word}${joinSep}${hint}`;
+          comment = "";
+        }
+      } else {
+        annLog(`build: no translation added (tr empty=${!tr}, enableTranslate=${enableTranslate})`);
+      }
     }
 
     // ---- 8. 获取 attachment ----
