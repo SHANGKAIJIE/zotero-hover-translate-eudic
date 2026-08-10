@@ -88,3 +88,6 @@ pref("annotationTrackedIDs", "{}");               // 本插件创建注释的 ID
 pref("exportContent", "wordbook");     // 导出内容：wordbook=生词本 | terminology=术语库
 pref("exportAutoReveal", true);
 pref("exportSavePath", "");
+
+// ---- 设置面板状态 ----
+pref("prefActiveTab", "basic");

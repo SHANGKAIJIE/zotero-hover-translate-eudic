@@ -1,7 +1,7 @@
 {
   "name": "zotero-hover-translate-eudic",
   "type": "module",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Hover Translate Eudic：鼠标悬停单词即翻译，复用 Translate for Zotero 引擎，支持欧路词典、墨墨背单词、扇贝单词与本地生词表同步。",
   "config": {
     "addonName": "Hover Translate Eudic",
@@ -48,8 +48,12 @@
     "endOfLine": "lf",
     "overrides": [
       {
-        "files": ["*.xhtml"],
-        "options": { "htmlWhitespaceSensitivity": "css" }
+        "files": [
+          "*.xhtml"
+        ],
+        "options": {
+          "htmlWhitespaceSensitivity": "css"
+        }
       }
     ]
   }

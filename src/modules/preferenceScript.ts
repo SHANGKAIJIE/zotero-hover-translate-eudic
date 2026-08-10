@@ -10,9 +10,9 @@
  *  - reset all settings to defaults
  */
 import { config } from "../../package.json";
-import { getPref, setPref, clearPref } from "../utils/prefs";
+import { getPref, setPref } from "../utils/prefs";
 import { getString } from "../utils/locale";
-import { EudicClient, createEudicClientFromPrefs } from "./eudic";
+import { EudicClient } from "./eudic";
 import { MaimemoClient, createMaimemoClientFromPrefs } from "./maimemo";
 import { ShanbayClient, createShanbayClientFromPrefs } from "./shanbay";
 import { exportWordbook, exportWordEntries } from "./eudicExport";
@@ -97,8 +97,74 @@ const DEFAULTS: Record<string, any> = {
   exportSavePath: "",
 };
 
+/**
+ * 设置面板横向标题切换（基础/生词本/术语库/侧边栏/注释/导出/其他）。
+ * 参考 llm-for-zotero 的 tab 机制，但属性名使用本插件专属前缀
+ * `data-hte-tab` / `data-hte-panel`：Zotero 设置窗口是多插件共用的同一个
+ * document，若沿用通用的 `data-pref-tab/panel`，切换逻辑会选中并隐藏
+ * 其他插件的面板（表现为「两个插件总有一个第一个面板空白」）。
+ */
+function initPrefTabs(win: Window): void {
+  const doc = win.document;
+  const tabBar = doc.querySelector(`#${ref}-pref-tab-bar`) as HTMLElement | null;
+  if (!tabBar) return;
+  // 限定在本插件的 tab bar 内查找按钮、在 tab bar 父容器内查找面板，
+  // 进一步避免选中其他插件的同名元素。
+  const scopeRoot = (tabBar.parentElement || doc) as ParentNode;
+  const VALID_TABS = ["basic", "eudic", "terminology", "panel", "annotation", "export"];
+  const switchTab = (tabId: string) => {
+    // 记忆当前 tab，下次打开设置面板恢复
+    if (VALID_TABS.includes(tabId)) {
+      try {
+        setPref("prefActiveTab", tabId);
+      } catch {
+        /* ignore */
+      }
+    }
+    // 切换后滚动归零（避免停留在上一 tab 的滚动位置）
+    try {
+      win.scrollTo(0, 0);
+    } catch {
+      /* ignore */
+    }
+    const panels = scopeRoot.querySelectorAll("[data-hte-panel]");
+    panels.forEach((el: Element) => {
+      (el as HTMLElement).style.display = "none";
+    });
+    const target = scopeRoot.querySelector(
+      `[data-hte-panel="${tabId}"]`,
+    ) as HTMLElement | null;
+    if (target) target.style.display = "flex";
+    const tabs = tabBar.querySelectorAll("[data-hte-tab]");
+    tabs.forEach((el: Element) => {
+      const btn = el as HTMLElement;
+      if (btn.getAttribute("data-hte-tab") === tabId) {
+        btn.style.color = "FieldText";
+        btn.style.background = "Field";
+        btn.style.fontWeight = "600";
+        btn.style.boxShadow = "0 1px 3px rgba(0,0,0,0.12)";
+      } else {
+        btn.style.color = "var(--fill-secondary, #888)";
+        btn.style.background = "transparent";
+        btn.style.fontWeight = "500";
+        btn.style.boxShadow = "none";
+      }
+    });
+  };
+  const tabBtns = tabBar.querySelectorAll("[data-hte-tab]");
+  tabBtns.forEach((el: Element) => {
+    (el as HTMLElement).addEventListener("click", () => {
+      switchTab((el as HTMLElement).getAttribute("data-hte-tab") || "basic");
+    });
+  });
+  // 初始 tab：恢复上次记忆（非法值回退「基础」）
+  const saved = String(getPref("prefActiveTab") || "");
+  switchTab(VALID_TABS.includes(saved) ? saved : "basic");
+}
+
 export async function registerPrefsScripts(win: Window) {
   addon.data.prefs = { window: win };
+  initPrefTabs(win);
   updateModifierRowState(win);
   updateHoverConfigState(win);
   updateEudicBoxState(win);
@@ -440,27 +506,20 @@ function updateTerminologyState(win: Window) {
 }
 
 /** 术语注释设置组显隐：未勾选「启用术语库」时整体隐藏。 */
-function updateTerminologyAnnotationVisibility(win: Window) {
-  const show = !!getPref("enableTerminology");
-  const ids = [
-    `zotero-prefpane-${ref}-enableTerminologyAnnotationSync`,
-    `${ref}-terminologyMarkTypeRow`,
-    `${ref}-terminologyColorRow`,
-    `${ref}-terminologyTagNameRow`,
-  ];
-  for (const id of ids) {
-    const el = $(id, win);
-    if (el) el.hidden = !show;
-  }
+/**
+ * 术语注释设置组（加入术语库时同步添加到注释 / 术语标注方式 / 颜色 / 标签名）：
+ * 按用户要求不再随「启用术语库」隐藏，始终显示（不勾选也可预先配置）。
+ */
+function updateTerminologyAnnotationVisibility(_win: Window) {
+  // 不再隐藏：保留空实现以兼容既有调用点。
 }
 
-/** Toggle the annotation config box enabled state based on enableAnnotationSync. */
-function updateAnnotationBoxState(win: Window) {
-  const enabled = getPref("enableAnnotationSync");
-  const box = $(`${ref}-annotationConfigBox`, win);
-  if (!box) return;
-  box.style.opacity = enabled ? "1" : "0.45";
-  box.style.pointerEvents = enabled ? "auto" : "none";
+/**
+ * 注释配置区状态：按用户要求不再随「加入生词本时同步添加到注释」置灰，
+ * 标注方式/颜色/标签/翻译位置等选项始终可操作（即使不同步注释也可预先配置）。
+ */
+function updateAnnotationBoxState(_win: Window) {
+  // 不再置灰：保留空实现以兼容既有调用点。
 }
 
 /**
@@ -855,11 +914,6 @@ function bindPrefEvents(win: Window) {
   if (refreshBtn) {
     refreshBtn.addEventListener("command", () => void refreshCategories(win, false));
   }
-
-  // reset button
-  $(`${ref}-resetBtn`, win)?.addEventListener("command", () => {
-    resetDefaults(win);
-  });
 
   // help link & apply-token link — text-link class doesn't auto-open in Zotero 7+, need explicit handlers
   const helpLink = win.document.querySelector(
@@ -1649,40 +1703,5 @@ async function refreshCategories(win: Window, silent: boolean) {
 
 /** Fill the export category menulist. Default selection follows main category. */
 /* ----------------------------- reset ----------------------------- */
-
-function resetDefaults(win: Window) {
-  for (const key of Object.keys(DEFAULTS)) {
-    clearPref(key as any);
-    setPref(key as any, DEFAULTS[key]);
-  }
-  // Re-init clients.
-  addon.data.eudic.client = createEudicClientFromPrefs();
-  // Refresh UI from the reset prefs.
-  updateModifierRowState(win);
-  updateHoverConfigState(win);
-  updateEudicBoxState(win);
-  updateTokenVisibility(win);
-  updateAnnotationBoxState(win);
-  updateAnnotationTranslatePositionState(win);
-  updateHideNoteIconState(win);
-  // Re-sync color picker + hex/alpha inputs from the reset pref.
-  initColorPicker(win);
-  initAnnotationColorPicker(win);
-  // Reload the panel so bound controls re-read prefs.
-  try {
-    // Force menulists/checkboxes to refresh from prefs.
-    win.document.querySelectorAll("[preference]").forEach((el: any) => {
-      const prefKey = el.getAttribute("preference");
-      if (prefKey && DEFAULTS[prefKey] !== undefined) {
-        if (typeof el.checked !== "undefined") {
-          el.checked = !!DEFAULTS[prefKey];
-        } else if (el.value !== undefined) {
-          el.value = DEFAULTS[prefKey];
-        }
-      }
-    });
-  } catch {
-    /* ignore */
-  }
-  win.alert(getString("hint-reset-done"));
-}
+// 注：「恢复默认设置」按钮已按用户要求移除（2026-08-11），
+// resetDefaults 随之删除；如需恢复，可参考 git 历史中的实现。

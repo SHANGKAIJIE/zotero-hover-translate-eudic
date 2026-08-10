@@ -75,6 +75,7 @@ declare namespace _ZoteroTypes {
       "exportContent": string;
       "exportAutoReveal": boolean;
       "exportSavePath": string;
+      "prefActiveTab": string;
     };
   }
 }
