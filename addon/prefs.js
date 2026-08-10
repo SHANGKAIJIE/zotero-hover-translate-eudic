@@ -42,6 +42,14 @@ pref("buttonShowScene", "both"); // both | hover | selection
 pref("wordButtonPosition", "right"); // left | right
 pref("addWordMode", "manual"); // manual | auto
 pref("lemmaMode", "lemma"); // lemma | inflected
+// 同步至本地（平台为欧路/扇贝/墨墨时显示）：不同步 / 本地生词表 / Zotero 笔记
+pref("syncToLocal", "none"); // "none" | "local" | "zotero"（默认不同步）
+
+// ---- 3.2.3 术语库设置 ----
+pref("enableTerminology", false);          // 开启术语库（总开关）
+pref("terminologyPlatform", "local");      // 术语库平台："local" | "zotero"
+pref("terminologyLocalSavePath", "");      // 术语库本地存储路径（空 = ProfD + hover-translate-eudic-terminology.csv）
+pref("terminologyNoteTitle", "术语库");     // 术语库笔记名称
 
 // ---- 3.2.5 生词本面板设置 ----
 pref("enableWordbookPanel", false);  // 开启右侧信息栏的生词本面板
@@ -49,8 +57,10 @@ pref("panelFontSize", 15);           // 面板卡片字体大小（9-24）
 pref("panelHidePhon", false);        // 隐藏音标（跨重启记忆）
 pref("panelHideExp", false);         // 隐藏释义（跨重启记忆）
 pref("panelHidePlay", false);        // 隐藏发音播放图标（跨重启记忆）
+pref("panelHideAbbr", false);        // 隐藏缩写（术语库模式，跨重启记忆）
 pref("panelWordScope", "current");   // 面板生词范围：all=所有条目 | current=仅当前条目（默认）
 pref("panelSortMode", "reverse");    // 面板排序：reverse=倒序(默认,最新在前) | forward=顺序 | alpha=字母序
+pref("panelContentMode", "wordbook"); // 侧边栏面板内容：wordbook=生词本 | terminology=术语库
 
 // ---- 3.3 注释设置 ----
 pref("enableAnnotationSync", false);              // 加入生词本时同步添加到注释（总开关）
@@ -64,11 +74,17 @@ pref("annotationMarkType", "highlight");          // highlight | underline（标
 pref("annotationColor", "#ffd400");               // 标注颜色（hex 格式）
 pref("enableAnnotationAutoTag", false);           // 翻译后自动为注释添加标签
 pref("annotationTagName", "单词");                // 标签名称
+// 术语注释（加入术语库时同步添加到注释）
+pref("enableTerminologyAnnotationSync", false);   // 加入术语库时同步添加到注释（总开关）
+pref("terminologyMarkType", "highlight");          // 术语标注方式：highlight | underline
+pref("terminologyColor", "#ffd400");               // 术语标注颜色（hex 格式）
+pref("terminologyTagName", "术语");                // 术语标签名称
 pref("hideNoteIcon", false);                      // 隐藏便签图标（总开关）
 pref("hideNoteIconMode", "word");                 // word | all（隐藏范围：仅隐藏单词文本 / 仅隐藏全部文本）
 pref("hideNoteIconNotes", false);                 // 独立便签图标：是否隐藏（不受隐藏范围限制）
 pref("annotationTrackedIDs", "{}");               // 本插件创建注释的 ID 跟踪列表：JSON {"附件itemID": ["KEY", ...]}
 
-// ---- 3.4 导出生词本 ----
+// ---- 3.4 导出设置 ----
+pref("exportContent", "wordbook");     // 导出内容：wordbook=生词本 | terminology=术语库
 pref("exportAutoReveal", true);
 pref("exportSavePath", "");

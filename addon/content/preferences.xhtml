@@ -382,6 +382,142 @@
           <label style="color: #888; font-style: italic; margin-left: 116px" data-l10n-id="pref-lemmaMode-hint" />
         </hbox>
       </vbox>
+
+      <!-- 同步至本地（平台为欧路/扇贝/墨墨时显示） -->
+      <vbox id="__addonRef__-syncToLocalBox" hidden="true">
+        <hbox align="center">
+          <label class="pref-label" data-l10n-id="pref-syncToLocal" />
+          <menulist
+            id="zotero-prefpane-__addonRef__-syncToLocal"
+            preference="syncToLocal"
+          >
+            <menupopup>
+              <menuitem value="none" data-l10n-id="pref-syncToLocal-none" />
+              <menuitem value="local" data-l10n-id="pref-syncToLocal-local" />
+              <menuitem value="zotero" data-l10n-id="pref-syncToLocal-zotero" />
+            </menupopup>
+          </menulist>
+        </hbox>
+        <hbox style="margin-top: -4px; margin-bottom: 8px">
+          <label style="color: #888; font-style: italic; margin-left: 116px" data-l10n-id="pref-syncToLocal-hint" />
+        </hbox>
+
+        <!-- syncToLocal=local：存储路径 + 词形选择(本地)（与生词本平台=本地生词表 同 pref 双向同步） -->
+        <vbox id="__addonRef__-syncLocalPathBox" hidden="true">
+          <hbox align="center">
+            <label class="pref-label" data-l10n-id="pref-localSavePath" />
+            <html:input
+              type="text"
+              id="zotero-prefpane-__addonRef__-syncLocalSavePath"
+              preference="localSavePath"
+              style="flex: 1; min-width: 240px"
+              placeholder="留空则保存在 Zotero 配置目录"
+            />
+            <button id="__addonRef__-chooseSyncLocalDirBtn" data-l10n-id="pref-local-chooseDir" />
+          </hbox>
+          <hbox align="center">
+            <label class="pref-label" data-l10n-id="pref-lemmaModeLocal" />
+            <menulist
+              id="zotero-prefpane-__addonRef__-syncLocalLemmaMode"
+              preference="lemmaMode"
+            >
+              <menupopup>
+                <menuitem value="lemma" data-l10n-id="pref-lemmaMode-lemma" />
+                <menuitem value="inflected" data-l10n-id="pref-lemmaMode-inflected" />
+              </menupopup>
+            </menulist>
+          </hbox>
+        </vbox>
+
+        <!-- syncToLocal=zotero：笔记名称 + 打开笔记 + 词形选择(本地)（笔记名称固定「生词本」，与生词本平台=Zotero 笔记一致） -->
+        <vbox id="__addonRef__-syncZoteroBox" hidden="true">
+          <hbox align="center">
+            <label class="pref-label" data-l10n-id="pref-zoteroNoteName" />
+            <menulist
+              id="zotero-prefpane-__addonRef__-syncZoteroNote"
+              preference="zoteroNoteTitle"
+              disabled="true"
+            >
+              <menupopup>
+                <menuitem value="生词本" label="生词本" />
+              </menupopup>
+            </menulist>
+            <button id="__addonRef__-editSyncNoteBtn" data-l10n-id="pref-zoteroNote-edit" style="margin-left: 6px" />
+          </hbox>
+          <hbox align="center">
+            <label class="pref-label" data-l10n-id="pref-lemmaModeLocal" />
+            <menulist
+              id="zotero-prefpane-__addonRef__-syncZoteroLemmaMode"
+              preference="lemmaMode"
+            >
+              <menupopup>
+                <menuitem value="lemma" data-l10n-id="pref-lemmaMode-lemma" />
+                <menuitem value="inflected" data-l10n-id="pref-lemmaMode-inflected" />
+              </menupopup>
+            </menulist>
+          </hbox>
+        </vbox>
+      </vbox>
+    </vbox>
+  </groupbox>
+
+  <!-- ============ 3.2.3 术语库设置 ============ -->
+  <groupbox>
+    <label><html:h2 data-l10n-id="pref-section-terminology"></html:h2></label>
+
+    <vbox id="__addonRef__-terminologySectionBox">
+      <checkbox
+        id="zotero-prefpane-__addonRef__-enableTerminology"
+        preference="enableTerminology"
+        data-l10n-id="pref-enableTerminology"
+      />
+
+      <vbox id="__addonRef__-terminologyConfigBox">
+        <hbox align="center">
+          <label class="pref-label" data-l10n-id="pref-terminologyPlatform" />
+          <menulist
+            id="zotero-prefpane-__addonRef__-terminologyPlatform"
+            preference="terminologyPlatform"
+          >
+            <menupopup>
+              <menuitem value="local" data-l10n-id="pref-terminologyPlatform-local" />
+              <menuitem value="zotero" data-l10n-id="pref-terminologyPlatform-zotero" />
+            </menupopup>
+          </menulist>
+        </hbox>
+
+        <!-- 本地术语表：存储路径 -->
+        <vbox id="__addonRef__-termLocalSavePathBox">
+          <hbox align="center">
+            <label class="pref-label" data-l10n-id="pref-terminologyLocalSavePath" />
+            <html:input
+              type="text"
+              id="zotero-prefpane-__addonRef__-terminologyLocalSavePath"
+              preference="terminologyLocalSavePath"
+              style="flex: 1; min-width: 240px"
+              placeholder="留空则保存在 Zotero 配置目录"
+            />
+            <button id="__addonRef__-chooseTermDirBtn" data-l10n-id="pref-local-chooseDir" />
+          </hbox>
+        </vbox>
+
+        <!-- Zotero 笔记：笔记名称 + 打开笔记（同一行） -->
+        <vbox id="__addonRef__-termZoteroBox" hidden="true">
+          <hbox align="center">
+            <label class="pref-label" data-l10n-id="pref-terminologyNoteName" />
+            <menulist
+              id="zotero-prefpane-__addonRef__-terminologyNoteTitle"
+              preference="terminologyNoteTitle"
+              disabled="true"
+            >
+              <menupopup>
+                <menuitem value="术语库" label="术语库" />
+              </menupopup>
+            </menulist>
+            <button id="__addonRef__-editTermNoteBtn" data-l10n-id="pref-terminologyNote-edit" style="margin-left: 6px" />
+          </hbox>
+        </vbox>
+      </vbox>
     </vbox>
   </groupbox>
 
@@ -395,6 +531,9 @@
         preference="enableWordbookPanel"
         data-l10n-id="pref-enableWordbookPanel"
       />
+      <hbox style="margin-top: 2px">
+        <label style="color: #888; font-style: italic" data-l10n-id="pref-panel-hint-local-only" />
+      </hbox>
       <hbox style="margin-top: 2px">
         <label style="color: #888; font-style: italic" data-l10n-id="pref-panel-hint-platform" />
       </hbox>
@@ -410,7 +549,11 @@
       preference="enableAnnotationSync"
       data-l10n-id="pref-enableAnnotationSync"
     />
-
+    <checkbox
+      id="zotero-prefpane-__addonRef__-enableTerminologyAnnotationSync"
+      preference="enableTerminologyAnnotationSync"
+      data-l10n-id="pref-enableTerminologyAnnotationSync"
+    />
     <vbox id="__addonRef__-annotationConfigBox">
       <checkbox
         id="zotero-prefpane-__addonRef__-enableAnnotationTranslate"
@@ -529,6 +672,35 @@
         />
       </hbox>
 
+      <!-- 术语标注方式 / 术语标注颜色（加入术语库时同步添加到注释使用） -->
+      <hbox align="center" id="__addonRef__-terminologyMarkTypeRow">
+        <label class="pref-label" data-l10n-id="pref-terminologyMarkType" />
+        <menulist
+          id="zotero-prefpane-__addonRef__-terminologyMarkType"
+          preference="terminologyMarkType"
+        >
+          <menupopup>
+            <menuitem value="highlight" data-l10n-id="pref-annotationMarkType-highlight" />
+            <menuitem value="underline" data-l10n-id="pref-annotationMarkType-underline" />
+          </menupopup>
+        </menulist>
+      </hbox>
+
+      <hbox align="center" id="__addonRef__-terminologyColorRow">
+        <label class="pref-label" data-l10n-id="pref-terminologyColor" />
+        <html:input
+          type="color"
+          id="zotero-prefpane-__addonRef__-terminologyColorPicker"
+          style="width: 40px; height: 24px; padding: 0; border: none; cursor: pointer;"
+        />
+        <html:input
+          type="text"
+          id="zotero-prefpane-__addonRef__-terminologyColorHex"
+          style="width: 70px; margin-left: 4px;"
+          placeholder="#ffd400"
+        />
+      </hbox>
+
       <checkbox
         id="zotero-prefpane-__addonRef__-enableAnnotationAutoTag"
         preference="enableAnnotationAutoTag"
@@ -540,6 +712,17 @@
           type="text"
           id="zotero-prefpane-__addonRef__-annotationTagName"
           preference="annotationTagName"
+          style="width: 120px"
+        />
+      </hbox>
+
+      <!-- 术语标签名称（术语注释自动打标签用） -->
+      <hbox align="center" id="__addonRef__-terminologyTagNameRow">
+        <label class="pref-label" data-l10n-id="pref-terminologyTagName" />
+        <html:input
+          type="text"
+          id="zotero-prefpane-__addonRef__-terminologyTagName"
+          preference="terminologyTagName"
           style="width: 120px"
         />
       </hbox>
@@ -583,6 +766,20 @@
   <!-- ============ 3.4 导出生词本 ============ -->
   <groupbox>
     <label><html:h2 data-l10n-id="pref-section-export"></html:h2></label>
+
+    <hbox align="center">
+      <label class="pref-label" data-l10n-id="pref-export-content" />
+      <menulist
+        id="zotero-prefpane-__addonRef__-exportContent"
+        preference="exportContent"
+        style="min-width: 200px"
+      >
+        <menupopup>
+          <menuitem value="wordbook" data-l10n-id="pref-export-content-wordbook" />
+          <menuitem value="terminology" data-l10n-id="pref-export-content-terminology" />
+        </menupopup>
+      </menulist>
+    </hbox>
 
     <hbox align="center">
       <label class="pref-label" data-l10n-id="pref-export-format" />

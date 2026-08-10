@@ -275,8 +275,7 @@ function removeTrackedIDs(keys: string[]): void {
 function pruneTrackedIDsForAttachment(
   attachmentID: number | string | undefined,
   liveKeys: string[],
-): void {
-  if (!attachmentID) return;
+): void {  if (!attachmentID) return;
   const aid = String(attachmentID);
   const map = readTrackedMap();
   const list = Array.isArray(map[aid]) ? map[aid] : [];
@@ -293,6 +292,161 @@ function pruneTrackedIDsForAttachment(
     noteLog(
       `pruned attachment=${aid}: ${list.length - pruned.length} stale id(s) removed`,
     );
+  }
+}
+
+/**
+ * 基于数据库真实注释集合同步跟踪列表（异步，reader attach 成功后调用）。
+ *
+ * 取代旧实现「用 iframe layer 即时快照 prune」——那有两个缺陷：
+ *  1. 注释刚创建（layer 尚未刷新）时，iframe 快照不含新注释 key，
+ *     prune 会把刚记录的 key 误删 → 术语便签"添加时隐藏、重开 PDF 后显示"；
+ *  2. 候选启发式（纯英文单词正则）不识别含空格的短语术语，backfill 无法补录。
+ *
+ * 这里直接查询 Zotero 数据库该附件的真实注释集合：
+ *  - prune：只清理数据库中已不存在的跟踪 key（绝不错删）；
+ *  - backfill：按本插件标签（生词 annotationTagName / 术语 terminologyTagName）
+ *    精确补录，覆盖单词与术语两类注释。
+ * 有变化时用最新 trackedIDs 重新注入一次（应用隐藏）。
+ * @returns 是否有变化
+ */
+async function syncTrackedWithDB(
+  reader: any,
+  attachmentID: number | string | undefined,
+): Promise<boolean> {
+  if (attachmentID == null) return false;
+  try {
+    const anns = await (Zotero as any).Annotations.getAnnotationsForItem(
+      Number(attachmentID),
+    );
+    if (!Array.isArray(anns)) return false;
+
+    const map = readTrackedMap();
+    const aid = String(attachmentID);
+    const list = Array.isArray(map[aid]) ? map[aid] : [];
+    const live = new Set(anns.map((a) => String(a?.key || "")).filter(Boolean));
+    let changed = false;
+
+    // 1) prune：仅清理数据库中已不存在的 key
+    const pruned = list.filter((k) => live.has(k));
+    if (pruned.length !== list.length) {
+      if (pruned.length) {
+        map[aid] = pruned;
+      } else {
+        delete map[aid];
+      }
+      changed = true;
+      noteLog(
+        `db-pruned attachment=${aid}: ${list.length - pruned.length} stale id(s) removed`,
+      );
+    }
+
+    // 2) backfill：按本插件标签（生词/术语）精确补录
+    const wordTag = (getPref("annotationTagName") as string) || "单词";
+    const termTag = (getPref("terminologyTagName") as string) || "术语";
+    const added: string[] = [];
+    for (const a of anns) {
+      const k = String(a?.key || "");
+      if (!k) continue;
+      let tags: string[] = [];
+      try {
+        tags = ((a.getTags && a.getTags()) as Array<{ tag?: string }>)
+          .map((t) => String(t?.tag || ""))
+          .filter(Boolean);
+      } catch {
+        /* ignore */
+      }
+      if (!tags.includes(wordTag) && !tags.includes(termTag)) continue;
+      const cur = Array.isArray(map[aid]) ? map[aid] : [];
+      if (!cur.includes(k)) {
+        cur.push(k);
+        map[aid] = cur;
+        added.push(k);
+      }
+    }
+    if (added.length) {
+      changed = true;
+      noteLog(
+        `db-backfilled ${added.length} tagged annotation(s) for attachment=${aid}: ${added.join(",")}`,
+      );
+    }
+
+    if (changed) {
+      writeTrackedMap(map);
+      // 用最新 trackedIDs 重新注入，应用隐藏/恢复
+      const win = getReaderInnerWindow(reader);
+      if (win) {
+        try {
+          win.eval.call(win, buildPatchSource(getPatchParams()));
+        } catch (e) {
+          noteLog("db-sync re-inject error: " + dumpErr(e));
+        }
+      }
+    }
+    return changed;
+  } catch (e) {
+    noteLog("syncTrackedWithDB error: " + dumpErr(e));
+    return false;
+  }
+}
+
+/**
+ * 全库扫描补录（插件启动时调用一次）：
+ * 把整个库中带本插件标签（生词 annotationTagName / 术语 terminologyTagName）
+ * 的注释 key 按附件分组补录进跟踪列表。
+ *
+ * 用途：旧版本（iframe 快照 prune 误删 / 短语术语无法补录）已存在的
+ * 单词/术语注释,即使 key 已在跟踪列表中丢失,启动后也会一次性恢复,
+ * 无需逐个重新打开 PDF。返回是否有新增(供调用方 reapplyAll)。
+ */
+async function backfillAllTaggedFromDB(): Promise<boolean> {
+  try {
+    const search = new Zotero.Search();
+    search.addCondition("libraryID", "is", String(Zotero.Libraries.userLibraryID));
+    search.addCondition("itemType", "is", "annotation");
+    const ids = (await search.search()) || [];
+    if (!ids.length) return false;
+    const wordTag = (getPref("annotationTagName") as string) || "单词";
+    const termTag = (getPref("terminologyTagName") as string) || "术语";
+    const map = readTrackedMap();
+    const added: string[] = [];
+    for (const id of ids) {
+      try {
+        const ann = Zotero.Items.get(id);
+        if (!ann || String(ann.itemType) !== "annotation") continue;
+        let tags: string[] = [];
+        try {
+          tags = ((ann.getTags && ann.getTags()) as Array<{ tag?: string }>)
+            .map((t) => String(t?.tag || ""))
+            .filter(Boolean);
+        } catch {
+          /* ignore */
+        }
+        if (!tags.includes(wordTag) && !tags.includes(termTag)) continue;
+        const aid = ann.parentID;
+        const k = String(ann.key || "");
+        if (aid == null || !k) continue;
+        const sAid = String(aid);
+        const cur = Array.isArray(map[sAid]) ? map[sAid] : [];
+        if (!cur.includes(k)) {
+          cur.push(k);
+          map[sAid] = cur;
+          added.push(k);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (added.length) {
+      writeTrackedMap(map);
+      noteLog(
+        `backfillAllTaggedFromDB: +${added.length} tagged annotation(s) across ${Object.keys(map).length} attachment(s)`,
+      );
+    }
+    return added.length > 0;
+  } catch (e) {
+    noteLog("backfillAllTaggedFromDB error: " + dumpErr(e));
+    return false;
   }
 }
 
@@ -599,10 +753,13 @@ function attachToReader(reader: any): boolean {
       } catch (_) {
         noteLog("attach ok: [json error]");
       }
-      // 对照自愈：以当前附件的真实注释集合清理跟踪列表中的残留 ID
+      // 对照自愈（异步、基于数据库真实注释集合）：
+      // 清理跟踪列表中已删除的 key，并按本插件标签（生词/术语）补录。
+      // 不用 iframe layer 即时快照 prune —— 注释刚创建（layer 未刷新）时
+      // 快照不含新 key 会误删，导致术语便签"添加时隐藏、重开 PDF 后显示"。
       const attachmentID = (reader as any)?.itemID ?? (reader as any)?._itemID ?? (reader as any)?._attachmentItemID;
-      if (Array.isArray(ok.keys)) {
-        pruneTrackedIDsForAttachment(attachmentID, ok.keys);
+      if (attachmentID != null) {
+        void syncTrackedWithDB(reader, attachmentID);
       }
       // ===== 关键修复：patch 必须真正安装到 layer/renderer 原型上才算 attach 成功 =====
       // 重启 Zotero 恢复标签页 / 新开 PDF 时，reader iframe 先于 PDF 页面初始化，
@@ -746,6 +903,19 @@ export function initHideNoteIcon(): void {
 
   // 监听注释删除/回收站事件，即时清理跟踪列表
   registerItemNotifier();
+
+  // 存量恢复：启动时全库扫描，把带本插件标签（生词/术语）的注释 key
+  // 一次性补录进跟踪列表 —— 旧版本被误删/漏录的单词、术语注释无需逐个
+  // 重新打开 PDF，重启插件后即恢复隐藏。
+  void backfillAllTaggedFromDB().then((changed) => {
+    if (changed) {
+      try {
+        reapplyAll();
+      } catch (e) {
+        noteLog("backfill reapply error: " + dumpErr(e));
+      }
+    }
+  });
 
   reapplyAll();
   noteLog("init done");

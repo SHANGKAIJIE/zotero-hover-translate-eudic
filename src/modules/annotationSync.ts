@@ -86,9 +86,11 @@ function dump(obj: unknown): string {
  */
 export async function syncWordAnnotation(
   ctx: AnnotationContext,
+  kind: "word" | "term" = "word",
 ): Promise<boolean> {
   const Zotero = (globalThis as any).Zotero;
-  annLog(`syncWordAnnotation START: ctx=${dump({
+  const isTerm = kind === "term";
+  annLog(`syncWordAnnotation(${kind}) START: ctx=${dump({
     attachmentID: ctx.attachmentID,
     word: ctx.word,
     translationLen: (ctx.translation || "").length,
@@ -100,11 +102,13 @@ export async function syncWordAnnotation(
   })}`);
 
   try {
-    // ---- 1. 总开关检查 ----
-    const enabled = getPref("enableAnnotationSync");
-    annLog(`pref enableAnnotationSync=${enabled} (type=${typeof enabled})`);
+    // ---- 1. 总开关检查（术语注释用术语总开关） ----
+    const enabled = isTerm
+      ? getPref("enableTerminologyAnnotationSync")
+      : getPref("enableAnnotationSync");
+    annLog(`pref enable${isTerm ? "Terminology" : ""}AnnotationSync=${enabled} (type=${typeof enabled})`);
     if (!enabled) {
-      annLog(`syncWordAnnotation SKIP: enableAnnotationSync is falsy`);
+      annLog(`syncWordAnnotation(${kind}) SKIP: total switch is falsy`);
       return false;
     }
 
@@ -213,16 +217,20 @@ export async function syncWordAnnotation(
     ].join("|");
     annLog(`sortIndex=${sortIndex} (top=${top})`);
 
-    // ---- 6. 读取注释相关偏好 ----
-    const markType = (getPref("annotationMarkType") as string) || "highlight";
-    const color = (getPref("annotationColor") as string) || "#ffd400";
+    // ---- 6. 读取注释相关偏好（术语注释用术语专用标注方式/颜色） ----
+    const markType = isTerm
+      ? (getPref("terminologyMarkType") as string) || "highlight"
+      : (getPref("annotationMarkType") as string) || "highlight";
+    const color = isTerm
+      ? (getPref("terminologyColor") as string) || "#ffd400"
+      : (getPref("annotationColor") as string) || "#ffd400";
     const separator = (getPref("annotationSeparator") as string) ?? "\n\n";
     const position = (getPref("annotationTranslatePosition") as string) || "comment";
     const posInBody = (getPref("annotationTranslatePositionInBody") as string) || "before";
     const sepMode = (getPref("annotationSeparatorMode") as string) || "newline";
     const wordPosition = (getPref("annotationWordPosition") as string) || "none";
     const enableTranslate = getPref("enableAnnotationTranslate");
-    annLog(`prefs: markType=${markType}, color=${color}, separator=${dump(separator)}, ` +
+    annLog(`prefs(${kind}): markType=${markType}, color=${color}, separator=${dump(separator)}, ` +
       `position=${position}, posInBody=${posInBody}, sepMode=${sepMode}, ` +
       `wordPosition=${wordPosition}, enableTranslate=${enableTranslate}`);
 
@@ -236,8 +244,10 @@ export async function syncWordAnnotation(
 
     // 自动标签：读取设置（供 json.tags 使用，saveFromJSON 的 setTags 会覆盖式设置）
     const enableAutoTag = getPref("enableAnnotationAutoTag");
-    const autoTagName = (getPref("annotationTagName") as string) || "单词";
-    annLog(`pref enableAnnotationAutoTag=${enableAutoTag}, autoTagName=${autoTagName}`);
+    const autoTagName = isTerm
+      ? (getPref("terminologyTagName") as string) || "术语"
+      : (getPref("annotationTagName") as string) || "单词";
+    annLog(`pref enableAnnotationAutoTag=${enableAutoTag}, autoTagName=${autoTagName}(${kind})`);
 
     if (tr && enableTranslate) {
       if (position === "comment") {
@@ -369,6 +379,17 @@ export async function syncWordAnnotation(
     annLog(`syncWordAnnotation ERROR: ${dumpErr(e)}`);
     return false;
   }
+}
+
+/**
+ * 术语注释同步：与 syncWordAnnotation 共用同一套坐标/文本构建逻辑，
+ * 仅标注方式/颜色/标签使用术语专用 pref（terminologyMarkType/Color/TagName），
+ * 翻译保存位置/单词保存位置/分隔方式等复用生词注释设置。内容为译文。
+ */
+export async function syncTermAnnotation(
+  ctx: AnnotationContext,
+): Promise<boolean> {
+  return syncWordAnnotation(ctx, "term");
 }
 
 /**

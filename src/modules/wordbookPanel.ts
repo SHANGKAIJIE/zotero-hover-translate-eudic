@@ -182,6 +182,10 @@ let _paneKey: string | null = null;
 let _themeObserver: MutationObserver | null = null;
 /** 平台 pref 观察器：wordbookPlatform 变化 → 重新评估 setEnabled（信息栏面板与开启按钮）。 */
 let _platformObserver: symbol | null = null;
+/** 同步至本地 pref 观察器：syncToLocal 变化 → 重新评估。 */
+let _syncObserver: symbol | null = null;
+/** 术语库 pref 观察器：enableTerminology 变化 → 重新评估。 */
+let _termObserver: symbol | null = null;
 /** 渲染代次（按面板 body 隔离）：每次 renderPanel 自增该面板自身的代次，
  *  过期 await 完成时检测不匹配则丢弃填充。注意：必须是**每面板独立**——
  *  主窗口与 PDF reader 两个窗口会同时渲染各自的面板，若用全局单例代次，
@@ -189,9 +193,22 @@ let _platformObserver: symbol | null = null;
  *  表现为"一侧卡住、点击无反应"。用 WeakMap 按 body 隔离后互不干扰。 */
 const _panelRenderGen = new WeakMap<HTMLElement, number>();
 
-/** 重新评估所有已注册面板的启用状态（平台 ∈ {local, zotero} 且勾选开关）。 */
+/** 侧边栏面板启用条件（三处统一：onInit / onItemChange / reevaluatePanelEnabled）：
+ *  勾选 enableWordbookPanel 且满足任一：
+ *    - 生词本平台 ∈ {本地生词表, Zotero 笔记}
+ *    - 同步至本地 ∈ {本地生词表, Zotero 笔记}
+ *    - 开启术语库 */
+function computePanelEnabled(): boolean {
+  const platformOk = supportedPlatform() !== null;
+  const syncMode = getPref("syncToLocal") as string;
+  const syncOk = syncMode === "local" || syncMode === "zotero";
+  const termOk = !!getPref("enableTerminology");
+  return !!getPref("enableWordbookPanel") && (platformOk || syncOk || termOk);
+}
+
+/** 重新评估所有已注册面板的启用状态（v0.3.2：平台 ∈ {local,zotero} ∨ 同步至本地 ∈ {local,zotero} ∨ 开启术语库，且勾选开关）。 */
 function reevaluatePanelEnabled(): void {
-  const enabled = !!getPref("enableWordbookPanel") && supportedPlatform() !== null;
+  const enabled = computePanelEnabled();
   for (const [, entry] of getPanelEntries()) {
     try {
       entry.setEnabled(enabled);
@@ -436,6 +453,8 @@ interface PanelWord {
   phon: string;
   exp: string;
   src: string;
+  /** 术语库缩写（仅术语模式；生词本为空）。 */
+  abbr?: string;
   /** 词条来源附件 itemID（由 src 解析，用于「当前条目」视图过滤；无 src 时为 0）。 */
   srcItemID: number;
 }
@@ -470,8 +489,17 @@ function srcBelongsToItem(srcItemID: number, currentItemID: number): boolean {
   return false;
 }
 
-async function loadWords(): Promise<{ platform: "local" | "zotero" | null; words: PanelWord[] }> {
+/** 面板生词数据源：生词本平台（local/zotero）优先，否则回退「同步至本地」（local/zotero）。 */
+function wordSource(): "local" | "zotero" | null {
   const platform = supportedPlatform();
+  if (platform) return platform;
+  const syncMode = getPref("syncToLocal") as string;
+  if (syncMode === "local" || syncMode === "zotero") return syncMode;
+  return null;
+}
+
+async function loadWords(): Promise<{ platform: "local" | "zotero" | null; words: PanelWord[] }> {
+  const platform = wordSource();
   if (platform === "local") {
     const rows = await getLocalWords();
     return {
@@ -495,6 +523,35 @@ async function loadWords(): Promise<{ platform: "local" | "zotero" | null; words
   return { platform: null, words: [] };
 }
 
+/** 加载术语库数据（按术语库平台 local/zotero 分发）。 */
+async function loadTerms(): Promise<{ platform: "local" | "zotero" | null; words: PanelWord[] }> {
+  try {
+    const { getTerminologyTerms } = await import("./terminology");
+    const { platform, terms } = await getTerminologyTerms();
+    return {
+      platform,
+      words: terms.map((t) => ({
+        word: t.term,
+        phon: "",
+        exp: t.exp,
+        src: t.src,
+        abbr: t.abbr,
+        srcItemID: resolveSrcItemID(t.src),
+      })),
+    };
+  } catch (e: any) {
+    try {
+      Zotero.debug(`[hover-translate-eudic/panel] loadTerms error: ${e?.message || e}`);
+    } catch { /* ignore */ }
+    return { platform: null, words: [] };
+  }
+}
+
+/** 面板内容模式：wordbook=生词本 | terminology=术语库。 */
+function panelContentMode(): "wordbook" | "terminology" {
+  return getPref("panelContentMode") === "terminology" ? "terminology" : "wordbook";
+}
+
 /* ------------------------------------------------------------------ */
 /*  Panel render                                                       */
 /* ------------------------------------------------------------------ */
@@ -514,10 +571,11 @@ async function renderPanel(doc: Document, body: HTMLElement, itemID: number): Pr
   // 或并发渲染导致本轮回被判定过期 return，body 已空且无人填充 → 面板空白、
   // 按钮消失（"点击无反应"）。改为所有内容构建完成后一次性清空并填充，
   // 任何异常都在 catch 中兜底显示占位，保证面板始终有内容。
+  const mode = panelContentMode();
   let platform: "local" | "zotero" | null = null;
   let words: PanelWord[] = [];
   try {
-    const loaded = await loadWords();
+    const loaded = mode === "terminology" ? await loadTerms() : await loadWords();
     if (myGen !== _panelRenderGen.get(body)) return; // 已被更新的渲染取代
     platform = loaded.platform;
     words = loaded.words;
@@ -541,6 +599,7 @@ async function renderPanel(doc: Document, body: HTMLElement, itemID: number): Pr
   const hidePhon = !!getPref("panelHidePhon");
   const hideExp = !!getPref("panelHideExp");
   const hidePlay = !!getPref("panelHidePlay");
+  const hideAbbr = !!getPref("panelHideAbbr");
   const scope = getPref("panelWordScope") === "current" ? "current" : "all";
 
   // 数据已就绪：此时一次性清空旧内容，然后 header + list 依次 append。
@@ -595,26 +654,54 @@ async function renderPanel(doc: Document, body: HTMLElement, itemID: number): Pr
     scope === "all",
   );
 
+  // 内容切换：词（生词本）↔ 语（术语库）。位于「当前条目」后、「隐藏译文」前。
+  // 按钮显示「词」= 生词本卡片，「语」= 术语库卡片（术语库不显示音标，音标位置显示缩写）。
+  const contentToggleBtn = mkBtn(
+    mode === "wordbook"
+      ? "切换到术语库"
+      : "切换到生词本",
+    mode === "wordbook" ? "词" : "语",
+    () => {
+      setPref("panelContentMode", mode === "wordbook" ? "terminology" : "wordbook");
+      refreshPanel(itemID);
+    },
+    mode === "terminology",
+  );
+
   const hideExpBtn = mkBtn("隐藏释义", "译", () => {
     setPref("panelHideExp", !getPref("panelHideExp"));
     refreshPanel(itemID);
   }, hideExp);
-  // 「音标」按钮：SVG 图标（字母 A + 音符），颜色跟随原文字色（currentColor），
-  // 与 wordtranslator 的音标按钮同款样式；active 态高亮背景不变。
+  // 「音标/缩写」按钮：生词本模式为「隐藏音标」（字母 A + 音符 SVG）；
+  // 术语库模式为「隐藏缩写」（三条横线 + 三角 SVG，用户指定图标）。
+  // 图标大小(width/height=15)与颜色(fill=currentColor)两种模式保持一致。
+  const isTermMode = mode === "terminology";
+  const hideTarget = isTermMode ? hideAbbr : hidePhon;
   const hidePhonBtn = el(doc, "button", {
     type: "button",
-    title: hidePhon ? "显示音标" : "隐藏音标",
-    class: hidePhon ? `${ref}-panel-toolbar-btn ${ref}-panel-toolbar-btn-active` : `${ref}-panel-toolbar-btn`,
+    title: hideTarget
+      ? isTermMode ? "显示缩写" : "显示音标"
+      : isTermMode ? "隐藏缩写" : "隐藏音标",
+    class: hideTarget ? `${ref}-panel-toolbar-btn ${ref}-panel-toolbar-btn-active` : `${ref}-panel-toolbar-btn`,
     style: "border-radius:6px;cursor:pointer;padding:2px 8px;font-size:12px;display:inline-flex;align-items:center;",
   });
-  hidePhonBtn.innerHTML =
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="15" height="15" fill="currentColor" aria-hidden="true">' +
-    '<path d="M609.5 627.6c-10.3-20.6-20.5-60.2-30.7-118.9l80.8-207.3h-77.3l-33.9 104.4h-1.9c-13.2-35.8-33.1-63.8-59.8-84-26.7-20.2-57.5-30.3-92.6-30.3-60.2 0-108 21.7-143.4 65.1-35.4 43.5-53.1 99.3-53.1 167.7 0 60.5 15.4 110.3 46.1 149.6 30.7 39.2 71.8 58.8 123.1 58.8 72.4 0 128.5-41.3 168.4-123.8h1.5c15.5 78.5 45.1 117.7 88.8 117.7 11.4 0 25.4-2 41.9-6.1v-64.8c-4.6 1.8-10.7 2.7-18.3 2.7-16.2 0-29.3-10.3-39.6-30.8z m-98.5-101c-30.7 94.8-75 142.1-133 142.1-32.3 0-57.7-14.3-76.4-43.1-18.7-28.7-28-63.9-28-105.5 0-46.7 11-86.4 33.1-118.9s52.1-48.8 89.9-48.8c58.2 0 98.3 52 120.4 155.9l-6 18.3zM775.4 634.8c-14 0-25.7 4.7-35.1 14.1-9.4 9.4-14.1 21-14.1 34.7 0 13.2 4.6 24.6 13.9 34.1S761 732 775 732c14.5 0 26.4-4.8 35.8-14.3 9.4-9.5 14.1-20.9 14.1-34.1 0-13.5-4.7-25-14.1-34.5-9.4-9.5-21.2-14.3-35.4-14.3zM775.4 292.6c-13.5 0-25 4.6-34.7 13.7-9.7 9.1-14.5 20.6-14.5 34.3 0 13.5 4.7 24.9 14.1 34.3 9.4 9.4 21 14.1 34.7 14.1 14.5 0 26.4-4.7 35.8-14.1 9.4-9.4 14.1-20.8 14.1-34.3s-4.8-24.8-14.5-34.1c-9.6-9.2-21.3-13.9-35-13.9z"/>' +
-    '<path d="M926.2 270.6c-19.9 0-36.1-16.2-36.1-36.1V83.7c0-6.2-5.2-11.5-11.5-11.5H143.7c-6.2 0-11.5 5.2-11.5 11.5v150.8c0 20-16.2 36.1-36.1 36.1S60 254.5 60 234.5V83.7C60 37.5 97.6 0 143.7 0h734.9c46.1 0 83.7 37.5 83.7 83.7v150.8c0 20-16.2 36.1-36.1 36.1z"/>' +
-    '<path d="M878.6 1024H143.7c-46.1 0-83.7-37.5-83.7-83.7V732.7c0-20 16.2-36.1 36.1-36.1s36.1 16.2 36.1 36.1v207.6c0 6.2 5.2 11.5 11.5 11.5h734.9c6.2 0 11.5-5.2 11.5-11.5V732.7c0-20 16.2-36.1 36.1-36.1s36.1 16.2 36.1 36.1v207.6c0 46.2-37.5 83.7-83.7 83.7z"/>' +
-    "</svg>";
+  hidePhonBtn.innerHTML = isTermMode
+    // 隐藏缩写图标（用户提供：三条横线 + 右三角，尺寸/颜色与隐藏音标一致）
+    ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="15" height="15" fill="currentColor" aria-hidden="true">' +
+      '<path d="M153.6 153.6h716.8a51.2 51.2 0 0 1 0 102.4H153.6a51.2 51.2 0 1 1 0-102.4z m0 614.4h716.8a51.2 51.2 0 0 1 0 102.4H153.6a51.2 51.2 0 0 1 0-102.4z m0-307.2h358.4a51.2 51.2 0 0 1 0 102.4H153.6a51.2 51.2 0 0 1 0-102.4z m520.5504 67.9936l213.1456 135.2704c11.8272 7.8848 34.304 3.4304 34.304-19.968V385.28c0-26.4704-19.5584-28.2112-31.7952-21.504l-215.6544 136.8064c-11.776 7.3216-11.008 20.3776 0 28.2112z"/>' +
+      "</svg>"
+    // 隐藏音标图标（原有：字母 A + 音符）
+    : '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="15" height="15" fill="currentColor" aria-hidden="true">' +
+      '<path d="M609.5 627.6c-10.3-20.6-20.5-60.2-30.7-118.9l80.8-207.3h-77.3l-33.9 104.4h-1.9c-13.2-35.8-33.1-63.8-59.8-84-26.7-20.2-57.5-30.3-92.6-30.3-60.2 0-108 21.7-143.4 65.1-35.4 43.5-53.1 99.3-53.1 167.7 0 60.5 15.4 110.3 46.1 149.6 30.7 39.2 71.8 58.8 123.1 58.8 72.4 0 128.5-41.3 168.4-123.8h1.5c15.5 78.5 45.1 117.7 88.8 117.7 11.4 0 25.4-2 41.9-6.1v-64.8c-4.6 1.8-10.7 2.7-18.3 2.7-16.2 0-29.3-10.3-39.6-30.8z m-98.5-101c-30.7 94.8-75 142.1-133 142.1-32.3 0-57.7-14.3-76.4-43.1-18.7-28.7-28-63.9-28-105.5 0-46.7 11-86.4 33.1-118.9s52.1-48.8 89.9-48.8c58.2 0 98.3 52 120.4 155.9l-6 18.3zM775.4 634.8c-14 0-25.7 4.7-35.1 14.1-9.4 9.4-14.1 21-14.1 34.7 0 13.2 4.6 24.6 13.9 34.1S761 732 775 732c14.5 0 26.4-4.8 35.8-14.3 9.4-9.5 14.1-20.9 14.1-34.1 0-13.5-4.7-25-14.1-34.5-9.4-9.5-21.2-14.3-35.4-14.3zM775.4 292.6c-13.5 0-25 4.6-34.7 13.7-9.7 9.1-14.5 20.6-14.5 34.3 0 13.5 4.7 24.9 14.1 34.3 9.4 9.4 21 14.1 34.7 14.1 14.5 0 26.4-4.7 35.8-14.1 9.4-9.4 14.1-20.8 14.1-34.3s-4.8-24.8-14.5-34.1c-9.6-9.2-21.3-13.9-35-13.9z"/>' +
+      '<path d="M926.2 270.6c-19.9 0-36.1-16.2-36.1-36.1V83.7c0-6.2-5.2-11.5-11.5-11.5H143.7c-6.2 0-11.5 5.2-11.5 11.5v150.8c0 20-16.2 36.1-36.1 36.1S60 254.5 60 234.5V83.7C60 37.5 97.6 0 143.7 0h734.9c46.1 0 83.7 37.5 83.7 83.7v150.8c0 20-16.2 36.1-36.1 36.1z"/>' +
+      '<path d="M878.6 1024H143.7c-46.1 0-83.7-37.5-83.7-83.7V732.7c0-20 16.2-36.1 36.1-36.1s36.1 16.2 36.1 36.1v207.6c0 6.2 5.2 11.5 11.5 11.5h734.9c6.2 0 11.5-5.2 11.5-11.5V732.7c0-20 16.2-36.1 36.1-36.1s36.1 16.2 36.1 36.1v207.6c0 46.2-37.5 83.7-83.7 83.7z"/>' +
+      "</svg>";
   hidePhonBtn.addEventListener("click", () => {
-    setPref("panelHidePhon", !getPref("panelHidePhon"));
+    if (isTermMode) {
+      setPref("panelHideAbbr", !getPref("panelHideAbbr"));
+    } else {
+      setPref("panelHidePhon", !getPref("panelHidePhon"));
+    }
     refreshPanel(itemID);
   });
   // 隐藏播放图标：使用喇叭 SVG 图标（无文字），位于「隐藏音标」之后
@@ -668,18 +755,18 @@ async function renderPanel(doc: Document, body: HTMLElement, itemID: number): Pr
     setPref("panelFontSize", Math.max(FONT_MIN, (Number(getPref("panelFontSize")) || 15) - 1));
     refreshPanel(itemID);
   });
-  const clearBtn = mkBtn("清空", "清空", () => void confirmClear(doc, body, itemID, platform));
-  right.append(scopeToggleBtn, hideExpBtn, hidePhonBtn, hidePlayBtn, sortBtn, zoomInBtn, zoomOutBtn, clearBtn);
+  const clearBtn = mkBtn("清空", "清空", () => void confirmClear(doc, body, itemID, platform, mode));
+  right.append(contentToggleBtn, scopeToggleBtn, hideExpBtn, hidePhonBtn, hidePlayBtn, sortBtn, zoomInBtn, zoomOutBtn, clearBtn);
   header.append(right);
   body.append(header);
 
-  // ---------- 平台不支持提示 ----------
+  // ---------- 平台不支持提示（保留工具栏——用户可切换到「语」术语库等可用模式；
+  // 不清空 header，否则顶部按钮消失） ----------
   if (!platform) {
     const hint = el(doc, "div", {
       class: `${ref}-panel-hint`,
       style: "font-size:12px;padding:6px 4px;",
     }, [getString("hte-panel-platform-hint")]);
-    body.replaceChildren();
     body.append(hint);
     injectStyle(body);
     return;
@@ -691,14 +778,21 @@ async function renderPanel(doc: Document, body: HTMLElement, itemID: number): Pr
     style: "display:flex;flex-direction:column;gap:6px;max-height:70vh;overflow-y:auto;padding-right:4px;width:100%;box-sizing:border-box;",
   });
   if (visibleWords.length === 0) {
+    const emptyMsg = mode === "terminology"
+      ? (scope === "current" ? "当前条目暂无术语。划词后点击「+术语库」即可加入。" : "暂无术语。划词后点击「+术语库」即可加入。")
+      : (scope === "current" ? getString("hte-panel-empty-current") : getString("hte-panel-empty"));
     list.append(el(doc, "div", {
       class: `${ref}-panel-hint`,
       style: "font-size:12px;padding:6px 4px;",
-    }, [scope === "current" ? getString("hte-panel-empty-current") : getString("hte-panel-empty")]));
+    }, [emptyMsg]));
   } else {
-    sortedVisible.forEach(({ w, origIdx }) =>
-      list.append(renderCard(doc, body, itemID, platform!, w, origIdx, fontSize, hidePhon, hideExp, hidePlay)),
-    );
+    sortedVisible.forEach(({ w, origIdx }) => {
+      if (mode === "terminology") {
+        list.append(renderTermCard(doc, body, itemID, platform!, w, origIdx, fontSize, hideExp, hideAbbr));
+      } else {
+        list.append(renderCard(doc, body, itemID, platform!, w, origIdx, fontSize, hidePhon, hideExp, hidePlay));
+      }
+    });
   }
   body.append(list);
   injectStyle(body);
@@ -845,6 +939,225 @@ function renderCard(
 
   card.append(textWrap, btnGroup);
   return card;
+}
+
+/** 渲染单个术语卡片（术语库模式）：无音标/无发音按钮，音标位置显示缩写。 */
+function renderTermCard(
+  doc: Document,
+  body: HTMLElement,
+  itemID: number,
+  platform: "local" | "zotero",
+  w: PanelWord,
+  idx: number,
+  fontSize: number,
+  hideExp: boolean,
+  hideAbbr: boolean,
+): HTMLElement {
+  const card = el(doc, "div", {
+    class: `${ref}-panel-card`,
+    style:
+      "position:relative;padding:6px 8px;" +
+      "border-radius:8px;width:100%;box-sizing:border-box;",
+  });
+
+  const textWrap = el(doc, "div", {
+    style: `width:100%;box-sizing:border-box;font-size:${fontSize}px;line-height:1.5;user-select:text;overflow-wrap:anywhere;`,
+  });
+
+  // 第一行：术语（可点击跳转原文）+ 缩写（音标位置）
+  const row1 = el(doc, "div", {
+    style: "display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;padding-right:44px;box-sizing:border-box;",
+  });
+  if (w.src) {
+    const wordLink = el(doc, "a", {
+      href: w.src,
+      "data-hte-src": w.src,
+      title: "跳转到原文",
+      class: `${ref}-panel-card-word`,
+      style: `font-weight:700;font-size:${fontSize + 2}px;cursor:pointer;text-decoration:none;overflow-wrap:anywhere;`,
+    }, [w.word]);
+    wordLink.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      void openSourceLink(w.src, w.word);
+    });
+    row1.append(wordLink);
+  } else {
+    row1.append(el(doc, "span", {
+      class: `${ref}-panel-card-word`,
+      style: `font-weight:700;font-size:${fontSize + 2}px;overflow-wrap:anywhere;`,
+    }, [w.word]));
+  }
+  // 缩写（选填）：显示在音标位置，正体灰色；无缩写则不显示；
+  // 「隐藏缩写」按钮(术语库模式)可切换显示
+  const abbr = (w.abbr || "").trim();
+  if (abbr && !hideAbbr) {
+    row1.append(el(doc, "span", {
+      class: `${ref}-panel-card-phon`,
+      style: "flex-shrink:0;",
+    }, [abbr]));
+  }
+  textWrap.append(row1);
+
+  // 第二行：释义
+  if (w.exp && !hideExp) {
+    textWrap.append(el(doc, "div", {
+      class: `${ref}-panel-card-exp`,
+      style: "margin-top:2px;overflow-wrap:anywhere;width:100%;",
+    }, [w.exp]));
+  }
+
+  // 编辑 / 删除按钮（右上角）
+  const btnGroup = el(doc, "div", {
+    style:
+      "position:absolute;top:6px;right:6px;display:flex;flex-direction:row;gap:0;",
+  });
+  const editBtn = el(doc, "button", {
+    type: "button",
+    title: "编辑",
+    class: `${ref}-panel-icon-btn`,
+    style: "border:none;background:transparent;cursor:pointer;font-size:14px;padding:2px 6px;border-radius:4px;line-height:1;display:inline-flex;align-items:center;",
+  });
+  editBtn.innerHTML =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor">' +
+    '<path d="M474.58679343 587.16868738c-11.45302241 0-22.90604486-4.37057868-31.6472022-13.11173601-17.48231469-17.48231469-17.48231469-45.83841849 0-63.29440437l487.24053555-487.24053552c17.48231469-17.48231469 45.81208967-17.48231469 63.29440431 0 17.48231469 17.48231469 17.48231469 45.83841849 0 63.29440441L506.23399561 574.05695137a44.61676276 44.61676276 0 0 1-31.64720218 13.11173601z"/>' +
+    '<path d="M904.16728498 1017.19676833h-781.96497912c-62.68884228 0-113.68770304-50.99886074-113.68770305-113.71403181v-781.96497913c0-62.71517108 50.99886074-113.71403182 113.66137425-113.71403185l457.51533479 0.0263288c24.72273117 0 44.75893818 20.03620706 44.75893819 44.7589382s-20.03620706 44.75893818-44.75893819 44.7589382l-457.51533479-0.02632877c-13.2960375 0-24.14349786 10.84746035-24.14349785 24.16982661v781.96497915c0 13.32236631 10.84746035 24.1698266 24.16982665 24.16982664h781.96497912c13.32236631 0 24.1698266-10.84746035 24.16982668-24.16982664V403.42008173c0-24.72273117 20.06253583-44.75893818 44.75893815-44.75893828 24.72273117 0 44.75893818 20.03620706 44.7589382 44.75893828V903.50906532c0 62.68884228-50.99886074 113.68770304-113.68770303 113.68770301z"/>' +
+    "</svg>";
+  editBtn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    void openEditTermDialog(doc, body, itemID, platform, w, idx);
+  });
+  const delBtn = el(doc, "button", {
+    type: "button",
+    title: "删除",
+    class: `${ref}-panel-icon-btn`,
+    style: "border:none;background:transparent;color:#999;cursor:pointer;font-size:15px;padding:2px 6px;border-radius:4px;line-height:1;",
+  }, ["✕"]);
+  delBtn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    void confirmDeleteTerm(doc, body, itemID, platform, w, idx);
+  });
+  btnGroup.append(editBtn, delBtn);
+
+  card.append(textWrap, btnGroup);
+  return card;
+}
+
+/** 编辑术语弹窗（术语/缩写/释义）。 */
+function openEditTermDialog(
+  doc: Document,
+  body: HTMLElement,
+  itemID: number,
+  platform: "local" | "zotero",
+  w: PanelWord,
+  idx: number,
+): void {
+  const overlay = el(doc, "div", {
+    style:
+      "position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:2147483647;" +
+      "display:flex;align-items:center;justify-content:center;",
+  });
+  const dlg = el(doc, "div", {
+    style:
+      "background:var(--color-sidepane,#fff);border:1px solid var(--color-border,#d4d4d4);" +
+      "border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.2);padding:16px;width:360px;max-width:90vw;",
+  });
+  dlg.append(el(doc, "div", { style: "font-weight:600;margin-bottom:10px;" }, ["编辑术语"]));
+
+  const mkField = (label: string, value: string): HTMLInputElement => {
+    dlg.append(el(doc, "label", { style: "display:block;font-size:12px;color:#666;margin-top:6px;" }, [label]));
+    const input = el(doc, "input", {
+      type: "text",
+      style: "width:100%;box-sizing:border-box;margin-top:2px;padding:4px 6px;border:1px solid #ccc;border-radius:4px;",
+    }) as HTMLInputElement;
+    input.value = value;
+    dlg.append(input);
+    return input;
+  };
+
+  const termInput = mkField("术语", w.word);
+  const abbrInput = mkField("缩写（选填）", w.abbr || "");
+  const expInput = mkField("释义", w.exp);
+
+  const btnRow = el(doc, "div", { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:14px;" });
+  const saveBtn = el(doc, "button", {
+    style:
+      "border:1px solid #1e88e5;background:#1e88e5;color:#fff;border-radius:6px;" +
+      "cursor:pointer;padding:4px 14px;font-size:13px;",
+  }, ["保存"]);
+  saveBtn.addEventListener("click", async () => {
+    const patch = {
+      term: termInput.value.trim(),
+      abbr: abbrInput.value.trim(),
+      exp: expInput.value.trim(),
+    };
+    overlay.remove();
+    if (!patch.term) return;
+    let ok = false;
+    try {
+      const { updateTerminologyEntry } = await import("./terminology");
+      ok = await updateTerminologyEntry(platform, idx, w.word, patch);
+    } catch { /* ignore */ }
+    if (ok) {
+      // 术语注释同步：勾选「加入术语库时同步添加到注释」时,同步更新带术语
+      // tag 的注释(参考生词卡片行为;用术语 tag 过滤,避免误伤同名词条
+      // 的生词注释;词形还原感知匹配,容错不抛错)。
+      try {
+        if (getPref("enableTerminologyAnnotationSync")) {
+          const termTag = (getPref("terminologyTagName") as string) || "术语";
+          await updateAnnotationsForWord(w.word, {
+            word: patch.term,
+            exp: patch.exp,
+          }, w.exp, termTag);
+        }
+      } catch { /* ignore */ }
+      refreshAllPanels();
+    }
+  });
+  const cancelBtn = el(doc, "button", {
+    style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:4px 14px;font-size:13px;",
+  }, ["取消"]);
+  cancelBtn.addEventListener("click", () => overlay.remove());
+  btnRow.append(cancelBtn, saveBtn);
+  dlg.append(btnRow);
+
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) overlay.remove();
+  });
+  overlay.append(dlg);
+  mountOverlay(doc, overlay);
+  termInput.focus();
+}
+
+/** 删除术语（二次确认）。 */
+function confirmDeleteTerm(
+  doc: Document,
+  body: HTMLElement,
+  itemID: number,
+  platform: "local" | "zotero",
+  w: PanelWord,
+  idx: number,
+): void {
+  showConfirm(doc, body, "删除术语", `确定删除「${w.word}」吗？`, async () => {
+    let ok = false;
+    try {
+      const { deleteTerminologyEntry } = await import("./terminology");
+      ok = await deleteTerminologyEntry(platform, idx, w.word);
+    } catch { /* ignore */ }
+    if (ok) {
+      // 术语注释同步：勾选「加入术语库时同步添加到注释」时,同步删除带术语
+      // tag 的注释(参考生词卡片行为;用术语 tag 过滤避免误伤生词注释)。
+      try {
+        if (getPref("enableTerminologyAnnotationSync")) {
+          const termTag = (getPref("terminologyTagName") as string) || "术语";
+          await deleteAnnotationsForWord(w.word, termTag);
+        }
+      } catch { /* ignore */ }
+      refreshAllPanels();
+    }
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -997,10 +1310,63 @@ function confirmClear(
   body: HTMLElement,
   itemID: number,
   platform: "local" | "zotero" | null,
+  mode: "wordbook" | "terminology" = "wordbook",
 ): void {
   if (!platform) return;
   const scope = getPref("panelWordScope") === "current" ? "current" : "all";
-  showConfirm(doc, body, getString("hte-panel-clear-title"), getString("hte-panel-clear-msg"), async () => {
+  const title = mode === "terminology" ? "清空术语库" : getString("hte-panel-clear-title");
+  const msg = mode === "terminology"
+    ? "确定清空当前条目的全部术语吗？此操作不可撤销。"
+    : getString("hte-panel-clear-msg");
+  showConfirm(doc, body, title, msg, async () => {
+    if (mode === "terminology") {
+      // 术语库清空：按平台遍历删除（local 按索引倒序，zotero 按 term）
+      let deletedTerms: string[] = [];
+      try {
+        const { getTerminologyTerms, deleteTerminologyEntry } = await import("./terminology");
+        const { platform: termPlatform, terms } = await getTerminologyTerms();
+        const targets =
+          scope === "current"
+            ? terms.filter((t) => srcBelongsToItem(resolveSrcItemID(t.src), itemID))
+            : terms;
+        if (termPlatform === "local") {
+          // 本地术语表：先在全量快照中收集所有匹配目标的行索引，
+          // 再按索引**倒序**删除 —— 删除靠后的行不会影响靠前行索引，
+          // 避免顺序删除时索引错位导致残留（修复「清空后术语卡片有残留」）。
+          const all = await (await import("./terminology")).getTerms();
+          const idxs = all
+            .map((r, i) => ({ r, i }))
+            .filter(({ r }) =>
+              targets.some(
+                (t) => t.term.toLowerCase() === r.term.toLowerCase() && t.src === r.src,
+              ),
+            )
+            .map(({ i }) => i)
+            .sort((a, b) => b - a); // 倒序
+          for (const idx of idxs) {
+            await deleteTerminologyEntry("local", idx, all[idx].term);
+            deletedTerms.push(all[idx].term);
+          }
+        } else {
+          for (const t of targets) {
+            await deleteTerminologyEntry("zotero", -1, t.term);
+            deletedTerms.push(t.term);
+          }
+        }
+      } catch { /* ignore */ }
+      // 术语注释同步：勾选「加入术语库时同步添加到注释」时,同步删除每个
+      // 被清空术语对应的注释(带术语 tag,容错不抛错)。
+      try {
+        if (getPref("enableTerminologyAnnotationSync")) {
+          const termTag = (getPref("terminologyTagName") as string) || "术语";
+          for (const term of deletedTerms) {
+            await deleteAnnotationsForWord(term, termTag);
+          }
+        }
+      } catch { /* ignore */ }
+      refreshAllPanels();
+      return;
+    }
     const { words } = await loadWords();
     // 「当前条目」视图：只清空属于当前条目的词条；「所有条目」视图清空全部
     const targets =
@@ -1112,12 +1478,12 @@ export function registerWordbookPanel(): string | null {
       },
       bodyXHTML: `<html:div class="${ref}-panel-body" style="padding:8px;"></html:div>`,
       onInit: ({ body, refresh, setEnabled }: any) => {
-        // 启用条件：平台 ∈ {local, zotero} 且勾选 enableWordbookPanel。
+        // 启用条件：与 reevaluatePanelEnabled 同一逻辑（平台∨同步至本地∨术语库）。
         // 注意：**主窗口与 PDF reader 窗口的面板都启用**（用户期望两侧都可用、
         // 内容同步）。不要按窗口禁用——早前把非主窗口 setEnabled(false) 导致
         // PDF 侧面板"完全无反应"（按钮点击无效）。同一窗口内内容叠加的问题
         // 由 _panelRenderGen（WeakMap 按 body 隔离）解决，与窗口无关。
-        setEnabled(!!getPref("enableWordbookPanel") && supportedPlatform() !== null);
+        setEnabled(computePanelEnabled());
         const uid = Zotero.Utilities.randomString(8);
         if (body) {
           body.dataset.htePaneUid = uid;
@@ -1130,8 +1496,8 @@ export function registerWordbookPanel(): string | null {
         if (uid) getPanelEntries().delete(uid);
       },
       onItemChange: ({ item, setEnabled, body }: any) => {
-        // 主窗口与 PDF reader 窗口都启用（与 onInit 一致）
-        setEnabled(!!getPref("enableWordbookPanel") && supportedPlatform() !== null);
+        // 主窗口与 PDF reader 窗口都启用（与 onInit 同一条件）
+        setEnabled(computePanelEnabled());
         // 切换条目 / PDF 时强制刷新面板内容。
         // Zotero 的 _isAlreadyRendered 以 [tabID, item.id] 为缓存依赖，
         // 同一父条目下切换不同 PDF 附件时 item.id 不变不会触发 onRender，
@@ -1170,10 +1536,20 @@ export function registerWordbookPanel(): string | null {
     _paneKey = key || null;
     if (_paneKey) {
       startThemeWatcher();
-      // 平台切换（本地生词表/Zotero 笔记 ↔ 欧路/扇贝/墨墨）时实时更新
+      // 平台切换 / 同步至本地 / 开启术语库 变化时实时更新
       // 信息栏面板与开启按钮的启用状态，无需取消/重新勾选或重启 Zotero。
       if (!_platformObserver) {
         _platformObserver = registerPrefObserver("wordbookPlatform", () => {
+          reevaluatePanelEnabled();
+        });
+      }
+      if (!_syncObserver) {
+        _syncObserver = registerPrefObserver("syncToLocal", () => {
+          reevaluatePanelEnabled();
+        });
+      }
+      if (!_termObserver) {
+        _termObserver = registerPrefObserver("enableTerminology", () => {
           reevaluatePanelEnabled();
         });
       }
@@ -1200,6 +1576,14 @@ export function unregisterWordbookPanel(): void {
     if (_platformObserver) {
       Zotero.Prefs.unregisterObserver(_platformObserver);
       _platformObserver = null;
+    }
+    if (_syncObserver) {
+      Zotero.Prefs.unregisterObserver(_syncObserver);
+      _syncObserver = null;
+    }
+    if (_termObserver) {
+      Zotero.Prefs.unregisterObserver(_termObserver);
+      _termObserver = null;
     }
   } catch { /* ignore */ }
   getPanelEntries().clear();

@@ -57,12 +57,13 @@ function ensureWritable(file: any): void {
  * The original entry is not mutated.
  */
 function cleanEntry(w: EudicWordEntry): {
-  word: string; phon: string; exp: string; context: string; add_time: string; star: number | undefined;
+  word: string; phon: string; exp: string; abbr: string; context: string; add_time: string; star: number | undefined;
 } {
   return {
     word: stripHtml(w.word),
     phon: stripHtml(w.phon),
     exp: stripHtml(w.exp),
+    abbr: stripHtml(w.abbr),
     context: stripHtml(w.context_line),
     add_time: (w.add_time || "").trim(),
     star: w.star,
@@ -138,6 +139,68 @@ function toJson(words: EudicWordEntry[]): string {
 }
 
 /* ------------------------------------------------------------------ */
+/*  术语库专用转换器：缩写(abbr)与释义(exp)分列/分字段导出              */
+/* ------------------------------------------------------------------ */
+
+/** 术语库 CSV：word, abbr, exp 分列（不再把缩写拼进释义）。 */
+function toTermCsv(words: EudicWordEntry[]): string {
+  const header = ["word", "abbr", "exp"];
+  const rows = [header.join(",")];
+  for (const w of words) {
+    const c = cleanEntry(w);
+    const cols = [
+      esc(c.word, ","),
+      esc(c.abbr, ","),
+      esc(c.exp, ","),
+    ];
+    rows.push(cols.join(","));
+  }
+  return rows.join("\n");
+}
+
+/** 术语库 TSV：word, abbr, exp 分列。 */
+function toTermTsv(words: EudicWordEntry[]): string {
+  const header = ["word", "abbr", "exp"];
+  const rows = [header.join("\t")];
+  for (const w of words) {
+    const c = cleanEntry(w);
+    const cols = [
+      esc(c.word, "\t"),
+      esc(c.abbr, "\t"),
+      esc(c.exp, "\t"),
+    ];
+    rows.push(cols.join("\t"));
+  }
+  return rows.join("\n");
+}
+
+/** 术语库 TXT：word (abbr) exp，缩写与释义分开展示。 */
+function toTermTxt(words: EudicWordEntry[]): string {
+  const lines: string[] = [];
+  for (const w of words) {
+    const c = cleanEntry(w);
+    const parts = [c.word];
+    if (c.abbr) parts.push(`(${c.abbr})`);
+    if (c.exp) parts.push(c.exp);
+    lines.push(parts.join("  "));
+  }
+  return lines.join("\n\n");
+}
+
+/** 术语库 JSON：word/abbr/exp 独立字段。 */
+function toTermJson(words: EudicWordEntry[]): string {
+  return JSON.stringify(
+    {
+      export_time: new Date().toISOString(),
+      total: words.length,
+      words,
+    },
+    null,
+    2,
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  File saving                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -158,6 +221,14 @@ const CONVERTERS: Record<ExportFormat, (w: EudicWordEntry[], compact?: boolean) 
   tsv: toTsv,
   txt: toTxt,
   json: toJson,
+};
+
+/** 术语库专用转换器：abbr 与 exp 分列/分字段（不拼进同一格）。 */
+const TERM_CONVERTERS: Record<ExportFormat, (w: EudicWordEntry[], compact?: boolean) => string> = {
+  csv: toTermCsv,
+  tsv: toTermTsv,
+  txt: toTermTxt,
+  json: toTermJson,
 };
 
 /** Words-only converter: only the word field, no empty phon/exp/etc. */
@@ -298,6 +369,8 @@ export async function exportWordEntries(
     baseName?: string;
     /** If true, omit context_line and star columns. */
     compact?: boolean;
+    /** If true, export as terminology (abbr and exp as separate fields/columns). */
+    terminology?: boolean;
   },
 ): Promise<string> {
   const meta = FORMAT_META[format];
@@ -307,7 +380,8 @@ export async function exportWordEntries(
     // Words-only mode: strip empty fields, output only the word column.
     content = wordsOnlyConverter(format, words, opts?.note);
   } else {
-    const converter = CONVERTERS[format];
+    // 术语库导出走专用转换器：abbr/exp 分列；生词本保持原有格式。
+    const converter = opts?.terminology ? TERM_CONVERTERS[format] : CONVERTERS[format];
     content = converter(words, opts?.compact);
   }
 

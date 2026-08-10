@@ -10,6 +10,22 @@ wordbtn-adding = Adding...
 wordbtn-added = ✅ Added
 wordbtn-failed = ❌ Failed
 
+# Terminology button
+termbtn-add = +Terminology
+termbtn-adding = Adding...
+termbtn-added = ✅ Added
+termbtn-failed = ❌ Failed
+
+# Add terminology dialog
+term-add-title = Add Terminology
+term-add-term = Term
+term-add-abbr = Abbreviation (optional)
+term-add-exp = Definition
+term-add-save = Save
+term-add-cancel = Cancel
+term-abbr-suggestion = Suggested abbreviation: { $abbr }
+term-abbr-adopt = Use
+
 # Hover popup status
 hover-popup-translating = Translating...
 hover-popup-empty = (no translation)

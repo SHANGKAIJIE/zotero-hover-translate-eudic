@@ -21,17 +21,29 @@ import { addWord as addWordToLocal } from "./localWordbook";
 import { setActiveAddBtn } from "./addWordShortcut";
 import { getAllReaders, getReaderInnerWindow } from "../utils/window";
 import { fetchDictResult, extractPhonetic, stripAudioText } from "./hoverTranslate";
+import { suggestAbbr, addTermToTerminology } from "./terminology";
+import { syncTermAnnotation } from "./annotationSync";
+import { buildSourceLink } from "./zoteroNote";
 
 let registered = false;
 let listener: ((event: any) => void) | null = null;
 let prefObserverSymbol: symbol | null = null;
 
 export function registerSelectionButton() {
-  // Watch the enableEudicSync pref and register/unregister accordingly.
+  // Watch the enableEudicSync / enableTerminology prefs and register/unregister accordingly.
   prefObserverSymbol = registerPrefObserver("enableEudicSync", () => {
     syncRegistration();
   });
+  try {
+    (Zotero as any).Prefs.registerObserver?.(addonID(), "enableTerminology", () => {
+      syncRegistration();
+    });
+  } catch { /* ignore */ }
   syncRegistration();
+}
+
+function addonID(): string {
+  return (config as any).addonID || "hover-translate-eudic@zotero-plugins.dev";
 }
 
 export function unregisterSelectionButton() {
@@ -47,8 +59,9 @@ function syncRegistration() {
       : platform === "local"
       ? true
       : !!getPref("eudicToken");
+  // 生词本同步 或 术语库 任一开启即注册划词弹窗监听
   const shouldEnable =
-    getPref("enableEudicSync") && hasStorage;
+    (getPref("enableEudicSync") && hasStorage) || !!getPref("enableTerminology");
   if (shouldEnable && !registered) {
     doRegister();
   } else if (!shouldEnable && registered) {
@@ -106,10 +119,12 @@ function onRenderTextSelectionPopup(event: any) {
   // Resolve the reader instance for this event (for attachmentID).
   const reader: any = event?.reader || event?.params?.reader || null;
 
-  if (!getPref("enableEudicSync")) return;
+  const termEnabled = !!getPref("enableTerminology");
+  const isWord = isSingleEnglishWord(selectedText);
+
+  // 生词本按钮条件：enableEudicSync + 场景 + 单词 + 平台有存储
   const scenePref = getPref("buttonShowScene");
-  if (scenePref !== "both" && scenePref !== "selection") return;
-  if (!isSingleEnglishWord(selectedText)) return;
+  const sceneOk = scenePref === "both" || scenePref === "selection";
   const platform = getPref("wordbookPlatform") as string;
   const hasStorage = platform === "maimemo"
     ? !!getPref("maimemoToken")
@@ -118,113 +133,203 @@ function onRenderTextSelectionPopup(event: any) {
       : platform === "local"
       ? true
       : !!getPref("eudicToken");
-  if (!hasStorage) return;
+  const showWordBtn = getPref("enableEudicSync") && sceneOk && isWord && hasStorage;
+  // 术语库按钮条件：开启术语库 + 文本非空（单词与短语均可；1 字符忽略）
+  const showTermBtn = termEnabled && selectedText.length >= 2;
 
-  // Build a full-width button styled like llm-for-zotero's "Add Text" button.
-  const btn = doc.createElement("button");
-  btn.textContent = getString("wordbtn-add");
-  btn.style.cssText = [
-    "display:block",
+  if (!showWordBtn && !showTermBtn) return;
+
+  // 同一行容器：+生词本（左）+ +术语库（右）
+  const row = doc.createElement("div");
+  row.style.cssText = [
+    "display:flex",
+    "gap:6px",
+    "margin:2px 0",
     "width:100%",
-    "margin:0",
-    "padding:6px 8px",
     "box-sizing:border-box",
-    "border:1px solid rgba(130,130,130,0.38)",
-    "border-radius:6px",
-    "background:rgba(255,255,255,0.04)",
-    "color:inherit",
-    "font-size:12px",
-    "line-height:1.25",
-    "text-align:center",
-    "cursor:pointer",
   ].join(";");
 
-  btn.addEventListener("click", async () => {
-    btn.textContent = getString("wordbtn-adding");
-    btn.setAttribute("disabled", "true");
-    // Capture translation data from pdf-translate textarea (already visible)
-    let trResult = "";
-    let phon = "";
-    try {
-      const ta = doc.querySelector(
-        ".zoteropdftranslate-popup-textarea, .selection-popup textarea",
-      ) as HTMLTextAreaElement | null;
-      if (ta && ta.value) {
-        trResult = ta.value;
-        const match = ta.value.split("\n")[0].match(/\[([^\]]+?)\]/);
-        if (match) phon = match[1];
-      }
-    } catch { /* ignore */ }
-    // When the wordbook platform is zotero/local (or annotation translate is
-    // enabled), fetch the full dictionary entry — it carries the phonetic
-    // (audio/text) that the short textarea translation lacks, so the note
-    // gets a 音标 line just like the hover path.
-    const platform = getPref("wordbookPlatform") as string;
-    if (trResult && reader && (platform === "zotero" || platform === "local" ||
-        (getPref("enableAnnotationSync") && getPref("enableAnnotationTranslate")))) {
+  // 全宽按钮样式（flex:1 平分容器）
+  const mkSelectionButton = (text: string): HTMLButtonElement => {
+    const b = doc.createElement("button");
+    b.textContent = text;
+    b.style.cssText = [
+      "display:block",
+      "flex:1",
+      "margin:0",
+      "padding:6px 8px",
+      "box-sizing:border-box",
+      "border:1px solid rgba(130,130,130,0.38)",
+      "border-radius:6px",
+      "background:rgba(255,255,255,0.04)",
+      "color:inherit",
+      "font-size:12px",
+      "line-height:1.25",
+      "text-align:center",
+      "cursor:pointer",
+      "white-space:nowrap",
+    ].join(";");
+    return b;
+  };
+
+  // ---- +生词本 按钮（原逻辑，仅作用于单个英文单词） ----
+  let wordBtn: HTMLButtonElement | null = null;
+  if (showWordBtn) {
+    wordBtn = mkSelectionButton(getString("wordbtn-add"));
+    wordBtn.addEventListener("click", async () => {
+      wordBtn!.textContent = getString("wordbtn-adding");
+      wordBtn!.setAttribute("disabled", "true");
+      // Capture translation data from pdf-translate textarea (already visible)
+      let trResult = "";
+      let phon = "";
       try {
-        (globalThis as any).Zotero?.debug?.(
-          `[hte-ann] selectionButton: fetching dict result for wordbook/annotation, ` +
-          `word="${selectedText}"`,
-        );
-        const dict = await fetchDictResult(selectedText, reader);
-        if (dict?.result) {
-          (globalThis as any).Zotero?.debug?.(
-            `[hte-ann] selectionButton: dict result len=${dict.result.length}, ` +
-            `using dict result as trResult for wordbook`,
-          );
-          trResult = dict.result;
-        } else {
-          (globalThis as any).Zotero?.debug?.(
-            `[hte-ann] selectionButton: dict result empty, keeping textarea trResult`,
-          );
+        const ta = doc.querySelector(
+          ".zoteropdftranslate-popup-textarea, .selection-popup textarea",
+        ) as HTMLTextAreaElement | null;
+        if (ta && ta.value) {
+          trResult = ta.value;
+          const match = ta.value.split("\n")[0].match(/\[([^\]]+?)\]/);
+          if (match) phon = match[1];
         }
-        // 音标：与悬停路径一致（audio → stripAudioText → extractPhonetic → /.../）
-        if (dict) {
-          if (!phon && dict.audio?.length > 0) {
-            const raw = (dict.audio[0].text || "").trim();
-            if (raw) phon = stripAudioText(raw);
-          }
-          if (!phon) phon = extractPhonetic(dict.result || "");
-          if (phon) phon = "/" + phon + "/";
-        }
-      } catch (e) {
-        (globalThis as any).Zotero?.debug?.(
-          `[hte-ann] selectionButton: fetchDictResult error: ${String(e)}`,
-        );
-      }
-    }
-    const contextLine = findContextFromReaders(selectedText, undefined, pageIndex);
-    // Build annotation context for syncWordAnnotation (selection scene).
-    let annotationCtx: any = undefined;
-    try {
-      const attachmentID = reader?.itemID ?? reader?._item?.id;
-      try {
-        (globalThis as any).Zotero?.debug?.(
-          `[hte-ann] selectionButton: building ctx, reader.itemID=${reader?.itemID}, ` +
-          `reader._item?.id=${reader?._item?.id}, resolved attachmentID=${attachmentID}, ` +
-          `pdfRectsLen=${pdfRects?.length}, pageIndex=${pageIndex}`,
-        );
       } catch { /* ignore */ }
-      if (attachmentID && pdfRects && pdfRects.length > 0 && pageIndex != null) {
-        annotationCtx = { attachmentID, reader, pdfRects, pageIndex };
+      // When the wordbook platform is zotero/local (or annotation translate is
+      // enabled), fetch the full dictionary entry — it carries the phonetic
+      // (audio/text) that the short textarea translation lacks, so the note
+      // gets a 音标 line just like the hover path.
+      const platform = getPref("wordbookPlatform") as string;
+      if (trResult && reader && (platform === "zotero" || platform === "local" ||
+          (getPref("enableAnnotationSync") && getPref("enableAnnotationTranslate")))) {
+        try {
+          (globalThis as any).Zotero?.debug?.(
+            `[hte-ann] selectionButton: fetching dict result for wordbook/annotation, ` +
+            `word="${selectedText}"`,
+          );
+          const dict = await fetchDictResult(selectedText, reader);
+          if (dict?.result) {
+            (globalThis as any).Zotero?.debug?.(
+              `[hte-ann] selectionButton: dict result len=${dict.result.length}, ` +
+              `using dict result as trResult for wordbook`,
+            );
+            trResult = dict.result;
+          } else {
+            (globalThis as any).Zotero?.debug?.(
+              `[hte-ann] selectionButton: dict result empty, keeping textarea trResult`,
+            );
+          }
+          // 音标：与悬停路径一致（audio → stripAudioText → extractPhonetic → /.../）
+          if (dict) {
+            if (!phon && dict.audio?.length > 0) {
+              const raw = (dict.audio[0].text || "").trim();
+              if (raw) phon = stripAudioText(raw);
+            }
+            if (!phon) phon = extractPhonetic(dict.result || "");
+            if (phon) phon = "/" + phon + "/";
+          }
+        } catch (e) {
+          (globalThis as any).Zotero?.debug?.(
+            `[hte-ann] selectionButton: fetchDictResult error: ${String(e)}`,
+          );
+        }
       }
-    } catch { /* ignore */ }
-    const ok = await addWordToEudic(selectedText, trResult, phon, annotationCtx);
-    btn.textContent = ok
-      ? getString("wordbtn-added")
-      : getString("wordbtn-failed");
-    setTimeout(() => {
-      btn.textContent = getString("wordbtn-add");
-      btn.removeAttribute("disabled");
-    }, 1000);
-  });
+      const contextLine = findContextFromReaders(selectedText, undefined, pageIndex);
+      // Build annotation context for syncWordAnnotation (selection scene).
+      let annotationCtx: any = undefined;
+      try {
+        const attachmentID = reader?.itemID ?? reader?._item?.id;
+        try {
+          (globalThis as any).Zotero?.debug?.(
+            `[hte-ann] selectionButton: building ctx, reader.itemID=${reader?.itemID}, ` +
+            `reader._item?.id=${reader?._item?.id}, resolved attachmentID=${attachmentID}, ` +
+            `pdfRectsLen=${pdfRects?.length}, pageIndex=${pageIndex}`,
+          );
+        } catch { /* ignore */ }
+        if (attachmentID && pdfRects && pdfRects.length > 0 && pageIndex != null) {
+          annotationCtx = { attachmentID, reader, pdfRects, pageIndex };
+        }
+      } catch { /* ignore */ }
+      const ok = await addWordToEudic(selectedText, trResult, phon, annotationCtx);
+      wordBtn!.textContent = ok
+        ? getString("wordbtn-added")
+        : getString("wordbtn-failed");
+      setTimeout(() => {
+        wordBtn!.textContent = getString("wordbtn-add");
+        wordBtn!.removeAttribute("disabled");
+      }, 1000);
+    });
+    row.append(wordBtn);
+  }
 
-  append(btn);
-  // 加词快捷键：注册为当前活跃按钮（划词弹窗可见期间按下快捷键即触发）。
-  setActiveAddBtn(btn);
+  // ---- +术语库 按钮 ----
+  let termBtn: HTMLButtonElement | null = null;
+  if (showTermBtn) {
+    termBtn = mkSelectionButton(getString("termbtn-add"));
+    termBtn!.addEventListener("click", async () => {
+      termBtn!.textContent = getString("termbtn-adding");
+      termBtn!.setAttribute("disabled", "true");
+      // 读取弹窗译文（术语库保存的是译文）。若用户点击时译文尚未加载出
+      // （翻译还在进行中），轮询等待译文出现后再弹窗，避免把空/简译写入；
+      // 最多等待 WAIT_TRANSLATION_MS 毫秒（参考 hover 生词本「+」按钮的
+      // Promise.race 超时 + 200ms 轮询机制），超时后使用当前值（可能为空）。
+      let trResult = "";
+      try {
+        const WAIT_TRANSLATION_MS = 12000;
+        const deadline = Date.now() + WAIT_TRANSLATION_MS;
+        while (!trResult && Date.now() < deadline) {
+          const ta = doc.querySelector(
+            ".zoteropdftranslate-popup-textarea, .selection-popup textarea",
+          ) as HTMLTextAreaElement | null;
+          if (ta && ta.value) {
+            trResult = ta.value;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      } catch { /* ignore */ }
+      // 构建原文跳转链接 src（复用 zoteroNote.buildSourceLink）
+      let src = "";
+      let annotationCtx: any = undefined;
+      try {
+        const attachmentID = reader?.itemID ?? reader?._item?.id;
+        const item = attachmentID ? Zotero.Items.get(attachmentID) : null;
+        const key = item?.key;
+        const libraryID = item?.libraryID;
+        if (key && libraryID != null && pageIndex != null && pdfRects && pdfRects.length > 0) {
+          src = buildSourceLink({ attachmentKey: key, libraryID, pageIndex, rects: pdfRects });
+          annotationCtx = { attachmentID, reader, pdfRects, pageIndex };
+        }
+      } catch { /* ignore */ }
+      // 弹窗任何异常都必须让按钮恢复（绝不卡在「添加中…」）
+      let saved = false;
+      try {
+        saved = await openAddTermDialog(doc, {
+          term: selectedText,
+          exp: trResult,
+          src,
+          annotationCtx,
+        });
+      } catch (e) {
+        try {
+          (globalThis as any).Zotero?.debug?.(
+            `[hover-translate-eudic/term] openAddTermDialog error: ${String(e)}`,
+          );
+        } catch { /* ignore */ }
+      }
+      termBtn!.textContent = saved
+        ? getString("termbtn-added")
+        : getString("termbtn-failed");
+      setTimeout(() => {
+        termBtn!.textContent = getString("termbtn-add");
+        termBtn!.removeAttribute("disabled");
+      }, 1000);
+    });
+    row.append(termBtn);
+  }
 
-  // Place the button right after Translate for Zotero's translation textarea
+  append(row);
+  // 加词快捷键：注册 +生词本 按钮为当前活跃按钮（快捷键仅作用于生词本）。
+  if (wordBtn) setActiveAddBtn(wordBtn);
+
+  // Place the button row right after Translate for Zotero's translation textarea
   // (class "zoteropdftranslate-popup-textarea"). The textarea may be created
   // by Translate's listener after ours runs, so retry on the next tick.
   const placeAfterTextarea = () => {
@@ -232,12 +337,12 @@ function onRenderTextSelectionPopup(event: any) {
       const ta = doc.querySelector(
         ".zoteropdftranslate-popup-textarea, .selection-popup textarea",
       ) as HTMLElement | null;
-      if (ta && ta.parentNode && ta.parentNode !== btn.parentNode) {
-        ta.parentNode.insertBefore(btn, ta.nextSibling);
+      if (ta && ta.parentNode && ta.parentNode !== row.parentNode) {
+        ta.parentNode.insertBefore(row, ta.nextSibling);
         return true;
       }
       if (ta && ta.parentNode) {
-        ta.parentNode.insertBefore(btn, ta.nextSibling);
+        ta.parentNode.insertBefore(row, ta.nextSibling);
         return true;
       }
     } catch {
@@ -431,6 +536,47 @@ async function addWordToEudic(
     ok = res.success;
   }
 
+  // 同步至本地：平台为云端（欧路/扇贝/墨墨）时，若开启「同步至本地」，
+  // 额外将单词写入本地生词表 / Zotero 笔记（词形还原与主平台一致）。
+  if (ok && (platform === "eudic" || platform === "shanbay" || platform === "maimemo")) {
+    const syncMode = getPref("syncToLocal") as string;
+    if (syncMode === "local") {
+      try {
+        const hasResult = !!(translateResult && translateResult.trim());
+        await addWordToLocal({
+          word: lemma,
+          phon: phon || "",
+          exp: translateResult || "",
+          src,
+          status: hasResult ? "" : "failed",
+          tries: hasResult ? 0 : 1,
+        });
+      } catch (e: any) {
+        try {
+          Zotero.debug(`[hover-translate-eudic/selection] syncToLocal local error: ${e?.message || e}`);
+        } catch { /* ignore */ }
+      }
+    } else if (syncMode === "zotero") {
+      try {
+        const { addWordToNote, getNoteTitle } = await import("./zoteroNote");
+        const hasResult = !!(translateResult && translateResult.trim());
+        await addWordToNote({
+          title: getNoteTitle(),
+          word: lemma,
+          phon: phon || "",
+          exp: translateResult || "",
+          src,
+          status: hasResult ? "completed" : "failed",
+          tries: hasResult ? 0 : 1,
+        });
+      } catch (e: any) {
+        try {
+          Zotero.debug(`[hover-translate-eudic/selection] syncToLocal zotero error: ${e?.message || e}`);
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
   // 加词成功后刷新所有窗口（主窗口 + PDF reader）的生词本面板。
   // 走 Zotero 原生 Notifier("refresh","itempane")，一次刷新所有窗口。
   if (ok) {
@@ -568,4 +714,221 @@ function findContextFromReaders(
     }
   } catch { /* ignore */ }
   return "";
+}
+
+/* ------------------------------------------------------------------ */
+/*  添加术语弹窗（方案 X：点击 +术语库 → 弹窗确认）                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 弹出「添加术语」对话框。
+ * - 术语全称：预填划词文本
+ * - 缩写：自动提取首字母建议并直接预填（用户可修改 / 清空，留空不影响提交）
+ * - 释义：预填弹窗译文
+ * - 术语全称修改时：输入暂停 400ms 后自动更新缩写建议并预填缩写框
+ * 保存成功后写入术语库（按术语库平台分发），返回是否成功。
+ */
+async function openAddTermDialog(
+  doc: Document,
+  init: { term: string; exp: string; src: string; annotationCtx?: any },
+): Promise<boolean> {
+  // 弹窗必须挂在**用户当前操作窗口的最顶层 document**（全屏可见、可操作、不随
+  // popup 销毁）：
+  //  1. 聚焦窗口（focusedWindow）的 top —— 用户点击 +术语库 所在窗口的顶层
+  //     （主窗口 / 独立 PDF 窗口），稳定不销毁；
+  //  2. 回退：popup doc 的 defaultView.top；
+  //  3. 回退：主窗口 document。
+  // 若弹窗挂到 popup iframe 自身（点击后随 popup 销毁 → document 失效 →
+  // createElementNS/append 抛异常）或另一不可见窗口 → Promise 永不 resolve →
+  // 按钮卡在「添加中…」。
+  let mdoc: Document = doc;
+  try {
+    const focused = (Services as any)?.focus?.focusedWindow;
+    const topWin = focused?.top || (doc.defaultView as any)?.top;
+    if (topWin?.document?.documentElement) mdoc = topWin.document;
+  } catch { /* fall through */ }
+  if (!mdoc.documentElement) {
+    try {
+      const mainDoc = (Zotero.getMainWindow() as any)?.document;
+      if (mainDoc?.documentElement) mdoc = mainDoc;
+    } catch { /* keep */ }
+  }
+  try {
+    (globalThis as any).Zotero?.debug?.(
+      `[hover-translate-eudic/term] dialog doc: ${mdoc.location?.href || mdoc.URL || "?"} (hasEl=${!!mdoc.documentElement})`,
+    );
+  } catch { /* ignore */ }
+  // XHTML namespace 创建（主窗口 document 为 application/xhtml+xml，
+  // createElement 会创建无命名空间元素，需用 createElementNS）
+  const elx = (tag: string): HTMLElement =>
+    (mdoc as any).createElementNS
+      ? (mdoc as any).createElementNS("http://www.w3.org/1999/xhtml", tag)
+      : mdoc.createElement(tag);
+
+  const overlay = elx("div");
+  overlay.style.cssText = [
+    "position:fixed", "inset:0", "background:rgba(0,0,0,0.35)",
+    "z-index:2147483647", "display:flex", "align-items:center",
+    "justify-content:center",
+  ].join(";");
+  const dlg = elx("div");
+  dlg.style.cssText = [
+    "background:var(--color-sidepane,#fff)", "border:1px solid var(--color-border,#d4d4d4)",
+    "border-radius:10px", "box-shadow:0 8px 24px rgba(0,0,0,0.2)",
+    "padding:16px", "width:380px", "max-width:90vw",
+    "color:var(--fill-primary,#1a1a1a)", "font-size:13px",
+  ].join(";");
+
+  const title = elx("div");
+  title.textContent = getString("term-add-title");
+  title.style.cssText = "font-weight:600;margin-bottom:10px;";
+  dlg.append(title);
+
+  const mkField = (
+    label: string,
+    value: string,
+    isArea = false,
+  ): HTMLInputElement | HTMLTextAreaElement => {
+    const l = elx("label");
+    l.textContent = label;
+    l.style.cssText = "display:block;font-size:12px;color:#666;margin-top:6px;";
+    dlg.append(l);
+    const input = elx(isArea ? "textarea" : "input") as any;
+    // 注意：textarea 的 type 属性为只读（getter-only），直接赋值会抛
+    // "TypeError: setting getter-only property \"type\""（Zotero 9 已实测复现）。
+    // 因此仅对 input 元素设置 type="text"，textarea 不触碰该属性。
+    if (!isArea) input.type = "text";
+    input.style.cssText = [
+      "width:100%", "box-sizing:border-box", "margin-top:2px",
+      "padding:4px 6px", "border:1px solid #ccc", "border-radius:4px",
+      "background:var(--color-sidepane,#fff)", "color:inherit",
+    ].join(";");
+    if (isArea) input.rows = 3;
+    input.value = value;
+    dlg.append(input);
+    return input;
+  };
+
+  const termInput = mkField(getString("term-add-term"), init.term) as HTMLInputElement;
+  const abbrInput = mkField(getString("term-add-abbr"), "") as HTMLInputElement;
+  const expInput = mkField(getString("term-add-exp"), init.exp, true) as HTMLTextAreaElement;
+
+  // 缩写建议：打开时基于预填术语直接生成并预填（同步，不依赖异步 import）。
+  // 缩写已直接预填到缩写输入框（用户可修改/清空），不再渲染额外的「建议缩写：xxx」提示行。
+  let lastSuggestion = "";
+  const applySuggestion = (sugg: string) => {
+    lastSuggestion = sugg;
+    if (sugg) {
+      abbrInput.value = sugg; // 直接预填，用户可修改 / 清空
+    }
+  };
+  try {
+    applySuggestion(suggestAbbr(termInput.value));
+  } catch { /* ignore */ }
+
+  // 术语全称修改 → 输入暂停 400ms → 重新生成缩写建议并预填
+  let suggestTimer: any = null;
+  termInput.addEventListener("input", () => {
+    clearTimeout(suggestTimer);
+    suggestTimer = setTimeout(() => {
+      try {
+        const sugg = suggestAbbr(termInput.value);
+        if (sugg && sugg !== lastSuggestion) applySuggestion(sugg);
+      } catch { /* ignore */ }
+    }, 400);
+  });
+
+  const btnRow = elx("div");
+  btnRow.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:14px;";
+  const saveBtn = elx("button");
+  saveBtn.textContent = getString("term-add-save");
+  saveBtn.style.cssText = [
+    "border:1px solid #1e88e5", "background:#1e88e5", "color:#fff",
+    "border-radius:6px", "cursor:pointer", "padding:4px 14px", "font-size:13px",
+  ].join(";");
+  saveBtn.addEventListener("click", async () => {
+    saveBtn.setAttribute("disabled", "true");
+    const term = termInput.value.trim();
+    if (!term) {
+      saveBtn.removeAttribute("disabled");
+      return;
+    }
+    let saved = false;
+    try {
+      saved = await addTermToTerminology({
+        term,
+        abbr: abbrInput.value.trim(),
+        exp: expInput.value.trim(),
+        src: init.src,
+      });
+    } catch { /* ignore */ }
+    overlay.remove();
+    // 术语注释同步：开启「加入术语库时同步添加到注释」且注释上下文可用时，
+    // 为划词位置创建注释（+术语库 保存的是译文；标注方式/颜色/标签用术语专用设置）
+    if (saved && init.annotationCtx) {
+      try {
+        if (getPref("enableTerminologyAnnotationSync")) {
+          await syncTermAnnotation({
+            ...init.annotationCtx,
+            word: term,
+            translation: expInput.value.trim(),
+          });
+        }
+      } catch { /* ignore */ }
+    }
+    // 同步刷新侧边栏面板（若开启）
+    try {
+      const { refreshAllPanels } = await import("./wordbookPanel");
+      refreshAllPanels();
+    } catch { /* ignore */ }
+    resolve(saved);
+  });
+  const cancelBtn = elx("button");
+  cancelBtn.textContent = getString("term-add-cancel");
+  cancelBtn.style.cssText = [
+    "border:1px solid #ccc", "background:transparent", "border-radius:6px",
+    "cursor:pointer", "padding:4px 14px", "font-size:13px",
+  ].join(";");
+  cancelBtn.addEventListener("click", () => {
+    overlay.remove();
+    resolve(false);
+  });
+  btnRow.append(cancelBtn, saveBtn);
+  dlg.append(btnRow);
+
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) {
+      overlay.remove();
+      resolve(false);
+    }
+  });
+  overlay.append(dlg);
+  // 挂到 mdoc 的 documentElement（全屏遮罩覆盖整个窗口）
+  try {
+    const root = (mdoc.documentElement || mdoc.body) as HTMLElement | null;
+    root?.append(overlay);
+    try {
+      (globalThis as any).Zotero?.debug?.(
+        `[hover-translate-eudic/term] dialog mounted: ${!!root?.contains(overlay)}`,
+      );
+    } catch { /* ignore */ }
+  } catch (e) {
+    try {
+      (globalThis as any).Zotero?.debug?.(
+        `[hover-translate-eudic/term] dialog mount error: ${String(e)}`,
+      );
+    } catch { /* ignore */ }
+    try {
+      mdoc.body?.append(overlay);
+    } catch { /* ignore */ }
+  }
+  termInput.focus();
+  // 注意：不要调用 termInput.select() —— 会让预填的术语内容自动全选，
+  // 用户只需光标定位即可直接编辑（需求：不要自动选中）。
+
+  // 等待保存/取消决定
+  let resolveFn: (v: boolean) => void = () => {};
+  const resolve = (v: boolean) => resolveFn(v);
+  const promise = new Promise<boolean>((r) => { resolveFn = r; });
+  return promise;
 }

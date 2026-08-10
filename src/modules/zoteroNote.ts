@@ -10,7 +10,7 @@
  *
  *   <div class="zotero-note znv1 hte-wordbook" data-hte-wordbook="1">
  *     <h1>{title}</h1>
- *     <p><i>*总计：N 个生词 | 更新：2026/8/7</i></p>
+ *     <p><i>总计：N 个生词 | 更新：2026/8/7</i></p>
  *     <hr><ul>
  *       <li data-hte-word="material" data-hte-phon="/məˈtɪriəl/"
  *           data-hte-src="zotero://open-pdf/...">
@@ -82,7 +82,6 @@ function decodeHtml(value: string): string {
     .replace(/&lt;/g, "<")
     .replace(/&amp;/g, "&");
 }
-
 /**
  * 深度解码 HTML 实体：反复解码直到不再变化。
  *
@@ -93,6 +92,49 @@ function decodeHtml(value: string): string {
  * 的累积转义一次性还原为真实 URL。
  */
 function decodeHtmlDeep(value: string): string {
+  if (!value) return "";
+  let prev = value;
+  for (let i = 0; i < 10; i++) {
+    const next = decodeHtml(prev);
+    if (next === prev) break;
+    prev = next;
+  }
+  return prev;
+}
+
+/** 导出给术语库(terminology.ts)等模块复用：属性读取/可见行/标记词/首词回退。 */
+export function readNoteAttr(rawHTML: string, attrName: string): string {
+  const pattern = new RegExp(`${attrName}="([^"]*)"`, "i");
+  return decodeHtmlDeep(rawHTML.match(pattern)?.[1] || "");
+}
+
+/** 可见文本，<br> 作为换行（按行返回，去标签/解码/去空白）。 */
+export function noteVisibleLines(rawHTML: string): string[] {
+  return rawHTML
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .split("\n")
+    .map((s) => decodeHtml(s).trim())
+    .filter(Boolean);
+}
+
+/** 从 <strong>/<b> 标记中读取词（可在属性被剥离后存活）。 */
+export function noteMarkedWord(rawHTML: string): string {
+  const match = rawHTML.match(/<(?:b|strong)>([\s\S]*?)<\/(?:b|strong)>/i);
+  return decodeHtml(match?.[1] || "").trim();
+}
+
+/** 条目可见文本中的首个英文词（最终回退）。 */
+export function noteFirstVisibleWord(lines: string[]): string {
+  for (const line of lines) {
+    const m = line.match(/[a-zA-Z][a-zA-Z'\-]*(?: [a-zA-Z][a-zA-Z'\-]*)?/);
+    if (m) return m[0].trim();
+  }
+  return "";
+}
+
+/** 深度解码 HTML 实体（Zotero 9 多次保存会累积 &amp; 转义）。 */
+export function noteDecodeHtmlDeep(value: string): string {
   if (!value) return "";
   let prev = value;
   for (let i = 0; i < 10; i++) {
@@ -315,7 +357,7 @@ function renderNoteHTML(
     ? entries.map(renderEntryHTML).join("")
     : `<li><i>（空）</i></li>`;
   const dateLabel = formatDateLabel(updatedAt);
-  const summary = `*总计：${entries.length} 个生词 | 更新：${dateLabel}`;
+  const summary = `总计：${entries.length} 个生词 | 更新：${dateLabel}`;
   return [
     `<div class="zotero-note znv1 ${MARKER_CLASS}" data-${MARKER_CLASS}="1">`,
     `<h1>${escapeHtml(title)}</h1>`,
@@ -627,8 +669,10 @@ export async function getWordsFromNote(title: string): Promise<
 /**
  * 枚举当前库中所有注释，返回文本匹配该单词（词形还原感知）的注释数组。
  * 供编辑 / 删除生词时同步注释使用。
+ * @param tagFilter 可选：仅返回带指定 tag 的注释（术语注释用 terminologyTagName
+ *   过滤，避免误伤同名词条的生词注释；不传则匹配全部）。
  */
-async function findAnnotationsByWord(word: string): Promise<any[]> {
+async function findAnnotationsByWord(word: string, tagFilter?: string): Promise<any[]> {
   const out: any[] = [];
   try {
     const search = new Zotero.Search();
@@ -641,6 +685,10 @@ async function findAnnotationsByWord(word: string): Promise<any[]> {
         ann = Zotero.Items.get(id);
       } catch { continue; }
       if (!ann || ann.itemType !== "annotation") continue;
+      if (tagFilter) {
+        const tags = ((ann.getTags && ann.getTags()) as Array<{ tag: string }>) || [];
+        if (!tags.some((t) => t.tag === tagFilter)) continue;
+      }
       const text = String(ann.annotationText || "");
       if (!annotationTextMatchesWord(text, word)) continue;
       out.push(ann);
@@ -664,12 +712,15 @@ async function findAnnotationsByWord(word: string): Promise<any[]> {
  *
  * @param oldWord 旧单词（面板中的词条名）
  * @param patch   新内容（word / exp 可选；只更新提供的字段）
+ * @param oldExp  旧释义（编辑前的 exp，供释义替换）
+ * @param tagFilter 可选：仅更新带指定 tag 的注释（术语场景传术语 tag）
  * @returns 成功更新的注释数
  */
 export async function updateAnnotationsForWord(
   oldWord: string,
   patch: { word?: string; exp?: string },
   oldExp?: string,
+  tagFilter?: string,
 ): Promise<number> {
   const dbg = (m: string) => {
     try {
@@ -678,7 +729,7 @@ export async function updateAnnotationsForWord(
   };
   let updated = 0;
   try {
-    const anns = await findAnnotationsByWord(oldWord);
+    const anns = await findAnnotationsByWord(oldWord, tagFilter);
     dbg(`word="${oldWord}" matched ${anns.length} annotation(s)`);
     const newWord = (patch.word || "").trim();
     const newExp = (patch.exp || "").trim();
@@ -760,9 +811,10 @@ export async function updateAnnotationsForWord(
 /**
  * 删除生词时同步删除匹配的注释（幂等，容错）。
  * 同一生词多个注释（不同页码/位置）全部删除。
+ * @param tagFilter 可选：仅删除带指定 tag 的注释（术语场景传术语 tag）
  * @returns 成功删除的注释数
  */
-export async function deleteAnnotationsForWord(word: string): Promise<number> {
+export async function deleteAnnotationsForWord(word: string, tagFilter?: string): Promise<number> {
   const dbg = (m: string) => {
     try {
       Zotero.debug(`[hover-translate-eudic/note] deleteAnnotationsForWord: ${m}`);
@@ -770,7 +822,7 @@ export async function deleteAnnotationsForWord(word: string): Promise<number> {
   };
   let deleted = 0;
   try {
-    const anns = await findAnnotationsByWord(word);
+    const anns = await findAnnotationsByWord(word, tagFilter);
     dbg(`word="${word}" matched ${anns.length} annotation(s)`);
     for (const ann of anns) {
       try {

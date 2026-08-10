@@ -2454,6 +2454,46 @@ async function addWordToEudic(
     ok = res.success;
   }
 
+  // 同步至本地：平台为云端（欧路/扇贝/墨墨）时，若开启「同步至本地」，
+  // 额外将单词写入本地生词表 / Zotero 笔记（词形还原与主平台一致）。
+  if (ok && (platform === "eudic" || platform === "shanbay" || platform === "maimemo")) {
+    const syncMode = getPref("syncToLocal") as string;
+    if (syncMode === "local") {
+      try {
+        const hasResult = !!(translateResult && translateResult.trim());
+        await addWordToLocal({
+          word: lemma,
+          phon: phon || "",
+          exp: translateResult || "",
+          src,
+          status: hasResult ? "" : "failed",
+          tries: hasResult ? 0 : 1,
+        });
+      } catch (e: any) {
+        try {
+          Zotero.debug(`[hover-translate-eudic] syncToLocal local error: ${e?.message || e}`);
+        } catch { /* ignore */ }
+      }
+    } else if (syncMode === "zotero") {
+      try {
+        const hasResult = !!(translateResult && translateResult.trim());
+        await addWordToZoteroNote({
+          title: getNoteTitle(),
+          word: lemma,
+          phon: phon || "",
+          exp: translateResult || "",
+          src,
+          status: hasResult ? "completed" : "failed",
+          tries: hasResult ? 0 : 1,
+        });
+      } catch (e: any) {
+        try {
+          Zotero.debug(`[hover-translate-eudic] syncToLocal zotero error: ${e?.message || e}`);
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
   // 加词成功后刷新所有窗口（主窗口 + PDF reader）的生词本面板。
   // 走 Zotero 原生 Notifier("refresh","itempane")，一次刷新所有窗口。
   if (ok) {

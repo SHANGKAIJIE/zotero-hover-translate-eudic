@@ -57,14 +57,23 @@ const DEFAULTS: Record<string, any> = {
   lemmaMode: "lemma",
   localSavePath: "",
   zoteroNoteTitle: "生词本",
+  // 同步至本地（平台为欧路/扇贝/墨墨时显示）
+  syncToLocal: "none",
+  // 术语库设置
+  enableTerminology: false,
+  terminologyPlatform: "local",
+  terminologyLocalSavePath: "",
+  terminologyNoteTitle: "术语库",
   // 生词本面板设置
   enableWordbookPanel: false,
   panelFontSize: 15,
   panelHidePhon: false,
   panelHideExp: false,
   panelHidePlay: false,
+  panelHideAbbr: false,
   panelWordScope: "current",
   panelSortMode: "reverse",
+  panelContentMode: "wordbook",
   // 注释设置
   enableAnnotationSync: false,
   enableAnnotationTranslate: false,
@@ -75,9 +84,15 @@ const DEFAULTS: Record<string, any> = {
   annotationColor: "#ffd400",
   enableAnnotationAutoTag: false,
   annotationTagName: "单词",
+  // 术语注释
+  enableTerminologyAnnotationSync: false,
+  terminologyMarkType: "highlight",
+  terminologyColor: "#ffd400",
+  terminologyTagName: "术语",
   hideNoteIcon: false,
   hideNoteIconMode: "word",
   hideNoteIconNotes: false,
+  exportContent: "wordbook",
   exportAutoReveal: true,
   exportSavePath: "",
 };
@@ -91,9 +106,12 @@ export async function registerPrefsScripts(win: Window) {
   syncCategorySelectionUI(win);
   initColorPicker(win);
   initAnnotationColorPicker(win);
+  initTerminologyColorPicker(win);
   updateAnnotationBoxState(win);
   updateAnnotationTranslatePositionState(win);
   updateHideNoteIconState(win);
+  updateSyncToLocalState(win);
+  updateTerminologyState(win);
   bindPrefEvents(win);
   // Auto-fetch categories on panel open if token is configured for the active platform.
   const platform = getPref("wordbookPlatform") as string;
@@ -219,6 +237,42 @@ function initAnnotationColorPicker(win: Window) {
   }
 }
 
+/** Init the terminology color picker + hex input (术语标注颜色). */
+function initTerminologyColorPicker(win: Window) {
+  const picker = $(`zotero-prefpane-${ref}-terminologyColorPicker`, win) as any;
+  const hexInput = $(`zotero-prefpane-${ref}-terminologyColorHex`, win) as any;
+  if (!picker) return;
+
+  const syncFromPref = () => {
+    const hex = String(getPref("terminologyColor") || "#ffd400");
+    picker.value = hex;
+    if (hexInput) hexInput.value = hex;
+  };
+  syncFromPref();
+
+  const syncToPref = () => {
+    const hexRaw = String(hexInput?.value || "").trim();
+    const hexMatch = hexRaw.match(/^#?([0-9a-fA-F]{6})$/);
+    const hex = hexMatch
+      ? "#" + hexMatch[1].toLowerCase()
+      : "#ffd400";
+    setPref("terminologyColor", hex);
+    picker.value = hex;
+    if (hexInput && hexInput.value !== hex) hexInput.value = hex;
+  };
+
+  picker.addEventListener("input", () => {
+    const hex = picker.value || "#ffd400";
+    if (hexInput) hexInput.value = hex;
+    syncToPref();
+  });
+
+  if (hexInput) {
+    hexInput.addEventListener("input", syncToPref);
+    hexInput.addEventListener("change", syncToPref);
+  }
+}
+
 /** Force every bound menulist to reflect its current pref value's label. */
 function syncAllMenulists(win: Window) {
   const isZoteroPlatform = (getPref("wordbookPlatform") as string) === "zotero";
@@ -309,6 +363,11 @@ function updateTokenVisibility(win: Window) {
   const categoryRow = $(`${ref}-categoryRow`, win);
   if (categoryRow) categoryRow.hidden = platform === "local";
 
+  // 同步至本地：仅当平台为欧路/扇贝/墨墨（云端平台）时显示
+  const syncToLocalBox = $(`${ref}-syncToLocalBox`, win);
+  if (syncToLocalBox) syncToLocalBox.hidden = platform === "local" || platform === "zotero";
+  updateSyncToLocalState(win);
+
   // Zotero 笔记平台 UI：
   //  - 「选择生词本」文字改为「笔记名称」，固定为「生词本」（menulist 禁用）
   //  - 去掉「刷新列表」「编辑词本」按钮，保留「打开笔记」按钮
@@ -350,6 +409,49 @@ function updateTranslateEngineHintVisibility(win: Window) {
   const engine = getPref("translateEngine") as string;
   const hint = $(`${ref}-translateEngineHint`, win);
   if (hint) hint.hidden = engine !== "translate";
+}
+
+/** 同步至本地：syncToLocal 值决定「存储路径+词形选择(本地)」或「笔记名称+词形选择(本地)」子区块的显示。 */
+function updateSyncToLocalState(win: Window) {
+  const mode = getPref("syncToLocal") as string;
+  const localBox = $(`${ref}-syncLocalPathBox`, win);
+  if (localBox) localBox.hidden = mode !== "local";
+  const zoteroBox = $(`${ref}-syncZoteroBox`, win);
+  if (zoteroBox) zoteroBox.hidden = mode !== "zotero";
+}
+
+/** 术语库设置：开启术语库 → 配置区可操作；平台决定 存储路径/笔记名称 显示。 */
+function updateTerminologyState(win: Window) {
+  const enabled = !!getPref("enableTerminology");
+  const configBox = $(`${ref}-terminologyConfigBox`, win);
+  if (configBox) {
+    configBox.style.opacity = enabled ? "1" : "0.5";
+    configBox.style.pointerEvents = enabled ? "auto" : "none";
+  }
+  const platform = getPref("terminologyPlatform") as string;
+  const isZotero = platform === "zotero";
+  const localBox = $(`${ref}-termLocalSavePathBox`, win);
+  if (localBox) localBox.hidden = isZotero;
+  const zoteroBox = $(`${ref}-termZoteroBox`, win);
+  if (zoteroBox) zoteroBox.hidden = !isZotero;
+  // 术语注释相关设置（加入术语库时同步添加到注释 / 术语标注方式 / 颜色 / 标签名）
+  // 仅在启用术语库时显示。
+  updateTerminologyAnnotationVisibility(win);
+}
+
+/** 术语注释设置组显隐：未勾选「启用术语库」时整体隐藏。 */
+function updateTerminologyAnnotationVisibility(win: Window) {
+  const show = !!getPref("enableTerminology");
+  const ids = [
+    `zotero-prefpane-${ref}-enableTerminologyAnnotationSync`,
+    `${ref}-terminologyMarkTypeRow`,
+    `${ref}-terminologyColorRow`,
+    `${ref}-terminologyTagNameRow`,
+  ];
+  for (const id of ids) {
+    const el = $(id, win);
+    if (el) el.hidden = !show;
+  }
 }
 
 /** Toggle the annotation config box enabled state based on enableAnnotationSync. */
@@ -512,6 +614,93 @@ function bindPrefEvents(win: Window) {
       void refreshCategories(win, true);
     }, 0);
   });
+
+  // syncToLocal -> toggle 存储路径/笔记名称 子区块
+  const syncToLocalSel = $(`zotero-prefpane-${ref}-syncToLocal`, win);
+  syncToLocalSel?.addEventListener("command", () => {
+    setTimeout(() => updateSyncToLocalState(win), 0);
+  });
+
+  // enableTerminology -> toggle terminology config box
+  const enableTerm = $(`zotero-prefpane-${ref}-enableTerminology`, win);
+  enableTerm?.addEventListener("command", () => {
+    setTimeout(() => updateTerminologyState(win), 0);
+  });
+
+  // terminologyPlatform -> toggle 存储路径/笔记名称 子区块
+  const termPlatformSel = $(`zotero-prefpane-${ref}-terminologyPlatform`, win);
+  termPlatformSel?.addEventListener("command", () => {
+    setTimeout(() => updateTerminologyState(win), 0);
+  });
+
+  // terminology local save path choose directory button
+  const chooseTermBtn = $(`${ref}-chooseTermDirBtn`, win);
+  if (chooseTermBtn) {
+    chooseTermBtn.addEventListener("command", async () => {
+      try {
+        const titleStr =
+          (getString("pref-local-chooseDir-label") as string) ||
+          "选择存储目录";
+        const f = await new FilePickerHelper(titleStr, "folder").open();
+        if (f) {
+          setPref("terminologyLocalSavePath", f);
+          const input = $(`zotero-prefpane-${ref}-terminologyLocalSavePath`, win) as any;
+          if (input) input.value = f;
+        }
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+
+  // 打开术语库笔记按钮
+  const editTermNoteBtn = $(`${ref}-editTermNoteBtn`, win);
+  if (editTermNoteBtn) {
+    editTermNoteBtn.addEventListener("command", () => {
+      void (async () => {
+        try {
+          const { openTerminologyNote } = await import("./terminology");
+          await openTerminologyNote();
+        } catch { /* ignore */ }
+      })();
+    });
+  }
+
+  // 同步至本地（local）：选择存储目录按钮——写 localSavePath（与生词本平台=本地生词表
+  // 同 pref），并同步两个存储路径输入框的显示值
+  const chooseSyncLocalBtn = $(`${ref}-chooseSyncLocalDirBtn`, win);
+  if (chooseSyncLocalBtn) {
+    chooseSyncLocalBtn.addEventListener("command", async () => {
+      try {
+        const titleStr =
+          (getString("pref-local-chooseDir-label") as string) ||
+          "选择存储目录";
+        const f = await new FilePickerHelper(titleStr, "folder").open();
+        if (f) {
+          setPref("localSavePath", f);
+          const a = $(`zotero-prefpane-${ref}-localSavePath`, win) as any;
+          if (a) a.value = f;
+          const b = $(`zotero-prefpane-${ref}-syncLocalSavePath`, win) as any;
+          if (b) b.value = f;
+        }
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+
+  // 同步至本地（zotero）：打开生词本笔记按钮（同步至本地 zotero 写入的是「生词本」笔记）
+  const editSyncNoteBtn = $(`${ref}-editSyncNoteBtn`, win);
+  if (editSyncNoteBtn) {
+    editSyncNoteBtn.addEventListener("command", () => {
+      void (async () => {
+        try {
+          const { openNoteForEditing, getNoteTitle } = await import("./zoteroNote");
+          await openNoteForEditing(getNoteTitle());
+        } catch { /* ignore */ }
+      })();
+    });
+  }
 
   // translateEngine -> toggle hint visibility
   const engineSel = $(`zotero-prefpane-${ref}-translateEngine`, win);
@@ -879,6 +1068,12 @@ function getExportBaseName(): string {
 
 /** Handle the export button click. Uses the main wordbook category. */
 async function handleExport(win: Window) {
+  // 导出内容：生词本（默认）或 术语库（按当前术语库平台导出）
+  const exportContent = getPref("exportContent") as string;
+  if (exportContent === "terminology") {
+    await handleExportTerminology(win);
+    return;
+  }
   const platform = getPref("wordbookPlatform") as string;
 
   // Local platform: read directly from CSV, no API call needed
@@ -1086,6 +1281,69 @@ async function handleExport(win: Window) {
         baseName: getExportBaseName(),
       });
     }
+    win.alert(msg);
+  } catch (e: any) {
+    win.alert(`导出失败：${e?.message || "未知错误"}`);
+  }
+}
+
+/** 导出术语库（按当前术语库平台 local/zotero 读取数据）。 */
+async function handleExportTerminology(win: Window) {
+  const formatEl = $(`${ref}-exportFormat`, win) as any;
+  const format: string = formatEl?.value || "csv";
+  const autoReveal = getPref("exportAutoReveal") as boolean;
+  const savePath = (getPref("exportSavePath") as string || "").trim();
+  const extMap: Record<string, string> = {
+    csv: "csv", tsv: "tsv", txt: "txt", json: "json",
+  };
+  const ext = extMap[format] || "csv";
+
+  let outFile: any = null;
+  if (savePath) {
+    try {
+      const nsIFile = (Components as any).interfaces.nsIFile;
+      const file = (Components as any).classes["@mozilla.org/file/local;1"]
+        .createInstance(nsIFile);
+      file.initWithPath(savePath);
+      if (file.exists() && !file.isDirectory()) {
+        const parent = file.parent;
+        if (parent) {
+          // 术语库导出文件名统一为 terminology-export.<ext>，与本地术语表
+          // 存储文件 hover-translate-eudic-terminology.csv 明确区分，避免互相覆盖。
+          parent.append(`terminology-export.${ext}`);
+          outFile = parent;
+        }
+      } else {
+        if (!file.exists()) {
+          file.create((Components as any).interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
+        }
+        file.append(`terminology-export.${ext}`);
+        outFile = file;
+      }
+    } catch { /* fall through */ }
+  }
+
+  try {
+    const { getTerminologyTerms } = await import("./terminology");
+    const { terms } = await getTerminologyTerms();
+    if (terms.length === 0) {
+      win.alert("术语库为空，无内容可导出");
+      return;
+    }
+    // 术语库导出：缩写(abbr)与释义(exp)作为独立字段/列导出，
+    // 不再拼成「缩写：xxx\n释义：yyy」同一个格。
+    const mapped = terms.map((t) => ({
+      word: t.term,
+      abbr: t.abbr || "",
+      exp: t.exp || "",
+    }));
+    const msg = await exportWordEntries(mapped, format as any, {
+      outFile: outFile || undefined,
+      autoReveal,
+      compact: true,
+      terminology: true,
+      baseName: "terminology-export",
+    });
     win.alert(msg);
   } catch (e: any) {
     win.alert(`导出失败：${e?.message || "未知错误"}`);

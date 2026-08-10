@@ -10,6 +10,22 @@ wordbtn-adding = 添加中...
 wordbtn-added = ✅ 已加
 wordbtn-failed = ❌ 失败
 
+# 术语库按钮
+termbtn-add = +术语库
+termbtn-adding = 添加中...
+termbtn-added = ✅ 已加
+termbtn-failed = ❌ 失败
+
+# 添加术语弹窗
+term-add-title = 添加术语
+term-add-term = 术语
+term-add-abbr = 缩写（选填）
+term-add-exp = 释义
+term-add-save = 保存
+term-add-cancel = 取消
+term-abbr-suggestion = 建议缩写：{ $abbr }
+term-abbr-adopt = 采纳
+
 # 悬停弹窗状态
 hover-popup-translating = 翻译中...
 hover-popup-empty = （无译文）

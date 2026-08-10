@@ -38,6 +38,7 @@ export interface EudicWordEntry {
   word: string;
   phon?: string;
   exp?: string;
+  abbr?: string;
   add_time?: string;
   star?: number;
   context_line?: string;
