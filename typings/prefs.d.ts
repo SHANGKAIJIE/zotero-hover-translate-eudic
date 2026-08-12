@@ -16,6 +16,9 @@ declare namespace _ZoteroTypes {
       "highlightColor": string;
       "hoverDelay": number;
       "disableOnSelection": boolean;
+      "enablePronunciationButton": boolean;
+      "enableAutoPronunciation": boolean;
+      "pronunciationShortcut": string;
       "popupAutoCloseDelay": number;
       "popupPosition": string;
       "translateDisplayMode": string;

@@ -52,6 +52,13 @@ pref-translateEngine-hint =
     .value = Reuses the Translate plugin. If the result shows [Request Error], try switching the engine in that plugin.
 pref-disableOnSelection =
     .label = Disable hover popup while selecting text
+pref-enablePronunciationButton =
+    .label = Show pronunciation button in hover popup
+pref-pronunciationShortcut = Pronunciation shortcut:
+pref-pronunciationShortcut-hint =
+    .value = Leave empty to disable
+pref-enableAutoPronunciation =
+    .label = Auto-play pronunciation after word lookup
 
 pref-section-eudic = Wordbook Settings
 pref-wordbookPlatform = Wordbook platform:

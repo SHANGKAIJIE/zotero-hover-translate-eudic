@@ -4,7 +4,7 @@
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.3.3-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.3.4-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
 
 <img width="731" height="331" alt="微信图片_20260801191142_62_119_看图王" src="https://github.com/user-attachments/assets/61c1bbaa-706a-4d03-93a6-9e964e6eaed1" />
@@ -24,7 +24,7 @@
 - **加词同步创建 PDF 注释**：添加生词或术语时，可同步在 PDF 上创建高亮/下划线注释，支持翻译写入评论或正文、自动添加标签（v0.2.8）。
 - **隐藏便签图标**：按需隐藏 PDF 中高亮/下划线/图片注释的便签图标（支持仅本插件注释 / 全部文本注释两种范围），独立便签图标可单独控制，注释 ID 自动跟踪与清理（v0.2.8）。
 - **侧边栏生词本面板**：开启后点击右侧信息栏的本插件图标即可显示生词本面板（仅本地生词表 / Zotero 笔记平台可用）。面板顶部支持「词/语」内容切换（生词本/术语库）、隐藏释义、隐藏音标、放大/缩小字体、排序、清空；单词卡片支持点击跳转原文、编辑与删除，且与本地 CSV / Zotero 笔记**双向同步**（v0.3.1 起；v0.3.2 新增术语库与「词/语」切换）。
-
+- **发音功能**（v0.3.4）：悬停翻译弹窗内新增发音按钮，点击播放当前单词发音；支持取词后自动播放发音、发音快捷键。音源采用**三级发音链**——当前词典源真人发音（跟随 Translate 插件词典源，如必应/有道/海词/剑桥）→ 有道 TTS 合成兜底 → Google TTS 最终兜底，任意来源加载失败自动切换下一级；
 ---
 
 ## 📦 安装
@@ -108,6 +108,14 @@ npm start
 | 完整释义 | 翻译结果外附加字典释义，深挖词义。 |
 
 **划词时禁用悬停弹窗（避免与划词翻译弹窗冲突）**：勾选后（默认勾选），抑制悬停翻译弹窗，避免与 Translate for Zotero 的划词翻译弹窗重叠冲突。具体行为：
+
+**悬停弹窗中显示发音按钮**：勾选后，悬停翻译弹窗内显示圆形发音按钮（🔊），点击播放当前取词单词的发音。
+
+**发音快捷键**：设置全局快捷键，翻译弹窗出现时按快捷键即可播放当前单词发音（等效点击发音按钮）。录制方式与加词快捷键一致——点击输入框后直接按下按键（支持单键或 `Ctrl`/`Alt`/`Shift`/`Meta` 组合），`Backspace` 清空（= 不启用），`Escape` 取消。**与加词快捷键互斥**：任一方设置为另一方相同的按键组合时，会弹出提醒并拒绝保存。留空则不启用快捷键。
+
+**取词后自动播放发音（不启用发音按钮也自动发音）**：勾选后，取词翻译弹窗加载完成即自动播放单词发音；不依赖上方发音按钮开关。
+
+> **发音音源（三级链）**：① 当前词典源（Translate 插件的「词典源」设置，如必应/有道/海词/剑桥等）返回的真人发音 → ② 有道 TTS 合成（国内可达）→ ③ Google TTS 合成（最终兜底）。播放时按顺序尝试，前一来源加载失败自动切换下一级；生词本面板的发音按钮同样走 ② → ③ 链路。词典查不到词条的生僻词/变形词自动走 TTS，无需配置。
 
 ### 生词本设置
 
@@ -200,7 +208,7 @@ npm start
 
 **加词方式**：`手动点击按钮加入生词本` 或 `翻译后自动加入生词本`。
 
-**加词快捷键**：设置全局快捷键，翻译弹窗出现时直接按快捷键即可加入当前单词（等效点击 `+` 按钮）。点击输入框后直接按下键盘按键即自动录制（支持单键或 `Ctrl` / `Alt` / `Shift` / `Meta` 组合），`Backspace` 清空（= 不启用），`Escape` 取消。留空则不启用快捷键。
+**加词快捷键**：设置全局快捷键，翻译弹窗出现时直接按快捷键即可加入当前单词（等效点击 `+` 按钮）。点击输入框后直接按下键盘按键即自动录制（支持单键或 `Ctrl` / `Alt` / `Shift` / `Meta` 组合），`Backspace` 清空（= 不启用），`Escape` 取消。留空则不启用快捷键。**与发音快捷键互斥**：两快捷键不能设置为相同按键组合（任一方重复时提醒并拒绝保存）。
 
 ### 术语库设置
 
@@ -332,6 +340,7 @@ zotero-hover-translate-eudic/
 │   │   ├── preferenceScript.ts # 设置面板交互逻辑
 │   │   ├── selectionButton.ts  # 选区翻译按钮
 │   │   ├── wordbookPanel.ts    # PDF 右侧生词本面板（Item Pane）v0.3.2
+│   │   ├── pronunciation.ts    # 发音模块（TTS 兜底链 / 发音快捷键 / 播放反馈）v0.3.4
 │   │   └── util.ts             # 单词提取/验证工具
 │   └── utils/                # 工具函数（prefs 等）
 ├── addon/                    # 插件静态资源

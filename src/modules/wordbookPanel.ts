@@ -57,6 +57,7 @@ import {
   updateAnnotationsForWord,
   deleteAnnotationsForWord,
 } from "./zoteroNote";
+import { playAudio, buildTtsFallbackUrls } from "./pronunciation";
 
 const ref = config.addonRef;
 const PLUGIN_ID = config.addonID;
@@ -69,32 +70,15 @@ const ICON_URI = `chrome://${ref}/content/icons/icon-20.png`;
 /* ------------------------------------------------------------------ */
 
 /**
- * 生成发音播放 URL（参考 zotero-pdf-translate 的 `new Audio(url).play()` 方式；
- * 词典 mp3 需服务端解析，这里使用 Google TTS 直接生成，语言取 eudicLanguage pref）。
+ * 播放单词发音（与悬停弹窗发音链路一致）：
+ * 面板数据无词典真人音频来源（只存 word/phon/exp），因此走 TTS 兜底链：
+ *   1. 有道 TTS（国内可达，英文词英音）
+ *   2. Google TTS（最终兜底，语言取 eudicLanguage pref）
+ * playAudio 依次尝试，前一来源加载失败自动切换下一个；失败静默。
  */
-function buildTTSUrl(word: string): string {
-  const lang = (getPref("eudicLanguage") as string) || "en";
-  return (
-    "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=" +
-    encodeURIComponent(lang) +
-    "&q=" +
-    encodeURIComponent(word || "")
-  );
-}
-
-/** 播放单词发音（播放失败静默，不影响界面）。 */
 function playPronunciation(word: string): void {
-  try {
-    const AudioCtor = (ztoolkit.getGlobal("Audio") ||
-      (globalThis as any).Audio) as any;
-    if (!AudioCtor) return;
-    const audio = new AudioCtor(buildTTSUrl(word));
-    audio.play().catch?.((e: any) => {
-      Zotero.debug(`[hover-translate-eudic/panel] play error: ${e?.message || e}`);
-    });
-  } catch (e: any) {
-    Zotero.debug(`[hover-translate-eudic/panel] play error: ${e?.message || e}`);
-  }
+  const lang = (getPref("eudicLanguage") as string) || "en";
+  playAudio(buildTtsFallbackUrls(word, lang));
 }
 
 /** 字号范围（与参考项目一致）。 */

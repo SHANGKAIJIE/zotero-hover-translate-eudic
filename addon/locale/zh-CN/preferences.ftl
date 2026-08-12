@@ -52,6 +52,13 @@ pref-translateEngine-hint =
     .value = 翻译引擎复用Translate插件，若翻译结果[请求错误]，可去该插件切换翻译引擎
 pref-disableOnSelection =
     .label = 划词时禁用悬停弹窗（避免与划词翻译弹窗冲突）
+pref-enablePronunciationButton =
+    .label = 悬停弹窗中显示发音按钮
+pref-pronunciationShortcut = 发音快捷键：
+pref-pronunciationShortcut-hint =
+    .value = 留空则不启用快捷键
+pref-enableAutoPronunciation =
+    .label = 取词后自动播放发音（不启用发音按钮也自动发音）
 
 pref-section-eudic = 生词本设置
 pref-wordbookPlatform = 生词本平台：

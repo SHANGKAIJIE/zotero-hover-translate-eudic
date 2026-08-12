@@ -12,6 +12,9 @@ pref("enableHighlight", false);
 pref("highlightColor", "rgba(255,233,79,1.0)");
 pref("hoverDelay", 900);
 pref("disableOnSelection", true); // 划词时禁用悬停弹窗（避免与划词翻译弹窗冲突）
+pref("enablePronunciationButton", false); // 悬停弹窗中显示发音按钮
+pref("enableAutoPronunciation", false);   // 取词后自动播放发音（不依赖发音按钮开关）
+pref("pronunciationShortcut", "");        // 发音快捷键：留空不启用；如 "A" 或 "Ctrl+Shift+A"（与加词快捷键互斥）
 pref("popupAutoCloseDelay", 30); // 秒
 pref("popupPosition", "top");    // 弹窗位置：top=单词上方（默认）| bottom=单词下方
 pref("translateDisplayMode", "simple"); // simple | full

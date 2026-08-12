@@ -32,6 +32,12 @@ import { addWord as addWordToLocal } from "./localWordbook";
 import { addWordToNote as addWordToZoteroNote, getNoteTitle } from "./zoteroNote";
 import { setActiveAddBtn, installAddWordShortcut } from "./addWordShortcut";
 import {
+  setActivePron,
+  installPronunciationShortcut,
+  playAudio,
+  buildTtsFallbackUrls,
+} from "./pronunciation";
+import {
   locateWordHybrid,
   pdfRectsToViewport,
   wordAnchorFromLocated,
@@ -101,6 +107,32 @@ function getPdfTranslateTargetLang(): string {
 // --- D5: cached dark-mode detection ---
 let _cachedDark: boolean | null = null;
 let _themeObserver: MutationObserver | null = null;
+let _themePollTimer: number | null = null;
+let _lastThemeSig = "";
+
+/** 计算当前主题指纹（用于轮询兜底对比，避免依赖具体属性/事件）。 */
+function computeThemeSig(): string {
+  try {
+    const mainWin = Zotero.getMainWindow();
+    const docEl = mainWin.document.documentElement;
+    if (!docEl) return "";
+    const theme =
+      docEl.getAttribute("theme") ||
+      docEl.getAttribute("data-theme") ||
+      docEl.getAttribute("data-bs-theme") ||
+      "";
+    const cs = mainWin.getComputedStyle(docEl);
+    if (!cs) return "";
+    const bgVar =
+      cs.getPropertyValue("--material-background") ||
+      cs.getPropertyValue("--fill-primary") ||
+      cs.backgroundColor ||
+      "";
+    return `${theme}|${bgVar}`;
+  } catch {
+    return "";
+  }
+}
 
 function initThemeWatcher() {
   try {
@@ -113,20 +145,41 @@ function initThemeWatcher() {
         refreshAllPopupThemes();
       });
     }
-    // Zotero 级（zotero-style 约定）：主窗口 <window> 根元素上的
-    // theme="dark"/"light" 属性是用户切换日间/夜间的权威信号。
-    // 用 MutationObserver 监听该属性变化，实时清缓存 + 重绘已打开弹窗。
+    // Zotero 级（zotero-style 约定）：主窗口根元素上的 theme="dark"/"light"
+    // 属性是用户切换日间/夜间的权威信号。用 MutationObserver 监听该属性变化，
+    // 实时清缓存 + 重绘已打开弹窗。
+    // Zotero 9 / zotero-style 6 可能改用 data-theme / data-bs-theme / body class，
+    // 因此同时监听根元素与 body 的全部属性变化（attributeFilter 不设限）。
     const root = mainWin.document.documentElement;
     if (root && typeof MutationObserver !== "undefined") {
       _themeObserver = new MutationObserver(() => {
         _cachedDark = null;
         refreshAllPopupThemes();
       });
-      _themeObserver.observe(root, {
-        attributes: true,
-        attributeFilter: ["theme", "data-theme", "class"],
-      });
+      _themeObserver.observe(root, { attributes: true, subtree: false });
+      try {
+        const body = mainWin.document.body;
+        if (body && body !== root) {
+          _themeObserver.observe(body, { attributes: true, subtree: false });
+        }
+      } catch { /* ignore */ }
     }
+    // 轮询兜底：某些主题机制（zotero-style 6 / Zotero 9）可能不触发上述事件，
+    // 每 3 秒对比主题指纹，变化则刷新（与既有 2s 读者轮询互不干扰）。
+    _lastThemeSig = computeThemeSig();
+    try {
+      const win = mainWin;
+      _themePollTimer = win.setInterval(() => {
+        try {
+          const sig = computeThemeSig();
+          if (sig && sig !== _lastThemeSig) {
+            _lastThemeSig = sig;
+            _cachedDark = null;
+            refreshAllPopupThemes();
+          }
+        } catch { /* ignore */ }
+      }, 3000);
+    } catch { /* ignore */ }
   } catch {
     /* ignore */
   }
@@ -139,6 +192,13 @@ function stopThemeWatcher() {
     /* ignore */
   }
   _themeObserver = null;
+  try {
+    if (_themePollTimer != null) {
+      const win = Zotero.getMainWindow();
+      win.clearInterval(_themePollTimer);
+    }
+  } catch { /* ignore */ }
+  _themePollTimer = null;
 }
 
 /**
@@ -156,12 +216,22 @@ function refreshAllPopupThemes() {
       const blend = dark ? "normal" : "multiply";
       const baseColor = getPref("highlightColor") || "rgba(255,233,79,1.0)";
       const bg = dark ? toTranslucent(baseColor, 0.4) : baseColor;
-      const hl = innerWin.document.querySelectorAll(
-        `.${HIGHLIGHT_CLASS}, #${HIGHLIGHT_OVERLAY_ID}`,
-      );
-      for (const el of hl) {
-        (el as HTMLElement).style.mixBlendMode = blend;
-        (el as HTMLElement).style.background = bg;
+      // 跨文档(2026-08-12 修复)：高亮可能挂在 viewer iframe 的 pageEl,
+      // 与 refreshAllPopupThemes 的 innerWin 不同文档 → 按实际挂载文档换色。
+      const docs = new Set<Document>();
+      try { docs.add(innerWin.document); } catch { /* ignore */ }
+      const last = lastHighlightDoc(innerWin);
+      if (last) {
+        try { docs.add(last); } catch { /* ignore */ }
+      }
+      for (const d of docs) {
+        try {
+          const hl = d.querySelectorAll(`.${HIGHLIGHT_CLASS}, #${HIGHLIGHT_OVERLAY_ID}`);
+          for (const el of hl) {
+            (el as HTMLElement).style.mixBlendMode = blend;
+            (el as HTMLElement).style.background = bg;
+          }
+        } catch { /* ignore */ }
       }
     } catch {
       /* ignore detached reader */
@@ -548,6 +618,8 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       win.document.addEventListener("selectionchange", onSelectionChange as any);
       // 加词快捷键：独立 capture 监听（命中后 activeBtn.click()，不干扰现有 onKeyDown）。
       shortcutCleanups.push(installAddWordShortcut(win));
+      // 发音快捷键：独立 capture 监听（命中后播放当前取词单词发音）。
+      shortcutCleanups.push(installPronunciationShortcut(win));
     } catch (e) {
       dbg(`register failed on ${safeHref(win)}: ${e}`);
     }
@@ -644,6 +716,10 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       } catch { /* ignore */ }
     }
     shortcutCleanups.length = 0;
+    // 高亮自愈:断开观察器(清理资源,防泄漏)
+    try {
+      disconnectHighlightObserver();
+    } catch { /* ignore */ }
     try {
       delete (innerWin as any).__hteLastLocated;
       delete (innerWin as any).__hteLastRange;
@@ -761,6 +837,8 @@ function onReaderMouseMove(
       // 递增序号使飞行中的 highlightHit 失效,避免其完成后复活已清除的高亮。
       (innerWin as any).__hteHighlightSeq = ((innerWin as any).__hteHighlightSeq || 0) + 1;
       clearHighlight(innerWin);
+      (innerWin as any).__hteLastRange = null; // 自愈:移出词不复活高亮
+      (innerWin as any).__hteCachedC = null; // C 锁定:移出词释放
       // Clear last hit so keydown doesn't trigger on empty space.
       lastHitRef.set(null);
       return;
@@ -1050,6 +1128,43 @@ function getWordAtPoint(
         }
       }
     }
+    // 2026-08-12 修复:词尾跨 span 拆分(wr.end === text.length 时检查下一个
+    // 兄弟 span 是否以字母延续,如 "SPECIFICATION" 中字重变化把词拆在两个
+    // span)。与词首合并对称,避免取词只取到半词导致高亮错位。
+    if (wr.end === text.length) {
+      const span = node.parentElement;
+      if (span) {
+        const nextSpan = span.nextElementSibling;
+        if (nextSpan) {
+          const rawNext = nextSpan.textContent || "";
+          const trimmed = rawNext.replace(/^\s+/, "");
+          const leadSpaces = rawNext.length - trimmed.length; // 前导空白数
+          if (trimmed && /^[A-Za-z]/.test(trimmed)) {
+            const nextWr = wordRangeAtOffset(trimmed, 0);
+            if (nextWr && nextWr.start === 0) {
+              word = word + nextWr.word;
+              const nextNode = nextSpan.firstChild;
+              if (nextNode && nextNode.nodeType === 3) {
+                // 偏移需加回前导空白数(trimmed 是去空白后的,节点偏移是原始的)
+                range.setEnd(nextNode, Math.min(rawNext.length, nextWr.end + leadSpaces));
+              }
+            }
+          }
+        }
+      }
+    }
+    // 一致性校验(2026-08-12):合并后 word 必须与 range.toString() 完全一致
+    // (去空白后比较——span 行尾/拼接处的空格不影响词文本)。不一致(跨
+    // span 边界取到半词 / 词中拆开未合并)时丢弃,防止基于错误 range 的
+    // 高亮(宁可不高亮也不高亮错误词)。
+    try {
+      const rangeText = range.toString().replace(/\s+/g, "");
+      if (word !== rangeText) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
 
     return { word, range };
   } catch {
@@ -1073,6 +1188,58 @@ function findPageElement(node: Node | null): HTMLElement | null {
     el = el.parentElement as HTMLElement | null;
   }
   return null;
+}
+
+/**
+ * 合并同行相邻的视口 rect(2026-08-12 修复)。
+ *
+ * C 通道 located.rects 是逐字符 rect(每字符一个),若不合并,同一单词
+ * N 个字符会渲染 N 个紧挨的高亮 div,配合 border-radius 与 mix-blend
+ * 在字符间隙处呈现"多块/双层"视觉(对照 zotero-ai-sidebar 的
+ * mergeRectParts)。这里在渲染前把同行(Y 中心接近)且水平相邻
+ * (gap ≤ max(2, 行高×0.5))的 rect 合并成整块。
+ */
+function mergeViewportRects(
+  rects: { left: number; top: number; width: number; height: number }[],
+): { left: number; top: number; width: number; height: number }[] {
+  if (rects.length <= 1) return rects;
+  interface Row {
+    top: number;
+    rects: { left: number; top: number; width: number; height: number }[];
+  }
+  const rows: Row[] = [];
+  for (const r of rects) {
+    const midY = r.top + r.height / 2;
+    const row = rows.find(
+      (x) => Math.abs(x.top - midY) <= Math.max(1, r.height * 0.5),
+    );
+    if (row) row.rects.push(r);
+    else rows.push({ top: midY, rects: [r] });
+  }
+  const out: { left: number; top: number; width: number; height: number }[] = [];
+  for (const row of rows) {
+    const sorted = row.rects.slice().sort((a, b) => a.left - b.left);
+    let cur: { left: number; top: number; width: number; height: number } | null = null;
+    for (const r of sorted) {
+      if (cur) {
+        const gap = r.left - (cur.left + cur.width);
+        const h = Math.max(cur.height, r.height, 1);
+        if (gap <= Math.max(2, h * 0.5)) {
+          // union:合并当前块与下一个字符
+          const left = Math.min(cur.left, r.left);
+          const top = Math.min(cur.top, r.top);
+          const right = Math.max(cur.left + cur.width, r.left + r.width);
+          const bottom = Math.max(cur.top + cur.height, r.top + r.height);
+          cur = { left, top, width: right - left, height: bottom - top };
+          continue;
+        }
+      }
+      if (cur) out.push(cur);
+      cur = { ...r };
+    }
+    if (cur) out.push(cur);
+  }
+  return out;
 }
 
 function applyHighlight(
@@ -1103,9 +1270,14 @@ function applyHighlight(
     // 【同一个 pageEl】(pdfRectsToViewport 返回的,与 viewport 同源)
     // 上,position:absolute 直接赋值 left/top。不能用 range 的 pageEl——
     // 两者 document 可能不同导致整体偏移。
-    const { rects: vp, pageEl } = pdfRectsToViewport(innerWin, located.locator, located.rects);
+    const { rects: vpRaw, pageEl } = pdfRectsToViewport(innerWin, located.locator, located.rects);
+    // 记录高亮挂载文档(per-window 单值,跨文档清理用):pageEl 可能属于
+    // viewer iframe 而非事件窗口 reader.html → clearHighlight 需同文档清。
+    (innerWin as any).__hteLastMountDoc = pageEl?.ownerDocument ?? doc;
+    // 逐字符 rect → 合并同行相邻为整块(2026-08-12 修复:同一单词
+    // 不再渲染多块紧挨高亮,对照 zotero-ai-sidebar mergeRectParts)。
+    const vp = mergeViewportRects(vpRaw);
     if (vp.length) {
-      dbg(`highlight C: ${vp.length} rects, pageEl=${!!pageEl}, first=(${vp[0].left.toFixed(1)},${vp[0].top.toFixed(1)},${vp[0].width.toFixed(1)}x${vp[0].height.toFixed(1)})`);
       for (const r of vp) {
         const el = doc.createElement("div");
         el.className = HIGHLIGHT_CLASS;
@@ -1131,6 +1303,8 @@ function applyHighlight(
     }
     // 记录 C 命中结果，供弹窗锚定 / scalechange reflow 复用
     (innerWin as any).__hteLastLocated = located;
+    // 高亮自愈：观察高亮挂载的 pageEl（fixed 兜底时不观察）
+    observeHighlightPage(innerWin, pageEl);
     return;
   }
   (innerWin as any).__hteLastLocated = null;
@@ -1150,6 +1324,8 @@ function applyHighlight(
       "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
     ].join(";");
     doc.body?.appendChild(overlay);
+    (innerWin as any).__hteLastMountDoc = doc;
+    observeHighlightPage(innerWin, null); // fixed 兜底：无 pageEl，不观察
     return;
   }
 
@@ -1170,11 +1346,49 @@ function applyHighlight(
     ].join(";");
     pageEl.appendChild(el);
   }
+  (innerWin as any).__hteLastMountDoc = pageEl.ownerDocument ?? doc;
+  // 高亮自愈：观察高亮挂载的 pageEl（A 通道）
+  observeHighlightPage(innerWin, pageEl);
+}
+
+/**
+ * C 结果锁定缓存(2026-08-12 修改 2):一旦某词 C 通道定位成功,
+ * 缓存结果;后续同一词实例上 locateWordHybrid 失败时沿用缓存 C,
+ * 绝不回退 A 通道(range.getClientRects 浏览器度量带偏差)。
+ * 同实例判定:word 相同 + range.startContainer 相同 + startOffset 差 ≤ 词长。
+ * 换词/换实例/移出词/gap/清除时清空(见 clearHover / 移出分支)。
+ */
+interface CachedCHit {
+  word: string;
+  range: Range;
+  located: LocatedWord;
+}
+
+function isSameWordInstance(
+  a: { word: string; range: Range },
+  b: { word: string; range: Range },
+): boolean {
+  try {
+    if (a.word !== b.word) return false;
+    const na = a.range.startContainer;
+    const nb = b.range.startContainer;
+    if (!na || !nb || na !== nb) return false;
+    const oa = a.range.startOffset;
+    const ob = b.range.startOffset;
+    const wlen = Math.max(1, a.word.length);
+    return Math.abs(oa - ob) <= wlen;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * 高亮辅助:C 通道(字符 rect)优先,A 通道(range)兜底。
  * 命中时把 C 结果写入 win 供弹窗锚定 / reflow 复用。
+ *
+ * 2026-08-12 修改 2(C 结果锁定):locateWordHybrid 成功(返回 LocatedWord)
+ * → 更新 __hteCachedC 缓存;失败(返回 null / gap 之外)且缓存中存在
+ * 同一词实例 → 沿用缓存 C 渲染,不回退 A;仅当无缓存或换词时才走 A。
  */
 async function highlightHit(
   innerWin: Window,
@@ -1190,6 +1404,7 @@ async function highlightHit(
   const seq = ((innerWin as any).__hteHighlightSeq || 0) + 1;
   (innerWin as any).__hteHighlightSeq = seq;
   (innerWin as any).__hteLastRange = hit.range;
+
   let located: LocatedWord | null = null;
   try {
     // 传鼠标坐标:让 C 通道用真实鼠标位置定位,而非 A 的 range 中心
@@ -1201,6 +1416,8 @@ async function highlightHit(
       clearHighlight(innerWin);
       clearPopup(innerWin);
       (innerWin as any).__hteLastLocated = null;
+      (innerWin as any).__hteLastRange = null; // 自愈:间隙场景不复活高亮
+      (innerWin as any).__hteCachedC = null; // C 锁定:间隙场景释放
       return;
     }
     located = result as LocatedWord | null;
@@ -1209,7 +1426,38 @@ async function highlightHit(
     located = null;
   }
   if ((innerWin as any).__hteHighlightSeq !== seq) return; // 过期,丢弃
-  applyHighlight(innerWin, hit.range, located);
+
+  if (located) {
+    // C 通道成功 → 更新锁定缓存并渲染 C(精确)
+    (innerWin as any).__hteCachedC = { word: hit.word, range: hit.range, located };
+    applyHighlight(innerWin, hit.range, located);
+    return;
+  }
+
+  // C 通道失败 → 查锁定缓存:同一词实例则沿用上次 C,不回退 A
+  try {
+    const cached = (innerWin as any).__hteCachedC as CachedCHit | null | undefined;
+    if (
+      cached &&
+      cached.range &&
+      cached.located &&
+      isSameWordInstance(hit, { word: cached.word, range: cached.range })
+    ) {
+      (innerWin as any).__hteLastLocated = cached.located;
+      applyHighlight(innerWin, hit.range, cached.located);
+      return;
+    }
+  } catch { /* ignore */ }
+
+  // ── 2026-08-12 隐藏 A 通道高亮 ──
+  // 无缓存 / 换词且 C 定位失败 → 【不再渲染 A 通道】(range.getClientRects,
+  // textLayer 浏览器度量带字体 fallback 偏差 —— 它与 C 通道高亮视觉不同,
+  // 鼠标微移时 A/C 切换、错位到相邻同词,用户体验极差)。
+  // C 通道失败时宁可【不高亮】也不显示带偏差的 A 高亮 —— 与用户诉求
+  // "C 通道准备好之后只显示 C 通道高亮"一致。
+  clearHighlight(innerWin);
+  (innerWin as any).__hteLastLocated = null;
+  (innerWin as any).__hteLastRange = null; // 不复活 A 高亮
 }
 
 /**
@@ -1236,12 +1484,142 @@ function toTranslucent(color: string, alpha: number): string {  const c = color.
   return color;
 }
 
+/** 上次实际挂载高亮的文档(per-window 单值,2026-08-12 修改 A)。
+ *  高亮只可能残留在上一次挂载处(事件窗口 document 或 C 通道 pageEl 所属
+ *  document),无需全局 Set 记录历史 —— 全局 Set 只增不减会长期占内存,
+ *  且每次 clearHighlight 遍历全部历史文档 querySelectorAll 造成浪费。 */
+function lastHighlightDoc(innerWin: Window): Document | null {
+  try {
+    return (innerWin as any).__hteLastMountDoc as Document | null | undefined ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 清理高亮。⚠️ 跨文档(2026-08-12 修复):
+ * C 通道高亮挂载在 pdfRectsToViewport 返回的 pageEl 上,该 pageEl 来自
+ * getPdfViewerApp 递归搜索到的 PDFViewerApplication 的 page div —— 事件窗口
+ * (reader.html)与 PDF 渲染窗口(viewer iframe)可能跨文档。若只清
+ * innerWin.document,旧高亮残留 → 同一单词上出现两层、三层高亮。
+ *
+ * 2026-08-12 修改 A:只清【上次挂载文档】(__hteLastMountDoc,per-window 单值)
+ * + innerWin.document。不递归遍历 iframe 树(高频 mousemove 卡顿主源),
+ * 不维护全局历史 Set(内存只增不减)。
+ */
 function clearHighlight(innerWin: Window) {
-  const doc = innerWin.document;
-  const els = doc.querySelectorAll(`.${HIGHLIGHT_CLASS}`);
-  const oldEl = doc.getElementById(HIGHLIGHT_OVERLAY_ID);
-  for (const el of els) el.remove();
-  if (oldEl) oldEl.remove();
+  const docs = new Set<Document>();
+  try {
+    docs.add(innerWin.document);
+  } catch { /* ignore */ }
+  const last = lastHighlightDoc(innerWin);
+  if (last && last !== innerWin.document) docs.add(last);
+  for (const d of docs) {
+    try {
+      const els = d.querySelectorAll(`.${HIGHLIGHT_CLASS}`);
+      const oldEl = d.getElementById(HIGHLIGHT_OVERLAY_ID);
+      for (const el of els) el.remove();
+      if (oldEl) oldEl.remove();
+    } catch { /* ignore */ }
+  }
+}
+
+/* ------------------- highlight self-heal (MutationObserver) ------------------- */
+/**
+ * 高亮自愈：pdf.js 缩放/翻页/重排版时会重建页面 DOM（replaceChildren），
+ * 挂载在 page div 下的高亮 div 被一并清掉。MutationObserver 观察高亮所在
+ * pageEl 的子节点变化，检测高亮被【外部】移除后用缓存（__hteLastRange /
+ * __hteLastLocated）重建。
+ *
+ * 五点规避设计：
+ *  1. 防「高亮复活」：用户移开/划词/点击弹窗外等主动放弃路径都会清空
+ *     __hteLastRange（见 clearHover / onMouseMove 移出分支 / gap 分支），
+ *     自愈只在 lastRange 仍有效（用户仍在词上）时重建；
+ *  2. 防自我触发死循环：_isHealing 重入保护 + 重建后 DOM 有高亮 → 短路；
+ *  3. 与缩放 reflow 协同：只做兜底——DOM 中仍有高亮（reflow 已处理）→ 不动作；
+ *  4. 事件风暴：回调快速短路（无 lastRange 直接 return）+ 80ms 去抖合并；
+ *  5. 生命周期：applyHighlight 挂载时记录 pageEl 并迁移观察目标，
+ *     cleanup 统一断开。
+ */
+let _highlightObserver: MutationObserver | null = null;
+let _highlightObserverPage: HTMLElement | null = null;
+let _healDebounceTimer: number | null = null;
+let _isHealing = false;
+
+/** 断开高亮自愈观察器（cleanup / 观察目标迁移时调用）。 */
+function disconnectHighlightObserver() {
+  try {
+    _highlightObserver?.disconnect();
+  } catch { /* ignore */ }
+  _highlightObserver = null;
+  _highlightObserverPage = null;
+  if (_healDebounceTimer != null) {
+    try {
+      const win = Zotero.getMainWindow();
+      win.clearTimeout(_healDebounceTimer);
+    } catch { /* ignore */ }
+    _healDebounceTimer = null;
+  }
+}
+
+/** 观察 pageEl（高亮挂载处）。换页时 pageEl 变化 → 迁移观察目标。 */
+function observeHighlightPage(innerWin: Window, pageEl: HTMLElement | null) {
+  try {
+    if (_highlightObserverPage === pageEl) return;
+    disconnectHighlightObserver();
+    _highlightObserverPage = pageEl;
+    if (!pageEl || typeof MutationObserver === "undefined") return;
+    _highlightObserver = new MutationObserver(() => {
+      try {
+        // 快速短路：用户不在词上（lastRange 已清）→ 无需自愈
+        if (!(innerWin as any).__hteLastRange) return;
+        if (_healDebounceTimer != null) {
+          innerWin.clearTimeout(_healDebounceTimer);
+        }
+        _healDebounceTimer = innerWin.setTimeout(() => {
+          _healDebounceTimer = null;
+          healHighlight(innerWin);
+        }, 80);
+      } catch { /* ignore */ }
+    });
+    _highlightObserver.observe(pageEl, { childList: true, subtree: true });
+  } catch { /* ignore */ }
+}
+
+/** 自愈：DOM 无高亮但缓存仍有效（用户仍在词上）→ 用缓存重建。 */
+function healHighlight(innerWin: Window) {
+  try {
+    if (_isHealing) return;
+    // 跨文档检查(2026-08-12 修复):高亮可能挂在 viewer iframe 的 pageEl
+    // 而非事件窗口 reader.html —— 只查 innerWin.document 会误判"无高亮",
+    // 导致观察器每次 pageEl 变化都重建一层 → 同一单词多层高亮累积。
+    let hasHighlight = false;
+    try {
+      const docs = new Set<Document>();
+      docs.add(innerWin.document);
+      const last = lastHighlightDoc(innerWin);
+      if (last) docs.add(last);
+      for (const d2 of docs) {
+        if (d2.querySelector(`.${HIGHLIGHT_CLASS}, #${HIGHLIGHT_OVERLAY_ID}`)) {
+          hasHighlight = true;
+          break;
+        }
+      }
+    } catch { /* ignore */ }
+    if (hasHighlight) return; // DOM 中仍有高亮 → 由正常流程 / reflow 负责
+    const range = (innerWin as any).__hteLastRange as Range | null | undefined;
+    if (!range) return; // 用户已移开，不复活
+    const located = (innerWin as any).__hteLastLocated as LocatedWord | null | undefined;
+    // 2026-08-12 隐藏 A 通道:无 located(C 失败)时不复活 A 高亮(range
+    // getClientRects 带 textLayer 偏差)—— 与 highlightHit 一致。
+    if (!located) return;
+    _isHealing = true;
+    try {
+      applyHighlight(innerWin, range, located);
+    } finally {
+      _isHealing = false;
+    }
+  } catch { /* ignore */ }
 }
 
 /* ----------------------------- translate + popup ----------------------------- */
@@ -1257,7 +1635,27 @@ async function doTranslate(
   if (word !== lastWordRef.get()) return; // user already moved away
   dbg(`translating word="${word}"`);
 
+  // 防弹窗在加载过程中被替换（v0.3.4 用户需求）：
+  // 旧弹窗未翻译完成时新 doTranslate 不创建新弹窗，记录 pending 等旧完成后再处理。
+  // 旧弹窗稳定显示 → 用户感知「加载期间弹窗不跟随鼠标」；旧完成后立即用 pending 词
+  // 替换弹窗（一次完整切换，非加载中跳动）。
+  const existing = innerWin.document.getElementById(POPUP_ID) as
+    | HTMLElement
+    | null;
+  if (existing && (existing as any).__hteTranslating) {
+    // 同词 cache hit 由 translateWord 内部处理，这里只记录不同词
+    if (existing.dataset.word !== word) {
+      (existing as any).__htePending = {
+        word, range, lastWordRef, contextLineRef, reader, innerWin,
+      };
+    }
+    return;
+  }
+
   const { fontSize, lineHeight } = getTranslateFontPrefs();
+  // 弹窗创建时总是重新检测主题：Zotero 9 / zotero-style 6 的主题事件可能
+  // 无法触发 watcher，缓存会让新弹窗沿用旧主题。强制刷新保证新弹窗即当前主题。
+  _cachedDark = isDarkMode(innerWin);
   const tc = getThemeColors(innerWin);
   const doc = innerWin.document;
 
@@ -1266,6 +1664,8 @@ async function doTranslate(
   const popup = doc.createElement("div");
   popup.id = POPUP_ID;
   popup.dataset.word = word;
+  // 翻译未完成标记：期间新 doTranslate 检测到该标记会记录 pending 而不替换弹窗
+  (popup as any).__hteTranslating = true;
   popup.style.cssText = [
     "position:fixed",
     "z-index:2147483647",
@@ -1335,6 +1735,8 @@ async function doTranslate(
   // +生词本 button — create immediately with the popup shell, before
   // translation completes.  Keep a ref so auto-add can drive states.
   const wordBtn = maybeAddWordButton(innerWin, row, word, "hover", reader, range);
+  // 发音按钮 — 与 +按钮 同时创建（出现时机参考+按钮）。音频 URL 翻译完成后填充。
+  const pronBtn = maybeAddPronunciationButton(innerWin, row, wordBtn);
 
   // Position anchored to the word's Range bounding box (same coordinates as the
   // highlight) so the popup stays close to the hovered word; falls back to the
@@ -1350,6 +1752,10 @@ async function doTranslate(
   }
   // 保存锚点 Range，供翻译完成/释义填充后的重新定位使用
   (popup as any).__hteRange = range;
+  // 保存锚点 located 快照（v0.3.4 修复弹窗跟随鼠标跑偏）：
+  // positionPopup 优先用本快照（创建时的词），不再被后续 __hteLastLocated
+  // （鼠标移到新词后更新）拖走——弹窗锚定锁定到创建时的词。
+  (popup as any).__hteLocated = (innerWin as any).__hteLastLocated ?? null;
 
   // 间距恒定修正：positionPopup 在翻译开始前调用，此时弹窗是「翻译中」高度；
   // 译文/释义填充后弹窗尺寸变化，若不重新定位，多行译文会向下延伸而盖住单词。
@@ -1373,6 +1779,8 @@ async function doTranslate(
 
   // Perform translation via Translate for Zotero.
   let tr: any;
+  // 完整字典结果（fetchDictResult）：提升到函数级，供音标/音频/自动发音共用。
+  let dictResult: any = null;
   // +生词本按钮可能在翻译完成前就被点击——把翻译 Promise 挂在按钮上，
   // 点击时若翻译未完成则等待其完成（见 maybeAddWordButton click 处理）。
   const setTrPromise = (p: Promise<any>) => {
@@ -1406,6 +1814,20 @@ async function doTranslate(
   }
   if (word !== lastWordRef.get()) return; // moved away during request
 
+  // 主翻译完成：标记 translating=false，检查是否有 pending 词在等
+  // （加载期间用户移到新词被记录的 pending，等旧完成立即用新词取）
+  (popup as any).__hteTranslating = false;
+  const pending = (popup as any).__htePending as
+    | { word: string; range?: Range; lastWordRef: any; contextLineRef: any; reader: any; innerWin: Window }
+    | null;
+  if (pending && pending.word !== word) {
+    (popup as any).__htePending = null;
+    void doTranslate(
+      pending.innerWin, pending.reader, pending.word,
+      pending.lastWordRef, pending.contextLineRef, pending.range,
+    );
+  }
+
   if (!tr.ok) {
     status.textContent = tr.error === "no-engine"
       ? getString("hover-popup-no-engine")
@@ -1432,7 +1854,7 @@ async function doTranslate(
     // Determine which word to query: when lemma mode is on, use the
     // headword so phon/exp match the stored word (not the inflected form).
     const dictWord = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
-    const dictResult = await fetchDictResult(dictWord, reader);
+    dictResult = await fetchDictResult(dictWord, reader);
     if (dictResult) {
       expText = dictResult.result.trim();
       // Extract phon from dict task's audio (first entry only, single IPA)
@@ -1460,6 +1882,54 @@ async function doTranslate(
     wordBtn.dataset.phon = phonText;
   }
 
+  // ── 发音功能：音频 URL 链收集（需求一/二/三共用） ──
+  // 优先级（用户需求，弹窗与面板统一的三级链）：
+  //   1. 当前词典源的真人发音：tr.task.audio[0].url 优先（查询的是【原始
+  //      取词单词】，dict 引擎下必有）；dictResult.audio[0].url 补充
+  //      （还原词 dictWord 的音频，仅当 tr.task.audio 为空时使用）
+  //   2. 有道 TTS 合成（国内可达）
+  //   3. Google TTS 合成（最终兜底）
+  // playAudio 依次尝试，前一来源加载失败自动切换下一个。
+  let audioUrls: string[] = [];
+  const realUrl =
+    (tr.task?.audio?.length > 0 && tr.task.audio[0].url && tr.task.audio[0].url) ||
+    (dictResult?.audio?.length > 0 && dictResult.audio[0].url) ||
+    "";
+  if (realUrl) audioUrls.push(realUrl);
+  // TTS 兜底链（有道 → Google），覆盖词典查不到词条的场景
+  if (isSingleEnglishWord(word)) {
+    const ttsWord = getPref("lemmaMode") === "lemma" ? toLemma(word) : word;
+    audioUrls.push(...buildTtsFallbackUrls(ttsWord, "en"));
+  }
+  const audioUrl = audioUrls[0] || "";
+
+  // 发音按钮：填充音频 URL 链（点击播放，失败自动切换兜底）
+  if (pronBtn && audioUrls.length > 0) {
+    pronBtn.dataset.audioUrls = JSON.stringify(audioUrls);
+  }
+  // 发音诊断：发音相关功能启用时记录音频来源情况（帮助定位无声音问题）
+  if (pronBtn || getPref("enableAutoPronunciation") ||
+      getPref("pronunciationShortcut")) {
+    try {
+      Zotero.debug(
+        `[hover-translate-eudic] audio ${audioUrl ? "ok" : "EMPTY"} ` +
+        `(real=${audioUrl ? "yes" : "no"}, chain=${audioUrls.length}, ` +
+        `task.audio=${tr.task?.audio?.length ?? 0}, ` +
+        `dict.audio=${dictResult?.audio?.length ?? 0})`,
+      );
+    } catch { /* ignore */ }
+  }
+  // 发音快捷键：记录当前活跃发音数据（弹窗清除时清空）
+  if (audioUrls.length > 0) {
+    setActivePron({ audioUrls, win: innerWin, pronBtn: pronBtn || null });
+  } else {
+    setActivePron(null);
+  }
+  // 自动发音（需求二）：不依赖发音按钮开关；播放成功时按钮做按下反馈
+  if (getPref("enableAutoPronunciation") && audioUrls.length > 0) {
+    playAudio(audioUrls, innerWin, pronBtn || null);
+  }
+
   // Append any extra tasks the engine already returned.
   const extraTasks: any[] = tr.task?.extraTasks || [];
   for (const et of extraTasks) {
@@ -1479,6 +1949,10 @@ async function doTranslate(
 
   // Start auto-close timer now that the translation is visible.
   schedulePopupAutoClose(innerWin);
+  // 交互优化（v0.3.4）：鼠标移入弹窗 → 暂停自动关闭倒计时；移出 → 恢复。
+  // 倒计时是「绝对截止时刻」语义：暂停期间即使已超时也不关闭（冻结剩余时间），
+  // 移出后 _resumeAutoClose 按剩余时间恢复，超时则立即关闭。
+  bindPopupHoverPause(innerWin, popup);
 
   // Auto-add mode: drive the button through the same states as a click.
   if (
@@ -1551,6 +2025,62 @@ async function autoAddWordWithButton(
   }
 }
 
+/**
+ * 交互优化（v0.3.4）：鼠标移入弹窗暂停自动关闭倒计时，移出恢复。
+ *
+ * 语义：自动关闭是「绝对截止时刻」（__hoverCloseExpiry）倒计时——
+ *  - 移入弹窗（mouseenter）：_cancelAutoClose 清除定时器，冻结剩余时间，
+ *    即使已超截止时刻也不关闭（用户在阅读弹窗内容/操作按钮）；
+ *  - 移出弹窗（mouseleave）：_resumeAutoClose 按原截止时刻重新起算，
+ *    剩余时间为正 → 继续倒计时；已超时 → 立即关闭（符合"等鼠标移开再关闭"）。
+ *
+ * 边界处理：
+ *  - 弹窗创建时鼠标可能已在弹窗内（弹窗覆盖指针位置）→ 用 __hoverLastPos
+ *    初始检查，命中则直接暂停；
+ *  - 弹窗销毁（clearPopup）时监听器随元素移除，无残留；
+ *  - 暂停期间 +按钮 的反馈循环 guard 不参与（timer 已清除）。
+ */
+function bindPopupHoverPause(innerWin: Window, popup: HTMLElement) {
+  try {
+    let paused = false;
+    // 重置残留标记：上个弹窗销毁后标记可能残留 true，会导致新弹窗的
+    // _resumeAutoClose 被守卫拦截（永不自动关闭）。
+    (innerWin as any).__htePopupHoverPaused = false;
+    const setPaused = (v: boolean) => {
+      paused = v;
+      // 窗口级标记：_resumeAutoClose 据此判断鼠标是否仍在弹窗上
+      // （按钮点击内部也会调用 _resumeAutoClose，鼠标未移出时不应恢复倒计时）
+      (innerWin as any).__htePopupHoverPaused = v;
+    };
+    popup.addEventListener("mouseenter", () => {
+      if (paused) return;
+      setPaused(true);
+      _cancelAutoClose(innerWin);
+    });
+    popup.addEventListener("mouseleave", () => {
+      if (!paused) return;
+      setPaused(false);
+      _resumeAutoClose(innerWin);
+    });
+    // 初始检查：弹窗刚创建时鼠标可能已在弹窗区域内（弹窗较大覆盖指针）
+    const pos = (innerWin as any).__hoverLastPos as
+      | { x: number; y: number }
+      | undefined;
+    if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
+      const r = popup.getBoundingClientRect();
+      if (
+        pos.x >= r.left && pos.x <= r.right &&
+        pos.y >= r.top && pos.y <= r.bottom
+      ) {
+        setPaused(true);
+        _cancelAutoClose(innerWin);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Auto-close the hover popup after a delay (keeps it clickable meanwhile).
  *  Stores the expiry timestamp so the timer can be paused & resumed
  *  later (e.g. while a button feedback cycle is in progress). */
@@ -1578,7 +2108,12 @@ function _armCloseTimer(win: Window, expiry: number) {
   (win as any).__hoverCloseTimer = win.setTimeout(() => {
     const popup = win.document.getElementById(POPUP_ID);
     if (!popup) return;
-    const btn = popup.querySelector("button") as HTMLButtonElement | null;
+    // 查找「+生词本」按钮（textContent 为 +/✓/✗）：跳过发音按钮
+    // （SVG 图标、textContent 为空），避免其排在第一个时误判「按钮反馈中」
+    // 导致弹窗自动关闭永远延迟 1 秒。无发音按钮时行为与原代码一致。
+    const btn = Array.from(popup.querySelectorAll("button")).find(
+      (b) => (b as HTMLButtonElement).textContent?.trim() !== "",
+    ) as HTMLButtonElement | null;
     // If a word-button exists and is NOT in its default state, the
     // button cycle is still in progress — re-arm instead of closing.
     if (btn && btn.textContent !== "+") {
@@ -1608,6 +2143,9 @@ function _cancelAutoClose(innerWin: Window) {
  *  even if the original deadline has passed. */
 function _resumeAutoClose(innerWin: Window) {
   const win = innerWin;
+  // 鼠标仍在弹窗上（bindPopupHoverPause 暂停中）→ 不恢复倒计时，
+  // 等鼠标真正移出（mouseleave 会置 false 并调用本函数）。
+  if ((win as any).__htePopupHoverPaused) return;
   const expiry = (win as any).__hoverCloseExpiry as number | undefined;
   if (expiry == null) return;
   try {
@@ -1898,8 +2436,12 @@ function positionPopup(innerWin: Window, popup: HTMLElement, range?: Range) {
 
   // 优先锚定单词 Range 的包围盒（与高亮同一套坐标，弹窗永远贴近文本）。
   // C 通道优先：用字符 rect 的视口坐标（精确）；否则回退 range 几何。
+  // v0.3.4 修复「弹窗跟随鼠标跑偏」：锚定优先用【弹窗创建时锁定的 located
+  // 快照】——弹窗永远贴近创建它的那个词；不再被后续鼠标移动更新的
+  // __hteLastLocated 拖走（译文加载期间鼠标移到其他词 → 弹窗位置稳定）。
   let anchor: { x: number; top: number; bottom: number } | null = null;
-  const located = (innerWin as any).__hteLastLocated as LocatedWord | null | undefined;
+  const lockedLocated = (popup as any).__hteLocated as LocatedWord | null | undefined;
+  const located = lockedLocated ?? ((innerWin as any).__hteLastLocated as LocatedWord | null | undefined);
   if (located) {
     try {
       anchor = wordAnchorFromLocated(innerWin, located);
@@ -1980,6 +2522,51 @@ function positionPopup(innerWin: Window, popup: HTMLElement, range?: Range) {
 
 /* ----------------------------- wordbook button ----------------------------- */
 
+/**
+ * 为弹窗按钮（+生词本 / 发音按钮）添加交互反馈（用户需求）：
+ *  - 鼠标移入（hover）：阴影加重（0 0 4px → 0 0 8px，更醒目）
+ *  - 按下（mousedown）：**即时**变暗（brightness 0.75）+ 微缩（scale 0.92），
+ *    无过渡延迟（快速点击也可见）；抬起/移出平滑恢复——
+ *    让用户确认确实点击到了按钮
+ * 过渡动画沿用按钮现有 transition（追加 box-shadow / filter / transform）。
+ */
+function applyBtnFeedback(btn: HTMLButtonElement): void {
+  try {
+    const BASE_TRANSITION = "color 0.2s, border-color 0.2s, box-shadow 0.2s";
+    const PRESS_TRANSITION = "color 0.2s, border-color 0.2s, box-shadow 0.2s, filter 0.15s, transform 0.15s";
+    btn.style.transition = PRESS_TRANSITION;
+    const onEnter = () => {
+      if (btn.hasAttribute("disabled")) return;
+      btn.style.boxShadow = "0 0 8px rgba(128,128,128,0.4)";
+    };
+    const onLeave = () => {
+      btn.style.transition = PRESS_TRANSITION;
+      btn.style.boxShadow = "0 0 4px rgba(128,128,128,0.15)";
+      btn.style.filter = "brightness(1)";
+      btn.style.transform = "scale(1)";
+    };
+    const onDown = () => {
+      if (btn.hasAttribute("disabled")) return;
+      // 按下：去掉 filter/transform 过渡 → 即时变暗 + 微缩
+      btn.style.transition = BASE_TRANSITION;
+      btn.style.filter = "brightness(0.75)";
+      btn.style.transform = "scale(0.92)";
+    };
+    const onUp = () => {
+      // 抬起：恢复带平滑过渡
+      btn.style.transition = PRESS_TRANSITION;
+      btn.style.filter = "brightness(1)";
+      btn.style.transform = "scale(1)";
+    };
+    btn.addEventListener("mouseenter", onEnter);
+    btn.addEventListener("mouseleave", onLeave);
+    btn.addEventListener("mousedown", onDown);
+    btn.addEventListener("mouseup", onUp);
+  } catch {
+    /* ignore */
+  }
+}
+
 function maybeAddWordButton(
   innerWin: Window,
   container: HTMLElement,
@@ -2026,6 +2613,9 @@ function maybeAddWordButton(
     "justify-content:center",
     "transition:color 0.2s, border-color 0.2s",
   ].join(";");
+
+  // 交互反馈：hover 阴影加重 + 点击变暗（applyBtnFeedback 会追加 transition）
+  applyBtnFeedback(btn);
 
   btn.addEventListener("click", async () => {
     _cancelAutoClose(innerWin);
@@ -2111,6 +2701,91 @@ function maybeAddWordButton(
   }
   // 加词快捷键：注册为当前活跃按钮（弹窗可见期间按下快捷键即触发本按钮）。
   setActiveAddBtn(btn);
+  return btn;
+}
+
+/**
+ * 在悬停弹窗中创建发音按钮（需求一）。
+ *
+ * 显示条件（与 +按钮 独立）：enablePronunciationButton 开启。不依赖
+ * enableEudicSync / buttonShowScene / 平台存储 —— 发音功能与生词本无关。
+ * 出现时机参考 +按钮：弹窗 shell 创建后立即创建（音频 URL 翻译完成后填充）。
+ *
+ * 位置规则（需求原文）:
+ *  - 「+」按钮存在时 → 放在「+」按钮右侧（不论 +按钮 在左还是在右）
+ *  - 「+」按钮不存在时 → 放在「+」按钮本应在的位置（wordButtonPosition 决定）
+ *
+ * 样式：与「+」按钮完全一致（28×28px, border-radius:6px, 同 border/background）
+ * 图标：需求提供的 SVG 播放图标，fill 用 currentColor 跟随按钮颜色（--hte-raw）
+ *
+ * @param innerWin   reader 内部窗口（弹窗文档所属）
+ * @param container  row 容器（与 +按钮 同一个 flex row）
+ * @param wordBtn    「+」按钮元素（可能为 null）
+ * @returns 发音按钮元素，或 null（未启用时）
+ */
+function maybeAddPronunciationButton(
+  innerWin: Window,
+  container: HTMLElement,
+  wordBtn: HTMLButtonElement | null,
+): HTMLButtonElement | null {
+  if (!getPref("enablePronunciationButton")) return null;
+
+  const doc = container.ownerDocument!;
+
+  const btn = doc.createElement("button");
+  btn.dataset.pronBtn = "1"; // 标记：_armCloseTimer 查找 +按钮 时跳过
+  btn.dataset.audioUrls = "[]"; // 音频 URL 链（JSON 数组）翻译完成后填充
+
+  // 需求提供的 SVG 播放图标：fill=currentColor 跟随按钮颜色（--hte-raw），
+  // pointer-events:none 防止 SVG 拦截 click。
+  const svgIcon = `<svg viewBox="0 0 1219 1024" xmlns="http://www.w3.org/2000/svg" style="width:16px;height:16px;fill:currentColor;pointer-events:none"><path d="M542.637333 6.31047a140.407962 140.407962 0 0 1 140.407962 140.471067v728.796204a140.407962 140.407962 0 0 1-218.279164 116.806803l-174.358292-116.238861-162.557713-21.897331a140.407962 140.407962 0 0 1-121.413446-131.951932V327.702718a140.344857 140.344857 0 0 1 120.340666-138.830345l161.674247-23.34874L457.130462 35.654157A140.407962 140.407962 0 0 1 534.370617 6.689098z m0 100.967523a39.629753 39.629753 0 0 0-24.169101 8.203612L339.377088 253.428483l-10.412276 8.140507-13.125778 1.893141-174.86313 25.241881a39.629753 39.629753 0 0 0-33.950329 39.18802v387.399766a39.629753 39.629753 0 0 0 34.328958 39.18802l173.979663 23.474949 11.548161 1.514513 9.718124 6.31047 184.076416 122.738645a39.629753 39.629753 0 0 0 61.590189-33.003759V146.781537a39.629753 39.629753 0 0 0-39.629753-39.629753z m296.592099 167.416775a50.483762 50.483762 0 0 1 71.119 3.533863 364.745178 364.745178 0 0 1 86.453441 243.58415 348.779688 348.779688 0 0 1-116.806803 272.359894 50.483762 50.483762 0 0 1-63.104702-78.754668 249.957725 249.957725 0 0 0 79.007087-193.668331 265.039749 265.039749 0 0 0-60.3912-175.999014 50.483762 50.483762 0 0 1 3.596968-71.182103z" /><path d="M978.564615 113.146731a50.483762 50.483762 0 0 1 70.677266-9.213287c110.622543 84.81272 163.693597 242.763789 163.693597 417.879337 0 149.36883-77.113946 350.735934-163.441178 417.753128a50.483762 50.483762 0 1 1-61.842608-79.511925c58.750478-45.687804 124.505577-217.395699 124.505577-338.241203 0-146.970851-43.35293-275.893757-124.253159-337.988784a50.483762 50.483762 0 0 1-9.213286-70.614162z" /></svg>`;
+  btn.innerHTML = svgIcon;
+
+  // 样式与「+」按钮完全一致（方框圆角参考+按钮）
+  btn.style.cssText = [
+    "width:28px",
+    "height:28px",
+    "min-width:28px",
+    "flex-shrink:0",
+    "border-radius:6px",
+    "box-shadow:0 0 4px rgba(128,128,128,0.15)",
+    "border:1.5px solid var(--hte-btn-border, rgba(130,130,130,0.38))",
+    "background:var(--hte-btn-bg, rgba(255,255,255,0.04))",
+    "padding:0",
+    "color:var(--hte-raw, #666666)",
+    "cursor:pointer",
+    "display:flex",
+    "align-items:center",
+    "justify-content:center",
+    "transition:color 0.2s, border-color 0.2s",
+  ].join(";");
+
+  // 交互反馈：hover 阴影加重 + 点击变暗（与 +按钮 一致）
+  applyBtnFeedback(btn);
+
+  btn.addEventListener("click", () => {
+    let urls: string[] = [];
+    try {
+      urls = JSON.parse(btn.dataset.audioUrls || "[]");
+    } catch { /* ignore */ }
+    if (!urls.length) return;
+    playAudio(urls, innerWin);
+  });
+
+  // 位置规则：
+  //  - 「+」按钮存在 → 插入到 +按钮 之后（右侧，不论 +按钮 在左还是在右）
+  //  - 「+」按钮不存在 → 按 wordButtonPosition 放在 +按钮 本应在的位置
+  if (wordBtn && wordBtn.parentNode === container) {
+    container.insertBefore(btn, wordBtn.nextSibling);
+  } else {
+    const btnPos = (getPref("wordButtonPosition") as string) || "right";
+    if (btnPos === "left") {
+      container.insertBefore(btn, container.firstChild);
+    } else {
+      container.appendChild(btn);
+    }
+  }
+
   return btn;
 }
 
@@ -2542,12 +3217,15 @@ function isDarkMode(innerWin?: Window): boolean {
   // attribute — the authoritative signal for Zotero's own day/night toggle
   // (Preferences → Appearance → theme). zotero-style follows it via the
   // `window[theme="dark"]` CSS selector; we read the same attribute.
+  // Zotero 9 / zotero-style 6 可能改用 data-theme / data-bs-theme，一并读取。
   try {
     const mainWin = Zotero.getMainWindow();
     const docEl = mainWin.document.documentElement;
     if (docEl) {
-      const theme = docEl.getAttribute("theme");
-      dbg(`isDarkMode: mainWin theme="${theme}"`);
+      const theme =
+        docEl.getAttribute("theme") ||
+        docEl.getAttribute("data-theme") ||
+        docEl.getAttribute("data-bs-theme");
       if (theme === "dark") return true;
       // 显式 light 也直接采用（Zotero 手动切换日间，不跟随系统）
       if (theme === "light") return false;
@@ -2561,7 +3239,6 @@ function isDarkMode(innerWin?: Window): boolean {
     try {
       const mql = innerWin.matchMedia("(prefers-color-scheme: dark)");
       if (mql) {
-        dbg(`isDarkMode: matchMedia.matches=${mql.matches}`);
         if (mql.matches) return true;
       }
     } catch {
@@ -2575,7 +3252,6 @@ function isDarkMode(innerWin?: Window): boolean {
       const body: any = win.document.body || win.document.documentElement;
       if (body) {
         const bg = win.getComputedStyle(body)?.backgroundColor || "";
-        dbg(`isDarkMode: computed bg="${bg}"`);
         const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
         if (m) {
           const r = parseInt(m[1]), g = parseInt(m[2]), b = parseInt(m[3]);
@@ -2590,12 +3266,51 @@ function isDarkMode(innerWin?: Window): boolean {
   // Strategy 4: Check Zotero UI theme preference.
   try {
     const uiTheme = Zotero.Prefs.get("ui.theme", true);
-    dbg(`isDarkMode: ui.theme="${uiTheme}"`);
     if (uiTheme === "dark" || uiTheme === 2) return true;
   } catch {
     /* ignore */
   }
+  // Strategy 5: Zotero 9 主窗口 CSS 变量（--material-*）或 body 背景亮度。
+  // Zotero 9 / zotero-style 6 用 CSS 变量驱动明暗主题，theme 属性可能缺失。
+  try {
+    const mainWin = Zotero.getMainWindow();
+    const docEl = mainWin.document.documentElement;
+    if (docEl) {
+      const cs = mainWin.getComputedStyle(docEl);
+      if (cs) {
+        const bgVar =
+          cs.getPropertyValue("--material-background") ||
+          cs.getPropertyValue("--fill-primary") ||
+          "";
+        if (bgVar) {
+          const lum = cssColorLuminance(bgVar);
+          if (lum != null && lum < 128) return true;
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
   return false;
+}
+
+/** 计算 CSS 颜色字符串的亮度（0-255）。支持 #rgb/#rrggbb/rgb()/rgba()/var 解析失败返回 null。 */
+function cssColorLuminance(color: string): number | null {
+  const c = String(color || "").trim();
+  const hex = c.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3) h = h.split("").map((x) => x + x).join("");
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000;
+  }
+  const rgb = c.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (rgb) {
+    return (parseInt(rgb[1]) * 299 + parseInt(rgb[2]) * 587 + parseInt(rgb[3]) * 114) / 1000;
+  }
+  return null;
 }
 
 /** Return theme-aware color set for the popup. Caches dark-mode result (D5). */
@@ -2684,6 +3399,9 @@ function clearHover(innerWin: Window) {
   (innerWin as any).__hteHighlightSeq = ((innerWin as any).__hteHighlightSeq || 0) + 1;
   clearHighlight(innerWin);
   clearPopup(innerWin);
+  // 自愈:用户主动放弃(划词/点击弹窗外/非 PDF 区域) → 清空 lastRange,不复活高亮
+  (innerWin as any).__hteLastRange = null;
+  (innerWin as any).__hteCachedC = null; // C 锁定:主动清除时释放
 }
 
 function clearPopup(innerWin: Window) {
@@ -2697,4 +3415,10 @@ function clearPopup(innerWin: Window) {
     /* ignore */
   }
   el.remove();
+  // 弹窗清除 → 发音快捷键失效（避免播放已关闭单词的发音）
+  try {
+    setActivePron(null);
+  } catch {
+    /* ignore */
+  }
 }

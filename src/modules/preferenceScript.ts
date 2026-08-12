@@ -35,6 +35,9 @@ const DEFAULTS: Record<string, any> = {
   highlightColor: "rgba(255,233,79,1.0)",
   hoverDelay: 900,
   disableOnSelection: true,
+  enablePronunciationButton: false,
+  enableAutoPronunciation: false,
+  pronunciationShortcut: "",
   popupAutoCloseDelay: 30,
   popupPosition: "top",
   translateDisplayMode: "simple",
@@ -1013,7 +1016,9 @@ function bindPrefEvents(win: Window) {
     });
   }
   // 加词快捷键输入框：聚焦即录（点击后直接按单字母/组合键即可识别）。
-  bindShortcutInputCapture(win, `zotero-prefpane-${ref}-addWordShortcut`);
+  bindShortcutInputCapture(win, `zotero-prefpane-${ref}-addWordShortcut`, "addWordShortcut");
+  // 发音快捷键输入框：与加词快捷键互斥（重复时提醒并拒绝保存）。
+  bindShortcutInputCapture(win, `zotero-prefpane-${ref}-pronunciationShortcut`, "pronunciationShortcut");
   // export button
   const exportBtn = $(`${ref}-exportBtn`, win);
   if (exportBtn) {
@@ -1030,8 +1035,11 @@ const SHORTCUT_MODIFIER_KEYS = new Set(["Control", "Alt", "Shift", "Meta"]);
  * 自动识别并写入；Backspace/Delete 清空（= 留空不启用）；Escape 取消。
  * 中文输入法激活时 Firefox keydown.key 为 "Process"，用 ev.code 回退
  * （KeyA→A / Digit1→1 / Numpad1→1）；死键（Dead）忽略。
+ *
+ * @param prefName 目标 pref 键（"addWordShortcut" 或 "pronunciationShortcut"）。
+ *   保存前做互斥检测：与另一个快捷键 pref 相同时拒绝保存并提醒（两边都有检测）。
  */
-function bindShortcutInputCapture(win: Window, inputId: string) {
+function bindShortcutInputCapture(win: Window, inputId: string, prefName: string) {
   const input = $(inputId, win) as any;
   if (!input) return;
 
@@ -1048,13 +1056,13 @@ function bindShortcutInputCapture(win: Window, inputId: string) {
   const commit = () => {
     const raw = (input.value || "").toString().trim();
     if (!raw) {
-      setPref("addWordShortcut", "");
+      setPref(prefName as any, "");
       return;
     }
     // 规范化：统一大写显示（单字母场景），保留组合键顺序。
     const kb = parseKeybinding(raw);
     if (!kb) {
-      input.value = (getPref("addWordShortcut") as string) || "";
+      input.value = (getPref(prefName as any) as string) || "";
       return;
     }
     const parts: string[] = [];
@@ -1064,12 +1072,25 @@ function bindShortcutInputCapture(win: Window, inputId: string) {
     if (kb.meta) parts.push("Meta");
     parts.push(kb.key.length === 1 ? kb.key.toUpperCase() : kb.key);
     const normalized = parts.join("+");
+    // 互斥检测：发音快捷键与加词快捷键不能相同（任一方设置时都检查另一方）。
+    const otherPref = prefName === "addWordShortcut"
+      ? "pronunciationShortcut"
+      : "addWordShortcut";
+    const otherVal = ((getPref(otherPref as any) as string) || "").trim();
+    if (normalized && otherVal && normalized === otherVal) {
+      const otherLabel = prefName === "addWordShortcut" ? "发音快捷键" : "加词快捷键";
+      try {
+        win.alert(`快捷键与${otherLabel}相同，请更换`);
+      } catch { /* ignore */ }
+      input.value = (getPref(prefName as any) as string) || ""; // 恢复原值
+      return;
+    }
     input.value = normalized;
-    setPref("addWordShortcut", normalized);
+    setPref(prefName as any, normalized);
   };
 
   // 初始化显示当前保存值
-  const saved = (getPref("addWordShortcut") as string) || "";
+  const saved = (getPref(prefName as any) as string) || "";
   input.value = saved;
 
   const onKeyDown = (ev: KeyboardEvent) => {
@@ -1079,11 +1100,11 @@ function bindShortcutInputCapture(win: Window, inputId: string) {
     if (!key) return;
     if (key === "Backspace" || key === "Delete") {
       input.value = "";
-      setPref("addWordShortcut", "");
+      setPref(prefName as any, "");
       return;
     }
     if (key === "Escape") {
-      input.value = (getPref("addWordShortcut") as string) || "";
+      input.value = (getPref(prefName as any) as string) || "";
       input.blur();
       return;
     }

@@ -175,6 +175,28 @@
       preference="disableOnSelection"
       data-l10n-id="pref-disableOnSelection"
     />
+    <!-- 发音设置：发音按钮 / 发音快捷键（互斥检测）/ 自动发音 -->
+    <checkbox
+      id="zotero-prefpane-__addonRef__-enablePronunciationButton"
+      preference="enablePronunciationButton"
+      data-l10n-id="pref-enablePronunciationButton"
+    />
+    <hbox align="center" style="margin-left: 24px">
+      <label class="pref-label" data-l10n-id="pref-pronunciationShortcut" />
+      <html:input
+        type="text"
+        id="zotero-prefpane-__addonRef__-pronunciationShortcut"
+        preference="pronunciationShortcut"
+        style="width: 160px"
+        placeholder="点击后直接按下键盘按键"
+      />
+      <label style="color: #888; font-style: italic; margin-left: 8px" data-l10n-id="pref-pronunciationShortcut-hint" />
+    </hbox>
+    <checkbox
+      id="zotero-prefpane-__addonRef__-enableAutoPronunciation"
+      preference="enableAutoPronunciation"
+      data-l10n-id="pref-enableAutoPronunciation"
+    />
   <!-- ============ 3.4 其他设置（并入基础） ============ -->
     <hbox>
       <label

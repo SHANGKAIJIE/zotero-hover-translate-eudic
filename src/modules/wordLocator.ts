@@ -23,6 +23,9 @@ export type PdfRect = [number, number, number, number];
 /** 单个字符的定位信息(从官方 getPageData chars 精简)。 */
 export interface WordChar {
   c: string;
+  /** Zotero 官方原始 unicode 串(连字时是完整串如 "fi",官方 getMatchPositions
+   *  计数规则 total += u.length - 1 的依据;aOff 对齐的权威来源)。 */
+  u?: string;
   offset: number;
   rect: PdfRect;
   baseline: number;
@@ -32,6 +35,13 @@ export interface WordChar {
   spaceAfter: boolean;
   /** 该字符后是否有换行(行边界)。 */
   lineBreakAfter: boolean;
+  /** Zotero 官方 ignorable 标记(行尾连字符等):textLayer 渲染时被跳过,
+   *  两流对齐时必须同样跳过(官方 getTextParts/buildSegmenterText 均
+   *  `if (char.ignorable) continue`)。此前 seqToPage/pageText 未跳过 →
+   *  每出现一个 ignorable 字符,textLayer 计数与 chars 流计数永久错位 +1。 */
+  ignorable?: boolean;
+  /** 该字符后是否有段落断行(官方计数规则计入,getTextFromChars 展开为空格)。 */
+  paragraphBreakAfter?: boolean;
 }
 
 /** 单页定位器。 */
@@ -49,6 +59,13 @@ export interface PageLocator {
   normalizedToOriginal: number[];
   /** 第 i 个字符在 pageText 中的起始偏移(查找字符区间用)。 */
   charTextStart: number[];
+  /** 非空白序号 → pageText 偏移(预计算,nonSpaceToPageOffset O(1) 查表)。
+   *  第 n 个「展开后」非空白字符对应 seqToPage[n](连字展开多个序号映射同一偏移)。 */
+  seqToPage: number[];
+  /** 两流(textLayer 渲染 vs chars 流)安全对齐的 pageText 偏移上界。
+   *  公式区等特殊排版处 textLayer 含 chars 流没有的字符(组合标记/上下标),
+   *  从该偏移往后 aOff 计数不可靠 → 实例校验应跳过。默认 = pageText.length。 */
+  alignSafeUntil: number;
 }
 
 /** C 通道命中结果。 */
@@ -202,7 +219,7 @@ function ensureInjected(nativeWin: Window): boolean {
               "var ch = src[i];" +
               "if (!ch || typeof ch.c !== 'string' || ch.c === 'undefined' || ch.c === 'null') continue;" +
               "if (!Array.isArray(ch.rect) || ch.rect.length < 4) continue;" +
-              "chars.push({ c: ch.c, offset: (typeof ch.offset === 'number' && ch.offset >= 0 ? ch.offset : i), rect: [Number(ch.rect[0]), Number(ch.rect[1]), Number(ch.rect[2]), Number(ch.rect[3])], baseline: (typeof ch.baseline === 'number' ? ch.baseline : 0), fontSize: (typeof ch.fontSize === 'number' ? ch.fontSize : 0), rotation: (typeof ch.rotation === 'number' ? ch.rotation : 0), spaceAfter: !!(ch && ch.spaceAfter), lineBreakAfter: !!(ch && ch.lineBreakAfter) });" +
+              "chars.push({ c: ch.c, u: (typeof ch.u === 'string' ? ch.u : ch.c), offset: (typeof ch.offset === 'number' && ch.offset >= 0 ? ch.offset : i), rect: [Number(ch.rect[0]), Number(ch.rect[1]), Number(ch.rect[2]), Number(ch.rect[3])], baseline: (typeof ch.baseline === 'number' ? ch.baseline : 0), fontSize: (typeof ch.fontSize === 'number' ? ch.fontSize : 0), rotation: (typeof ch.rotation === 'number' ? ch.rotation : 0), spaceAfter: !!(ch && ch.spaceAfter), lineBreakAfter: !!(ch && ch.lineBreakAfter), ignorable: !!(ch && ch.ignorable), paragraphBreakAfter: !!(ch && ch.paragraphBreakAfter) });" +
             "}" +
             "var viewBox = (Array.isArray(data && data.viewBox) && data.viewBox.length >= 4) ? [Number(data.viewBox[0]), Number(data.viewBox[1]), Number(data.viewBox[2]), Number(data.viewBox[3])] : null;" +
             "var sample = '';" +
@@ -245,11 +262,16 @@ function ensureInjected(nativeWin: Window): boolean {
                     if (typeof ch?.c !== "string" || !Array.isArray(ch?.rect) || ch.rect.length < 4) return null;
                     return {
                       c: ch.c,
+                      u: typeof ch.u === "string" ? ch.u : ch.c,
                       offset: typeof ch.offset === "number" ? ch.offset : -1,
                       rect: [Number(ch.rect[0]), Number(ch.rect[1]), Number(ch.rect[2]), Number(ch.rect[3])],
                       baseline: typeof ch.baseline === "number" ? ch.baseline : 0,
                       fontSize: typeof ch.fontSize === "number" ? ch.fontSize : 0,
                       rotation: typeof ch.rotation === "number" ? ch.rotation : 0,
+                      spaceAfter: !!(ch && ch.spaceAfter),
+                      lineBreakAfter: !!(ch && ch.lineBreakAfter),
+                      ignorable: !!(ch && ch.ignorable),
+                      paragraphBreakAfter: !!(ch && ch.paragraphBreakAfter),
                     };
                   })
                   .filter((ch: any) => !!ch);
@@ -429,6 +451,7 @@ export async function getPageLocator(
         }
         chars.push({
           c: ch.c,
+          u: typeof ch.u === "string" ? ch.u : ch.c,
           offset: typeof ch.offset === "number" && ch.offset >= 0 ? ch.offset : i,
           rect: [ch.rect[0], ch.rect[1], ch.rect[2], ch.rect[3]],
           baseline: ch.baseline ?? 0,
@@ -436,6 +459,8 @@ export async function getPageLocator(
           rotation: ch.rotation ?? 0,
           spaceAfter: !!ch.spaceAfter,
           lineBreakAfter: !!ch.lineBreakAfter,
+          ignorable: !!ch.ignorable,
+          paragraphBreakAfter: !!ch.paragraphBreakAfter,
         });
       });
       if (!chars.length) {
@@ -450,16 +475,88 @@ export async function getPageLocator(
           : null;
 
       logLocate(`getPageLocator: OK page ${pageIndex}, ${chars.length} chars, sample="${compact?.sample ?? ""}"`);
-      // 页面文本:按 offset 序拼接 chars,spaceAfter/lineBreakAfter 展开为空格
+      // 页面文本:按 offset 序拼接 chars,spaceAfter/lineBreakAfter 展开为空格。
+      // ⚠️ 官方对齐:ignorable 字符(textLayer 渲染时被跳过,见 pdfWorker
+      // getTextParts / buildSegmenterText 的 `if (char.ignorable) continue`)
+      // 不进入 pageText —— 否则 textLayer 计数与 chars 流计数永久错位 +1,
+      // 该字符之后所有 aOff(纯偏移定位 + 文本匹配锚点)整体漂移,
+      // 同词多现时选中相邻错误实例("the"→另一个 the、"a"→range 里的 a)。
       let pageText = "";
       const charTextStart: number[] = [];
       for (let i = 0; i < chars.length; i++) {
         charTextStart[i] = pageText.length;
+        if (chars[i].ignorable) continue;
         pageText += chars[i].c;
         if (chars[i].spaceAfter || chars[i].lineBreakAfter) pageText += " ";
       }
       const norm = normalizeTextWithMap(pageText);
-      return {
+      // 预计算「展开后非空白序号 → pageText 偏移」表(nonSpaceToPageOffset O(1))。
+      // 2026-08-12 官方对齐:按 Zotero 官方 getMatchPositions 计数规则构建——
+      // 每个字符占 u.length 个位置(连字 u="fi"→2、重音分解 u="e\u0301"→2),
+      // 空白字符跳过。u 缺省时回退 expandedCharLen(c)(旧逻辑兜底)。
+      const seqToPage: number[] = [];
+      {
+        // 2026-08-12 官方对齐:优先用官方 u 字段(原始 unicode 串)展开计数,
+        // 与 DOM 侧 textLayerNonSpaceOffset 共用 expandedCharLen,保证两流一致。
+        // u 缺省时回退 c。注意不能直接 u.length——官方注释:u 有时是分解
+        // 连字 "fi"(2)、有时是单连字 "ﬁ"(1),必须统一走展开函数。
+        // ⚠️ ignorable 字符与 DOM textLayer 计数同步跳过(官方渲染跳过),
+        // 否则两侧计数从该字符起永久错位。
+        const expandLen = (s: string): number => {
+          let t = 0;
+          for (const cc of s) t += expandedCharLen(cc);
+          return t;
+        };
+        for (let ci = 0; ci < chars.length; ci++) {
+          const ch = chars[ci];
+          if (ch.ignorable || /\s/.test(ch.c)) continue;
+          const src = ch.u && ch.u.length > 0 ? ch.u : ch.c;
+          const len = expandLen(src);
+          if (len <= 0) continue;
+          const off = charTextStart[ci];
+          for (let k = 0; k < len; k++) seqToPage.push(off);
+        }
+      }
+      // 计算两流安全对齐上界(alignSafeUntil):展开序列第一个差异之前都可靠。
+      // 公式区/上下标/组合标记差异会让 textLayer 计数与 chars 流累积错位,
+      // 该偏移之后的 aOff 不可信 → 实例校验跳过(信任 C + 几何交叉验证兜底)。
+      let alignSafeUntil = pageText.length;
+      try {
+        const docA = innerWin.document;
+        const pageElA = docA.querySelector(`.page[data-page-number="${pageIndex + 1}"]`);
+        const layerA = (pageElA?.querySelector(".textLayer") ?? docA.querySelector(".textLayer")) as HTMLElement | null;
+        if (layerA) {
+          const winA = (docA.defaultView ?? innerWin) as any;
+          const walkerA = docA.createTreeWalker(layerA, winA.NodeFilter.SHOW_TEXT);
+          let tlAll = "";
+          let ndA: Node | null = walkerA.nextNode();
+          while (ndA) { tlAll += (ndA as Text).data || ""; ndA = walkerA.nextNode(); }
+          const expandS = (s: string) => {
+            let o = "";
+            for (const ch of s) {
+              if (/\s/.test(ch)) continue;
+              if (/\p{M}/u.test(ch)) continue;
+              if (ch === "\u200b" || ch === "\u200c" || ch === "\u200d" || ch === "\ufeff" || ch === "\u00ad") continue;
+              o += TEXT_LIGATURES[ch] ?? ch.normalize("NFKC");
+            }
+            return o;
+          };
+          const tlS = expandS(tlAll);
+          const pgS = expandS(pageText);
+          let firstDiff = -1;
+          const minL = Math.min(tlS.length, pgS.length);
+          for (let i = 0; i < minL; i++) {
+            if (tlS[i] !== pgS[i]) { firstDiff = i; break; }
+          }
+          if (firstDiff >= 0) {
+            alignSafeUntil = seqToPage[firstDiff] ?? pageText.length;
+            logLocate(`alignSafe: page ${pageIndex} firstDiff@${firstDiff} alignSafeUntil=${alignSafeUntil}/${pageText.length}`);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      const locator: PageLocator = {
         pageIndex,
         chars,
         viewBox,
@@ -468,7 +565,10 @@ export async function getPageLocator(
         normalizedText: norm.text,
         normalizedToOriginal: norm.map,
         charTextStart,
+        seqToPage,
+        alignSafeUntil,
       };
+      return locator;
     } catch (e) {
       logLocate(`getPageLocator error: ${String((e as any)?.message || e)}`);
       return null;
@@ -616,6 +716,13 @@ function normalizeTextWithMap(input: string): { text: string; map: number[] } {
       i += len;
       continue;
     }
+    // 2026-08-12 修复:组合标记跳过(与 expandedCharLen 的 \p{M}→0 同语义)。
+    // 逐字符 NFKC 无法合成分解组合序列(需整串规范化),直接跳过避免
+    // normalizedText 与 seqToPage 计数/文本匹配语义不一致。
+    if (/\p{M}/u.test(raw)) {
+      i += len;
+      continue;
+    }
     if (/\s/u.test(raw)) {
       if (pendingSpace == null) pendingSpace = i;
       i += len;
@@ -645,6 +752,7 @@ function charIndexRangeForTextRange(locator: PageLocator, os: number, oe: number
   const sel: number[] = [];
   for (let i = 0; i < locator.chars.length; i++) {
     if (locator.charTextStart[i] >= oe) break;
+    if (locator.chars[i].ignorable) continue; // 行尾连字符不进文本,也不进选择
     if (locator.charTextStart[i] >= os) sel.push(i);
   }
   return sel;
@@ -659,6 +767,128 @@ function charIndexRangeForTextRange(locator: PageLocator, os: number, oe: number
  * 几何错位 / 坐标转换偏差影响(悬停第 N 个同词 → 第 N 个)。
  * 返回非空白计数;失败返回 -1。
  */
+/**
+ * 在指定 textLayer 内计算「节点 node 第 offset 个字符」前的非空白展开计数。
+ * 使用 tlIndexCache 索引(每 textLayer 构建一次,查询 O(节点数))。
+ */
+function nonSpaceCountInLayer(
+  layer: Element,
+  node: Node,
+  offset: number,
+  innerWin: Window,
+): number {
+  // 索引缓存:每 textLayer 构建一次「文本节点 + 节点前缀非空白计数」,
+  // 查询 O(节点数)。DOM 重建时首节点脱离 → 失效重建。
+  let idx = tlIndexCache.get(layer);
+  if (!idx || !idx.nodes.length || !layer.contains(idx.nodes[0])) {
+    const doc2 = layer.ownerDocument;
+    const win2 = (doc2?.defaultView ?? innerWin) as any;
+    if (!doc2 || !win2?.NodeFilter) return -1;
+    const walker2 = doc2.createTreeWalker(layer, win2.NodeFilter.SHOW_TEXT);
+    const nodes: Text[] = [];
+    const texts: string[] = [];
+    const prefix: number[] = [];
+    let running = 0;
+    let n: Node | null = walker2.nextNode();
+    while (n) {
+      nodes.push(n as Text);
+      texts.push((n as Text).data || "");
+      n = walker2.nextNode();
+    }
+    // 先收集全部文本(行尾连字符判断需跨节点看下一节点开头是否 \n),
+    // 再逐节点累计前缀计数(与 chars 流 ignorable 语义对齐)。
+    for (let i = 0; i < nodes.length; i++) {
+      prefix.push(running);
+      running += nonSpaceExpandedCount(texts, i, texts[i].length);
+    }
+    idx = { nodes, prefix, texts };
+    tlIndexCache.set(layer, idx);
+  }
+  let count = 0;
+  for (let i = 0; i < idx.nodes.length; i++) {
+    if (idx.nodes[i] === node) {
+      count += idx.prefix[i];
+      count += nonSpaceExpandedCount(idx.texts, i, offset);
+      return count;
+    }
+  }
+  return -1;
+}
+
+/**
+ * 行尾连字符集合(2026-08-12 修改 B)。与官方 pdfWorker 的 dashChars
+ * (worker.js:64599)一致:行尾连字符在 chars 流中被标记 ignorable 并跳过,
+ * 但 pdf.js textLayer 渲染保留了它 → DOM 侧计数必须同步跳过,否则两流
+ * 从第一处断行连字符起永久错位(实测该 PDF diff=-33,alignSafeUntil
+ * 仅 330/4767,93% 区域 aOff 不可信 → C 通道全失败 → 全 A 通道)。
+ */
+const DASH_CHARS = new Set([
+  "\x2D", "\u058A", "\u05BE", "\u1400", "\u1806", "\u2010", "\u2011",
+  "\u2012", "\u2013", "\u2014", "\u2015", "\u2E17", "\u2E1A", "\u2E3A",
+  "\u2E3B", "\u301C", "\u3030", "\u30A0", "\uFE31", "\uFE32", "\uFE58",
+  "\uFE63", "\uFF0D",
+]);
+
+/**
+ * 判断 textLayer 文本流中 (nodeIdx, unitPos) 处字符是否为「行尾连字符」:
+ * 字符属于 DASH_CHARS 且其后(同节点或下一节点开头)紧跟空白(空格或 \n)。
+ *
+ * ⚠️ 2026-08-12 修复:官方语义是 `lineBreakAfter && dashChars.has(c)`,
+ * 且官方 getTextParts(worker.js:107401)把 lineBreakAfter 渲染为【空格 ' '】,
+ * 不是 \n。此前判断 `=== "\n"` 恒 false → 连字符从不被跳过 → diff=-33 依旧
+ * → alignSafeUntil 仍 330/4767 → 同词错位复发。改为 /\s/ 后正确跳过。
+ */
+function isHyphenationDash(texts: string[], nodeIdx: number, unitPos: number): boolean {
+  const text = texts[nodeIdx];
+  if (unitPos < 0 || unitPos >= text.length) return false;
+  const ch = text[unitPos];
+  if (!DASH_CHARS.has(ch)) return false;
+  if (unitPos + 1 < text.length) {
+    return /\s/.test(text[unitPos + 1]);
+  }
+  // 节点末尾 → 看下一节点开头是否空白
+  const next = texts[nodeIdx + 1];
+  return !!next && next.length > 0 && /\s/.test(next[0]);
+}
+
+/**
+ * 统计 textLayer 文本流中「节点 nodeIdx 前 unitLimit 个 UTF-16 code unit」
+ * 的「非空白、非行尾连字符的展开计数」。
+ *
+ * ⚠️ 遍历按 code point 推进(而非 code unit):chars 流侧 expandLen 按
+ * `for (const cc of s)`(code point)迭代,若这里按 code unit 对代理对
+ * 逐半计 1(共 2),而 chars 侧完整字符 expandedCharLen→1,两流对非 BMP
+ * 字符(emoji / 扩展区汉字)永久错位 → 必须同标尺。offset(unitLimit)
+ * 是 caret 的 code unit 边界,落在代理对中间时按「未进入该字符」处理
+ * (浏览器 caret 不会落在代理对内部,此分支仅防御)。
+ *
+ * 2026-08-12 修改 B:跳过行尾连字符(isHyphenationDash),与 chars 流
+ * ignorable 语义对齐 —— 修复 textLayer 计数与 chars 流计数永久错位
+ * (diff=-33),使 alignSafeUntil 恢复接近全页。
+ */
+function nonSpaceExpandedCount(
+  texts: string[],
+  nodeIdx: number,
+  unitLimit: number,
+): number {
+  const text = texts[nodeIdx];
+  let count = 0;
+  let i = 0;
+  const lim = Math.min(unitLimit, text.length);
+  while (i < lim) {
+    const cp = text.codePointAt(i);
+    if (cp == null) break;
+    const ch = String.fromCodePoint(cp);
+    const unitLen = ch.length;
+    // 字符整体必须在 limit 内才计入(避免代理对后半部分被半计)
+    if (i + unitLen <= lim && !/\s/.test(ch) && !isHyphenationDash(texts, nodeIdx, i)) {
+      count += expandedCharLen(ch);
+    }
+    i += unitLen;
+  }
+  return count;
+}
+
 function textLayerNonSpaceOffset(innerWin: Window, range: Range): number {
   try {
     const startNode = range.startContainer;
@@ -668,42 +898,135 @@ function textLayerNonSpaceOffset(innerWin: Window, range: Range): number {
       layer = layer.parentElement;
     }
     if (!layer) return -1;
-    const doc = layer.ownerDocument;
-    const win = (doc?.defaultView ?? innerWin) as any;
-    if (!doc || !win?.NodeFilter) return -1;
-    const walker = doc.createTreeWalker(layer, win.NodeFilter.SHOW_TEXT);
-    const offset = range.startOffset;
-    let count = 0;
-    let node: Node | null = walker.nextNode();
-    while (node) {
-      const text = (node as Text).data || "";
-      if (node === startNode) {
-        for (let i = 0; i < offset && i < text.length; i++) {
-          if (!/\s/.test(text[i])) count++;
-        }
-        return count;
-      }
-      for (let i = 0; i < text.length; i++) {
-        if (!/\s/.test(text[i])) count++;
-      }
-      node = walker.nextNode();
-    }
-    return -1;
+    return nonSpaceCountInLayer(layer, startNode, range.startOffset, innerWin);
   } catch {
     return -1;
   }
 }
 
-/** pageText 中第 n 个非空白字符的偏移(0-based);不足返回 -1。 */
+/**
+ * caretPositionFromPoint 取词(2026-08-12):浏览器原生「坐标→文本节点+偏移」,
+ * Zotero 官方 setCaretPosition(reader.js)同款。从鼠标视口坐标直接返回
+ * textLayer 内精确字符的非空白偏移——消灭自研 range 的滞后/脱节与 aOff 噪声。
+ * 返回非空白计数(需经 nonSpaceToPageOffset 转页偏移);失败返回 -1。
+ */
+function caretNonSpaceOffset(
+  innerWin: Window,
+  clientX: number,
+  clientY: number,
+): number {
+  try {
+    const doc = innerWin.document;
+    if (!doc) return -1;
+    const docAny = doc as any;
+    let node: Node | null = null;
+    let offset = 0;
+    // 2026-08-12 修改 3(caret 遮挡一致):与 getWordAtPoint 同款 —— Zotero
+    // 的 annotationLayer(SVG 覆盖)会拦截 caretPositionFromPoint 命中测试,
+    // 返回 annotation 元素而非文本节点(词边缘/标点旁尤其常见,正是用户
+    // 报告的「微移切 A 通道」的触发点)。取词期间临时禁用 pointer-events,
+    // 取词后立即恢复。
+    const layers = doc.querySelectorAll(".annotationLayer") as NodeListOf<HTMLElement>;
+    const prevPointerEvents: string[] = [];
+    layers.forEach((el: HTMLElement) => {
+      prevPointerEvents.push(el.style.pointerEvents);
+      el.style.pointerEvents = "none";
+    });
+    try {
+      if (typeof docAny.caretPositionFromPoint === "function") {
+        const pos = docAny.caretPositionFromPoint(clientX, clientY);
+        if (pos) {
+          node = pos.offsetNode ?? null;
+          offset = typeof pos.offset === "number" ? pos.offset : 0;
+        } else if (!caretDiagOnce) {
+          logLocate(`caret: caretPositionFromPoint=null at (${clientX},${clientY}) (first)`);
+          caretDiagOnce = true;
+        }
+      } else if (typeof docAny.caretRangeFromPoint === "function") {
+        const r = docAny.caretRangeFromPoint(clientX, clientY);
+        if (r) {
+          node = r.startContainer ?? null;
+          offset = typeof r.startOffset === "number" ? r.startOffset : 0;
+        } else if (!caretDiagOnce) {
+          logLocate(`caret: caretRangeFromPoint=null at (${clientX},${clientY}) (first)`);
+          caretDiagOnce = true;
+        }
+      } else if (!caretDiagOnce) {
+        logLocate(`caret: no caret API in doc (first)`);
+        caretDiagOnce = true;
+      }
+    } finally {
+      layers.forEach((el: HTMLElement, i: number) => {
+        el.style.pointerEvents = prevPointerEvents[i];
+      });
+    }
+    if (!node || node.nodeType !== 3) {
+      if (!caretDiagOnce) {
+        logLocate(`caret: node=${node?.nodeName ?? "null"} not TEXT_NODE (first)`);
+        caretDiagOnce = true;
+      }
+      return -1;
+    }
+    // 光标语义(2026-08-12):caret offset 是「光标位置」(字符后边界)。
+    // 鼠标悬停词末字符时,光标落在词后 → offset 指向空格/下一词首字符,
+    // 直接计数会让 expandWord 扩展出相邻词(表现为「鼠标微移跳词」)。
+    // 命中字符回退规则:offset 处非词字符且前一字符是词字符 → 用前一字符。
+    const text = (node as Text).data || "";
+    let hitOffset = offset;
+    if (hitOffset >= text.length && text.length > 0) hitOffset = text.length - 1;
+    if (hitOffset > 0 && !isWordChar(text[hitOffset]) && isWordChar(text[hitOffset - 1])) {
+      hitOffset -= 1;
+    }
+    let layer: Element | null = (node as Text).parentElement;
+    while (layer && !layer.classList?.contains("textLayer")) {
+      layer = layer.parentElement;
+    }
+    if (!layer) {
+      if (!caretDiagOnce) {
+        logLocate(`caret: node not in textLayer (first)`);
+        caretDiagOnce = true;
+      }
+      return -1;
+    }
+    return nonSpaceCountInLayer(layer, node, hitOffset, innerWin);
+  } catch {
+    return -1;
+  }
+}
+
+/** caret 诊断日志只打一次(避免刷屏)。 */
+let caretDiagOnce = false;
+
+/** textLayer 偏移索引缓存:WeakMap<textLayer, { 文本节点, 节点前缀非空白计数 }>。 */
+const tlIndexCache = new WeakMap<Element, { nodes: Text[]; prefix: number[]; texts: string[] }>();
+
+/**
+ * 字符的「规范化展开长度」:textLayer DOM 与 chars 流 pageText 的对齐标尺。
+ * - 连字 `ﬁ`(U+FB01)→ "fi"(2 字符)
+ * - 组合标记 `̌`/`̇`(Unicode \p{M})→ 0(附着在前一字符上,不单独计数;
+ *   与 textLayer 预组合 `š`=1 对齐)
+ * - 普通 ASCII → 1(快速路径)
+ * 注:逐字符 NFKC 无法合成「分解组合序列」(s+̌ → š 需整串规范化),因此
+ * 组合标记走「跳过」策略而不是 NFKC 合并。
+ */
+function expandedCharLen(ch: string): number {
+  if (ch.length !== 1) return 1;
+  if (/\p{M}/u.test(ch)) return 0; // 组合标记:不计,附着前字符
+  if (ch === "\u200b" || ch === "\u200c" || ch === "\u200d" || ch === "\ufeff" || ch === "\u00ad") {
+    return 0; // 零宽/软连字符:textLayer 渲染层有,chars 流无 → 不计(与 normalizeTextWithMap 一致)
+  }
+  const mapped = TEXT_LIGATURES[ch];
+  if (mapped) return mapped.length;
+  if (ch.charCodeAt(0) < 0x80) return 1; // ASCII 快速路径
+  return ch.normalize("NFKC").length;
+}
+
+/** pageText 中第 n 个「规范化展开」非空白字符的偏移(0-based);不足返回 -1。
+ *  查表 O(1):locator.seqToPage 构建时预计算(与原扫描语义一致,已双路径校验)。 */
 function nonSpaceToPageOffset(locator: PageLocator, n: number): number {
   if (n < 0) return -1;
-  let count = 0;
-  for (let i = 0; i < locator.pageText.length; i++) {
-    if (/\s/.test(locator.pageText[i])) continue;
-    if (count === n) return i;
-    count++;
-  }
-  return -1;
+  const arr = locator.seqToPage;
+  return n < arr.length ? arr[n] : -1;
 }
 
 /**
@@ -727,22 +1050,49 @@ function locateWordByText(
 ): LocatedWord | null {
   const needle = normalizeTextWithMap(word).text;
   if (!needle) return null;
-  // 参考锚点:优先文本流偏移;回退鼠标最近字符的页文本起始偏移
+  // 参考锚点:优先文本流偏移;回退鼠标最近字符的页文本起始偏移。
+  // ⚠️ 锚点可信性(2026-08-12 修复):文本流锚点仅在「安全对齐区」内可信;
+  // 超出 alignSafeUntil(公式区等两流不一致处)时锚点带累积偏移,上下文
+  // 比较与距离都会误导 → 视为无锚点,退化为坐标锚点 / 第一个出现。
   let refOffset = -1;
-  if (typeof anchorPageOffset === "number" && anchorPageOffset >= 0) {
+  const anchorTrusted =
+    typeof anchorPageOffset === "number" &&
+    anchorPageOffset >= 0 &&
+    anchorPageOffset < locator.alignSafeUntil;
+  if (anchorTrusted) {
     refOffset = anchorPageOffset;
   } else if (typeof px === "number" && typeof py === "number") {
     const refIdx = closestCharIndex(locator, px, py);
     if (refIdx >= 0) refOffset = locator.charTextStart[refIdx];
   }
-  // 枚举 needle 的全部出现位置,选离参考锚点最近的一个
+  // 枚举 needle 的全部出现位置。
+  // 选择策略(2026-08-12 第三轮):aOff 已精确(±1),上下文辅助安全。
+  // 候选上下文(前2后2词,4 词唯一性极高)与鼠标所指处匹配得分优先,
+  // 同分取距离最近——aOff 精确时远处候选上下文不可能匹配,不会强制选错。
+  // 2026-08-12 修复:
+  //   1) 词边界验证——needle 必须独占一个词(前后是空白/标点/行界),
+  //      杜绝 "a" 匹配进 "range"/"data" 内部(单字母词错位到词内字母);
+  //   2) 上下文得分仅在锚点可信(安全对齐区内)时启用,否则只看距离,
+  //      避免漂移锚点的上下文误导选择(同词多现选相邻错误实例)。
   let bestSel: number[] | null = null;
   let bestDist = Infinity;
+  let bestScore = -1;
   let searchFrom = 0;
+  const nText = locator.normalizedText;
+  const nLen = nText.length;
+  const aCtx = refOffset >= 0 && anchorTrusted
+    ? wordsAroundOffset(locator.pageText, refOffset, 2)
+    : null;
   for (;;) {
     const idx = locator.normalizedText.indexOf(needle, searchFrom);
     if (idx < 0) break;
     searchFrom = idx + 1;
+    // 词边界验证:匹配段前后必须不是字母(独立成词)。
+    // "a" → "range" 内 a 前后是字母 → 排除;独立 "a" 前后是空格 → 通过。
+    const before = idx > 0 ? nText[idx - 1] : "";
+    const after = idx + needle.length < nLen ? nText[idx + needle.length] : "";
+    if (before && isWordChar(before)) continue;
+    if (after && isWordChar(after)) continue;
     const os = locator.normalizedToOriginal[idx];
     const last = locator.normalizedToOriginal[idx + needle.length - 1];
     if (os == null || last == null) continue;
@@ -759,7 +1109,18 @@ function locateWordByText(
     } else {
       dist = 0; // 无参考锚点,取第一个出现
     }
-    if (dist < bestDist) {
+    // 上下文得分:候选前2/后2词与鼠标所指处逐词比较(仅非空词,各 +1)
+    // 仅在锚点可信时启用(见上):漂移锚点的上下文会误导选择。
+    let score = 0;
+    if (aCtx) {
+      const cCtx = wordsAroundOffset(locator.pageText, os, 2);
+      if (cCtx.prev2 && cCtx.prev2 === aCtx.prev2) score++;
+      if (cCtx.prev1 && cCtx.prev1 === aCtx.prev1) score++;
+      if (cCtx.next1 && cCtx.next1 === aCtx.next1) score++;
+      if (cCtx.next2 && cCtx.next2 === aCtx.next2) score++;
+    }
+    if (score > bestScore || (score === bestScore && dist < bestDist)) {
+      bestScore = score;
       bestDist = dist;
       bestSel = sel;
     }
@@ -772,6 +1133,410 @@ function locateWordByText(
     chars: matchedChars,
     locator,
   };
+}
+
+/** 行片段区间(2026-08-13 句内定位:以 chars 流 lineBreakAfter 为边界)。 */
+interface SentenceSpan {
+  text: string;
+  start: number;
+  end: number;
+}
+
+/** 句内定位:定位 pageOffset 所在「行片段」区间 [start, end)(pageText 偏移)。 */
+function sentenceSpanAtPageOffset(
+  locator: PageLocator,
+  pageOffset: number,
+): { start: number; end: number } | null {
+  const chars = locator.chars;
+  if (!chars.length) return null;
+  // 找 pageOffset 落在哪个字符(二分 charTextStart)
+  let idx = -1;
+  {
+    let lo = 0, hi = chars.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (locator.charTextStart[mid] <= pageOffset) { idx = mid; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+  }
+  if (idx < 0) return null;
+  // 行片段起点:向前找第一个 lineBreakAfter 字符之后
+  let s = idx;
+  while (s > 0 && !chars[s - 1].lineBreakAfter) s--;
+  // 行片段终点:向后找第一个 lineBreakAfter 字符(含)
+  let e = idx;
+  while (e < chars.length && !chars[e].lineBreakAfter) e++;
+  const start = locator.charTextStart[s];
+  const end = e < chars.length
+    ? locator.charTextStart[e] + (chars[e].c.length)
+    : locator.pageText.length;
+  if (end <= start) return null;
+  return { start, end };
+}
+
+/**
+ * 定位 pageOffset 所在的「行片段」区间 [start, end)(pageText 偏移)。
+ *
+ * 2026-08-13 修复:以 chars 流 lineBreakAfter 为硬边界 —— 行片段天然不跨行,
+ * 避免「句子过大 → 行间距/词边缘距离裁决跨行错位」。行内再按鼠标距离选。
+ * 返回 null 表示无法定位(调用方回退原链)。
+ */
+/**
+ * 取 pageText 中 offset 位置「前 n 词 / 当前词 / 后 n 词」(规范化小写)。
+ * 用于上下文辅助定位:同词多实例时,比较鼠标所指处的上下文与候选词的
+ * 上下文(前2后2 = 4 词,唯一性极高)。aOff 精确时上下文取词可靠。
+ */
+function wordsAroundOffset(
+  text: string,
+  offset: number,
+  n: number,
+): { prev1: string; prev2: string; curr: string; next1: string; next2: string } {
+  const norm = (s: string) => s.toLowerCase();
+  const len = text.length;
+  // 当前词区间 [cs, ce)
+  let cs = Math.min(Math.max(0, offset), len);
+  while (cs > 0 && !/\s/.test(text[cs - 1])) cs--;
+  let ce = cs;
+  while (ce < len && !/\s/.test(text[ce])) ce++;
+  // 向前收集 n 个词
+  const prevs: string[] = [];
+  {
+    let p = cs;
+    for (let k = 0; k < n; k++) {
+      while (p > 0 && /\s/.test(text[p - 1])) p--;
+      let s = p;
+      while (s > 0 && !/\s/.test(text[s - 1])) s--;
+      if (s === p) break;
+      prevs.push(norm(text.slice(s, p)));
+      p = s;
+    }
+  }
+  // 向后收集 n 个词
+  const nexts: string[] = [];
+  {
+    let q = ce;
+    for (let k = 0; k < n; k++) {
+      while (q < len && /\s/.test(text[q])) q++;
+      let e = q;
+      while (e < len && !/\s/.test(text[e])) e++;
+      if (e === q) break;
+      nexts.push(norm(text.slice(q, e)));
+      q = e;
+    }
+  }
+  return {
+    prev2: prevs[1] ?? "",
+    prev1: prevs[0] ?? "",
+    curr: norm(text.slice(cs, ce)),
+    next1: nexts[0] ?? "",
+    next2: nexts[1] ?? "",
+  };
+}
+
+/**
+ * 从 A 通道 range 的 DOM 文本提取上下文(前2后2词,小写规范化)。
+ *
+ * 2026-08-12 指纹预检:A 通道 range 来自 caretPositionFromPoint(浏览器原生
+ * 「鼠标→字符」映射),其【词文本归属】始终正确(鼠标在下一行 → 文本节点
+ * 就是下一行的),只有渲染位置(getClientRects)带偏差。因此从 range 的
+ * startContainer 文本节点向前后兄弟 span 扩展,可拿到鼠标所指实例的真实
+ * 上下文 —— 独立于 aOff / 坐标换算 / 几何度量,不受 alignSafeUntil 限制。
+ * 返回 null 表示无法提取(调用方回退原链)。
+ */
+function wordsAroundRange(
+  innerWin: Window,
+  range: Range,
+): { prev2: string; prev1: string; curr: string; next1: string; next2: string } | null {
+  try {
+    const node = range.startContainer;
+    if (!node || node.nodeType !== 3) return null;
+    const text = (node as Text).data || "";
+    // 当前词在 node 内的边界(基于 range.startOffset)
+    let cs = Math.min(Math.max(0, range.startOffset), text.length);
+    let ce = cs;
+    while (cs > 0 && isWordChar(text[cs - 1])) cs--;
+    while (ce < text.length && isWordChar(text[ce])) ce++;
+    const curr = text.slice(cs, ce).toLowerCase();
+    if (!curr) return null;
+
+    // 前文:node 内 [0, cs) + 前面兄弟 span 的文本(向前最多 200 字符)。
+    // ⚠️ 2026-08-12 修复:跨 span 拼接必须补空格分隔 —— 否则词被粘粘
+    // ("in"+"eq"→"ineq"、"scale"+"c"→"scalerc"、"radius"+"re"+"traces"
+    // →"radiusretraces"),ref 上下文词与 pageText 候选不一致 → 匹配失败
+    // → ctx-fp 命中率仅 22%。textLayer span 是行片段,span 边界即词界。
+    let beforeText = text.slice(0, cs);
+    let el = (node as Text).parentElement;
+    let prev = el?.previousElementSibling;
+    while (prev && beforeText.length < 200) {
+      beforeText = (prev.textContent || "").replace(/[ \t]+$/, "") + " " + beforeText;
+      prev = prev.previousElementSibling;
+    }
+    // 后文:node 内 [ce, end) + 后面兄弟 span 的文本(向后最多 200 字符)
+    let afterText = text.slice(ce);
+    let next = el?.nextElementSibling;
+    while (next && afterText.length < 200) {
+      afterText += " " + (next.textContent || "").replace(/^[ \t]+/, "");
+      next = next.nextElementSibling;
+    }
+
+    // 从 beforeText 提取前2词(从后往前)
+    const prevs: string[] = [];
+    {
+      let p = beforeText.replace(/\s+$/, "");
+      for (let k = 0; k < 2; k++) {
+        const m = p.match(/[A-Za-z\u00C0-\u024F]+$/);
+        if (!m) break;
+        prevs.push(m[0].toLowerCase());
+        p = p.slice(0, p.length - m[0].length).replace(/\s+$/, "");
+      }
+    }
+    // 从 afterText 提取后2词(从前往后)
+    const nexts: string[] = [];
+    {
+      let q = afterText.replace(/^\s+/, "");
+      for (let k = 0; k < 2; k++) {
+        const m = q.match(/^[A-Za-z\u00C0-\u024F]+/);
+        if (!m) break;
+        nexts.push(m[0].toLowerCase());
+        q = q.slice(m[0].length).replace(/^\s+/, "");
+      }
+    }
+    return {
+      prev2: prevs[1] ?? "",
+      prev1: prevs[0] ?? "",
+      curr,
+      next1: nexts[0] ?? "",
+      next2: nexts[1] ?? "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** 上下文词规范化:去标点/大小写(候选 pageText 词可能带逗号等标点)。 */
+function cleanCtxWord(s: string): string {
+  return (s || "").toLowerCase().replace(/[^A-Za-z\u00C0-\u024F]/g, "");
+}
+
+/**
+ * 上下文指纹预检(2026-08-12):
+ * A 通道 range 的 DOM 上下文 vs chars 流候选实例上下文,全等且唯一 →
+ * 直接锁定该实例。这是独立于 aOff / 坐标 / 几何的第三定位维度,专门解决
+ * 「文字一致但实例错位」—— 垂直行错位(坐标残差命中相邻行同词)、几何
+ * 误杀(aCenter 带 textLayer 偏差)都绕开。
+ *
+ * 返回 LocatedWord = 指纹唯一锁定;null = 取不到 / 不唯一 → 调用方回退原链。
+ */
+function locateWordByContext(
+  innerWin: Window,
+  locator: PageLocator,
+  hit: { word: string; range: Range },
+  mouseY?: number,
+): LocatedWord | null {
+  try {
+    const ref = wordsAroundRange(innerWin, hit.range);
+    if (!ref) return null;
+    // 当前词文本应与 hit.word 一致(防御:range 归属异常时不预检)
+    const refCurr = cleanCtxWord(ref.curr);
+    const hitNorm = cleanCtxWord(hit.word);
+    if (!refCurr || !hitNorm || refCurr !== hitNorm) return null;
+
+    const needle = normalizeTextWithMap(hit.word).text;
+    if (!needle) return null;
+    let matchSel: number[] | null = null;
+    let matchCount = 0;
+    const nText = locator.normalizedText;
+    const nLen = nText.length;
+    let searchFrom = 0;
+    for (;;) {
+      const idx = nText.indexOf(needle, searchFrom);
+      if (idx < 0) break;
+      searchFrom = idx + 1;
+      // 词边界验证:匹配段前后必须不是字母(独立成词)
+      const before = idx > 0 ? nText[idx - 1] : "";
+      const after = idx + needle.length < nLen ? nText[idx + needle.length] : "";
+      if (before && isWordChar(before)) continue;
+      if (after && isWordChar(after)) continue;
+      const os = locator.normalizedToOriginal[idx];
+      const last = locator.normalizedToOriginal[idx + needle.length - 1];
+      if (os == null || last == null) continue;
+      const oe = last + 1;
+      const sel = charIndexRangeForTextRange(locator, os, oe);
+      if (!sel.length) continue;
+      // 候选实例上下文 vs 参考上下文(全等 → 命中)
+      const cCtx = wordsAroundOffset(locator.pageText, os, 2);
+      if (
+        cleanCtxWord(cCtx.prev1) === cleanCtxWord(ref.prev1) &&
+        cleanCtxWord(cCtx.prev2) === cleanCtxWord(ref.prev2) &&
+        cleanCtxWord(cCtx.next1) === cleanCtxWord(ref.next1) &&
+        cleanCtxWord(cCtx.next2) === cleanCtxWord(ref.next2)
+      ) {
+        matchCount++;
+        matchSel = sel;
+      }
+    }
+    if (matchCount !== 1 || !matchSel) return null; // 不唯一 → 回退原链
+    const matchedChars = matchSel.map((i) => locator.chars[i]);
+    // ── 2026-08-12 鼠标行归属校验 ──
+    // 上下文指纹唯一锁定后,再做一道「行校验」:锁定实例的渲染中心
+    // (cChannelCenter,数据驱动)必须与鼠标 Y 同处一行(垂直差 ≤ 半行高 +
+    // 容差)。防止「上下文碰巧相同但错行」(如两行都有 "the soliton"
+    // 且上下文恰好一致的极端场景)被指纹误锁。鼠标坐标不可用时跳过。
+    if (typeof mouseY === "number") {
+      try {
+        const cC = cChannelCenter(innerWin, locator, {
+          word: matchedChars.map((c) => c.c).join(""),
+          rects: matchedChars.map((c) => c.rect),
+          chars: matchedChars,
+          locator,
+        });
+        if (cC) {
+          const dy = Math.abs(mouseY - cC.y);
+          const rowThr = Math.max(16, cC.h * 1.8);
+          if (dy > rowThr) {
+            logLocate(
+              `ctx-fp: "${hit.word}" row-check FAIL dy=${dy.toFixed(1)} thr=${rowThr.toFixed(1)} → fallback`,
+            );
+            return null;
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    return {
+      word: matchedChars.map((c) => c.c).join(""),
+      rects: matchedChars.map((c) => c.rect),
+      chars: matchedChars,
+      locator,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 句内定位(2026-08-13,移植 zotero-sentence-translator 思路):
+ * 先定鼠标所指的【句子】(pageText 中按标点切分,10-40 词长文本唯一性极高),
+ * 再在句子内找 hit.word 实例。句子内唯一 → 直接锁定;句子内重复 → 用鼠标
+ * 坐标距离(真实指向)选最近。天然区分跨行场景(两行是不同句子),且不依赖
+ * 两流对齐 / ctx-fp 上下文唯一性。
+ *
+ * 锚点:caret 精确字符 → textLayer 非空白序号 → chars 流偏移 aOff。
+ * aOff 不可信(>= alignSafeUntil)时退化为坐标锚点,仍可切句。
+ *
+ * 返回 LocatedWord = 句内锁定;null = 无法切句 / 句子内找不到 → 回退原链。
+ */
+function locateWordBySentence(
+  innerWin: Window,
+  locator: PageLocator,
+  hit: { word: string; range: Range },
+  mouseX?: number,
+  mouseY?: number,
+): LocatedWord | null {
+  try {
+    // 1. 锚点偏移:caret 精确(优先)/ A range 文本流(回退)
+    let n = -1;
+    if (typeof mouseX === "number" && typeof mouseY === "number") {
+      n = caretNonSpaceOffset(innerWin, mouseX, mouseY);
+    }
+    if (n < 0) {
+      const tlNonSpace = textLayerNonSpaceOffset(innerWin, hit.range);
+      if (tlNonSpace >= 0) n = tlNonSpace;
+    }
+    if (n < 0) return null;
+    const aOff = nonSpaceToPageOffset(locator, n);
+    if (aOff < 0) return null;
+
+    // 2. 定位所在「行片段」:以 chars 流 lineBreakAfter 为硬边界。
+    //    ⚠️ 2026-08-13 修复:原用 pageText 标点切句,但 pageText 构建把
+    //    lineBreakAfter 压成空格 → 行边界丢失 → "句子"过大(整页头并一起)
+    //    → 行间距/词边缘场景句内 hits 多 → 距离裁决跨行错位。改用 chars
+    //    流的 lineBreakAfter 切分:行片段天然不跨行,同词一行内多现概率更低。
+    const span = sentenceSpanAtPageOffset(locator, aOff);
+    if (!span) return null;
+
+    // 3. 句内枚举 hit.word 全部实例(词边界验证)
+    const needle = normalizeTextWithMap(hit.word).text;
+    if (!needle) return null;
+    const sText = locator.pageText.slice(span.start, span.end);
+    const sTextLower = sText.toLowerCase();
+    const needleLower = needle.toLowerCase();
+    const hits: { sel: number[]; os: number }[] = [];
+    let searchFrom = 0;
+    for (;;) {
+      const rel = sTextLower.indexOf(needleLower, searchFrom);
+      if (rel < 0) break;
+      searchFrom = rel + 1;
+      const absStart = span.start + rel;
+      // 词边界验证(句子文本内)
+      const before = rel > 0 ? sText[rel - 1] : " ";
+      const after = rel + needle.length < sText.length ? sText[rel + needle.length] : " ";
+      if (before && isWordChar(before)) continue;
+      if (after && isWordChar(after)) continue;
+      // 原始偏移 → chars 索引
+      const sel = charIndexRangeForTextRange(locator, absStart, absStart + needle.length);
+      if (!sel.length) continue;
+      hits.push({ sel, os: absStart });
+    }
+    if (!hits.length) return null;
+
+    // 4. 句子内唯一 → 直接锁定;重复 → 鼠标坐标距离选最近
+    let best: { sel: number[]; os: number } | null = null;
+    if (hits.length === 1) {
+      best = hits[0];
+    } else if (typeof mouseX === "number" && typeof mouseY === "number") {
+      let bestDist = Infinity;
+      for (const h of hits) {
+        const chars = h.sel.map((i) => locator.chars[i]);
+        const cC = cChannelCenter(innerWin, locator, {
+          word: chars.map((c) => c.c).join(""),
+          rects: chars.map((c) => c.rect),
+          chars,
+          locator,
+        });
+        if (!cC) continue;
+        const dist = Math.hypot(mouseX - cC.x, mouseY - cC.y);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = h;
+        }
+      }
+    }
+    if (!best) return null;
+
+    // 5. 行归属校验(防句内相邻词被距离误判)
+    const matchedChars = best.sel.map((i) => locator.chars[i]);
+    if (typeof mouseY === "number") {
+      try {
+        const cC = cChannelCenter(innerWin, locator, {
+          word: matchedChars.map((c) => c.c).join(""),
+          rects: matchedChars.map((c) => c.rect),
+          chars: matchedChars,
+          locator,
+        });
+        if (cC) {
+          const dy = Math.abs(mouseY - cC.y);
+          const rowThr = Math.max(16, cC.h * 1.8);
+          if (dy > rowThr) {
+            logLocate(
+              `sent: "${hit.word}" row-check FAIL dy=${dy.toFixed(1)} thr=${rowThr.toFixed(1)} → fallback`,
+            );
+            return null;
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    logLocate(
+      `sent: "${hit.word}" in span[${span.start},${span.end}) "${locator.pageText.slice(span.start, span.end).slice(0, 50)}${locator.pageText.slice(span.start, span.end).length > 50 ? "…" : ""}" hits=${hits.length} → lock`,
+    );
+    return {
+      word: matchedChars.map((c) => c.c).join(""),
+      rects: matchedChars.map((c) => c.rect),
+      chars: matchedChars,
+      locator,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** 字符是否为可组成单词的字母(含带重音的西欧字符)。 */
@@ -850,7 +1615,6 @@ export function locateWordAtPoint(
   const r = hit.rect;
   const tol = Math.max(1, hit.fontSize || (r[2] - r[0])) * 0.25;
   if (px < r[0] - tol || px > r[2] + tol) {
-    logLocate(`locateWordAtPoint: gap (px=${px.toFixed(1)} outside char x[${r[0].toFixed(1)},${r[2].toFixed(1)}])`);
     return null;
   }
 
@@ -863,6 +1627,43 @@ export function locateWordAtPoint(
     chars: wordChars,
     locator,
   };
+}
+
+/**
+ * 字符 offset(getPageData 的 offset 字段,单调递增)→ locator.chars 数组索引。
+ * 二分查找;未命中返回 -1。
+ */
+function charIndexAtOffset(locator: PageLocator, offset: number): number {
+  let lo = 0;
+  let hi = locator.chars.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const o = locator.chars[mid].offset;
+    if (o === offset) return mid;
+    if (o < offset) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+
+/**
+ * C 命中词在页文本流(pageText)中的偏移区间 [start, end)。
+ * 基于 charTextStart:字符索引 → 页文本偏移;词尾 = 末字符起始 + 1。
+ * 返回 null 表示无法计算(字符索引缺失)。
+ */
+function locatedOffsetRange(
+  locator: PageLocator,
+  located: LocatedWord,
+): [number, number] | null {
+  const cs = located.chars;
+  if (!cs.length) return null;
+  const s = charIndexAtOffset(locator, cs[0].offset);
+  const e = charIndexAtOffset(locator, cs[cs.length - 1].offset);
+  if (s < 0 || e < 0 || e < s) return null;
+  const start = locator.charTextStart[s];
+  const end = locator.charTextStart[e] + 1;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return [start, end];
 }
 
 /**
@@ -902,7 +1703,6 @@ export function pdfRectsToViewport(
         }
       }
       if (out.length) {
-        logLocate(`pdfRectsToViewport: page ${locator.pageIndex}, ${out.length} rects, first=(${out[0].left.toFixed(1)},${out[0].top.toFixed(1)},${out[0].width.toFixed(1)}x${out[0].height.toFixed(1)}), pageEl=${!!pageEl}`);
         return { rects: out, pageEl };
       }
     }
@@ -1003,6 +1803,135 @@ function isInGap(locator: PageLocator, px: number, py: number): boolean {
 }
 
 /**
+ * A 通道 range 的视口坐标包围盒中心(caretPositionFromPoint 精确命中的
+ * 字符在浏览器渲染层的位置)。用于与 C 通道坐标交叉验证(方案 B/C)。
+ * 返回 null 表示无法取得(空 rect / 异常)。
+ */
+function aChannelCenter(
+  innerWin: Window,
+  range: Range,
+): { x: number; y: number; w: number; h: number } | null {
+  try {
+    const rects = range.getClientRects();
+    if (!rects?.length) return null;
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    for (const rc of rects) {
+      if (rc.width === 0 && rc.height === 0) continue;
+      l = Math.min(l, rc.left); t = Math.min(t, rc.top);
+      r = Math.max(r, rc.right); b = Math.max(b, rc.bottom);
+    }
+    if (!isFinite(l) || !isFinite(t)) return null;
+    return { x: (l + r) / 2, y: (t + b) / 2, w: r - l, h: b - t };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * C 通道命中字符渲染到视口后的包围盒中心。
+ * pdfRectsToViewport 返回 page 局部坐标(挂 pageEl 的 position:absolute),
+ * 需加 pageEl 的视口偏移还原为视口坐标,与 A 通道中心同坐标系比较。
+ * pageEl 为 null 时 rect 已是 position:fixed 视口坐标(偏移 0,一致)。
+ * 返回 null 表示无法取得。
+ */
+function cChannelCenter(
+  innerWin: Window,
+  locator: PageLocator,
+  located: LocatedWord,
+): { x: number; y: number; w: number; h: number } | null {
+  try {
+    const { rects, pageEl } = pdfRectsToViewport(innerWin, locator, located.rects);
+    if (!rects.length) return null;
+    const pel = pageEl?.getBoundingClientRect?.();
+    const ox = pel?.left ?? 0;
+    const oy = pel?.top ?? 0;
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    for (const rc of rects) {
+      l = Math.min(l, ox + rc.left); t = Math.min(t, oy + rc.top);
+      r = Math.max(r, ox + rc.left + rc.width); b = Math.max(b, oy + rc.top + rc.height);
+    }
+    if (!isFinite(l)) return null;
+    return { x: (l + r) / 2, y: (t + b) / 2, w: r - l, h: b - t };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * pageText 偏移 → 该偏移所在字符的 chars 数组索引(二分 charTextStart)。
+ * charTextStart 单调递增;返回「最后一个 start <= offset」的索引;未命中 -1。
+ */
+function charIndexAtPageOffset(locator: PageLocator, pageOffset: number): number {
+  let lo = 0;
+  let hi = locator.chars.length - 1;
+  let best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (locator.charTextStart[mid] <= pageOffset) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return best;
+}
+
+/**
+ * 纯数据流定位(根治同词错位):给定 pageText 偏移,直接在 chars 流中
+ * 确定该字符并扩展成完整单词。不经过坐标换算、不依赖"最近字符"匹配——
+ * 偏移来自 caretPositionFromPoint(浏览器原生「鼠标→字符」精确映射),
+ * 实例身份由偏移唯一决定,同词错位在数学上不可能发生。
+ */
+function locateWordAtPageOffset(
+  locator: PageLocator,
+  pageOffset: number,
+): LocatedWord | null {
+  const idx = charIndexAtPageOffset(locator, pageOffset);
+  if (idx < 0) return null;
+  const hit = locator.chars[idx];
+  if (!isWordChar(hit.c)) return null; // 该偏移落在空格/符号上
+  const wordChars = expandWord(locator.chars, idx, hit.baseline);
+  if (!wordChars.length) return null;
+  return {
+    word: wordChars.map((c) => c.c).join(""),
+    rects: wordChars.map((c) => c.rect),
+    chars: wordChars,
+    locator,
+  };
+}
+
+/**
+ * byText 兜底结果的几何确认(2026-08-12 修复):
+ * 文本匹配可能选到相邻同词实例(锚点漂移时),返回前必须确认候选实例
+ * 渲染到视口后的中心与 A range 中心重合。阈值收紧至 ×0.6(原 ×0.9 会
+ * 放过相隔 1-2 词的相邻实例)。几何中心不可用时不拦截(维持原行为)。
+ * 拒绝时返回 false,调用方回退 A 通道(文本正确、几何略偏可接受,
+ * 远好于高亮错误实例)。
+ */
+function byTextGeomOk(
+  innerWin: Window,
+  locator: PageLocator,
+  byText: LocatedWord,
+  hit: { word: string; range: Range },
+): boolean {
+  try {
+    const aC = aChannelCenter(innerWin, hit.range);
+    const cC = cChannelCenter(innerWin, locator, byText);
+    if (aC && cC) {
+      const dist = Math.hypot(aC.x - cC.x, aC.y - cC.y);
+      const thr = Math.max(6, (aC.w + cC.w) * 0.6);
+      if (dist <= thr) return true;
+      logLocate(`byText GEO-REJECT "${byText.word}" d=${dist.toFixed(1)} thr=${thr.toFixed(1)} → fallback A`);
+      return false;
+    }
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+/**
  * 命中辅助:优先 C 通道(字符 rect),失败回退 A 通道(range)。
  * 返回 LocatedWord = C 命中;{ gap: true } = 词间隙(不高亮);null = 回退 A。
  */
@@ -1018,7 +1947,6 @@ export async function locateWordHybrid(
   let pageIndex = currentPageIndexOf(innerWin);
   const rangePage = findPageIndexFromRange(hit.range);
   if (rangePage >= 0 && rangePage !== pageIndex) {
-    logLocate(`locateWordHybrid: range page ${rangePage} vs currentPage ${pageIndex} → use ${rangePage}`);
     pageIndex = rangePage;
   }
   if (pageIndex < 0) {
@@ -1031,13 +1959,49 @@ export async function locateWordHybrid(
     return null;
   }
 
-  // 定位坐标:优先用鼠标事件坐标(与 A 的 range 无关,避免 A 的浏览器度量
-  // 偏差传导到 C 定位——这正是 C 要消除的误差源)。
+  // ── 2026-08-13 句内定位(最高优先级)──
+  // 先定鼠标所指的【句子】(pageText 按标点切分,10-40 词长文本唯一性极高),
+  // 再在句子内找 hit.word —— 句子内唯一直接锁,重复用鼠标距离选最近。
+  // 天然区分跨行场景(两行是不同句子),不依赖两流对齐/上下文唯一性。
+  // 无法切句 / 句内找不到 → 回退下方 ctx-fp / 几何链。
+  try {
+    const sentHit = locateWordBySentence(innerWin, locator, hit, mouseX, mouseY);
+    if (sentHit) return sentHit;
+  } catch { /* ignore */ }
+
+  // ── 2026-08-12 上下文指纹预检(主定位路径,独立于 aOff/坐标/几何)──
+  // A 通道 range(caretPositionFromPoint 原生映射)的词文本归属始终正确,
+  // 取其 DOM 上下文(前2后2词)与 chars 流候选实例比较,全等且唯一 →
+  // 直接锁定该实例。专门解决垂直行错位(坐标残差命中相邻行同词)、几何
+  // 误杀(aCenter 带 textLayer 偏差)。不唯一 / 取不到 → 回退下方原链。
+  try {
+    const ctxHit = locateWordByContext(innerWin, locator, hit, mouseY);
+    if (ctxHit) {
+      return ctxHit;
+    }
+  } catch { /* ignore */ }
+
+  // ── 2026-08-12 停用 pure-offset 主路径 ──
+  // 该路径依赖「textLayer 与 chars 流两流计数对齐」(aOff < alignSafeUntil)。
+  // 用户 PDF 的 textLayer 行尾连字符直接接下一词(diff=-33 无法修复),两流
+  // 从第 280 字符起永久错位,alignSafeUntil 仅 330/4767 → 93% 区域 aOff 不可信
+  // → pure-offset 在此 PDF 上 0 命中,纯属无效计算。直接跳过,由 ctx-fp
+  // (主)与坐标路径(兜底)接管。其他 PDF 若两流对齐,下方坐标路径仍可工作。
+  // 原 pure-offset 代码(caret→aOff→词扩展 + aCenter 几何确认)已整体移除,
+  // 需要恢复时从 git 历史 .backup-2026-08-12-twofold 取回。
+
+  // 定位坐标:优先鼠标原始坐标(caret 取词已精确;textLayer 的浏览器几何
+  // aCenter 存在字体 fallback/百分比舍入偏差,不应作为 C 通道定位锚点——
+  // C 定位必须基于 PDF 数据坐标,几何交叉验证(cCenter vs aCenter)单独使用)。
   try {
     let cx: number, cy: number;
+    const aCenter = aChannelCenter(innerWin, hit.range);
     if (typeof mouseX === "number" && typeof mouseY === "number") {
       cx = mouseX;
       cy = mouseY;
+    } else if (aCenter) {
+      cx = aCenter.x;
+      cy = aCenter.y;
     } else {
       const rect = hit.range.getBoundingClientRect();
       cx = rect.left + rect.width / 2;
@@ -1067,56 +2031,149 @@ export async function locateWordHybrid(
         px = vb[0] + (relX / Math.max(1, pr.width)) * (vb[2] - vb[0]);
         py = vb[3] - (relY / Math.max(1, pr.height)) * (vb[3] - vb[1]);
       } else {
-        logLocate(`locateWordHybrid: no usable geometry (fallback A)`);
         return null;
       }
     } else if (viewport?.convertToPdfPoint && pr) {
       // 兜底:viewport 换算(无 viewBox 时)
       [px, py] = viewport.convertToPdfPoint(relX, relY);
     } else {
-      logLocate(`locateWordHybrid: no viewport/pageEl (fallback A)`);
       return null;
     }
 
     const located = locateWordAtPoint(locator, px, py);
-    // C 命中且词一致 → 标准 C 命中
-    if (located && located.word === hit.word) {
-      logLocate(`locateWordHybrid: C HIT "${located.word}" (${located.rects.length} rects) page=${pageIndex}`);
-      return located;
-    }
-    // C 命中但词不一致 → 信任 C 的字符几何(不依赖 A 的 textLayer 度量)
+    // ── 实例校验(方案 B/C 增强版,2026-08-12 第二轮):同词多实例防错位 ──
+    // C 命中只保证「词文本一致」,不保证是鼠标所指的【那个】实例。
+    // 校验手段(按可靠度):
+    //   A. 文本流偏移(与坐标无关,最可靠)——多字符词主用(原阶段3);
+    //   B. A/C 通道坐标交叉验证(新增):C 命中字符渲染到视口后的位置
+    //      应与 A 通道 range(caretPositionFromPoint 精确命中)的渲染位置
+    //      重合;偏差超阈值 → C 选错实例(坐标换算残差)。
+    //  - 多字符词:文本流校验优先,坐标交叉验证作兜底裁决;
+    //  - 单字符词(a/i):原跳过(文本流偏移噪声 2-12 必然超 1 字符区间),
+    //    改为坐标邻近校验——C 与 A 重合则信任 C,严重不一致则修正/回退 A。
+    // aCenter 已在锚点段提前计算(方案 A 复用)。
     if (located) {
-      logLocate(`locateWordHybrid: word mismatch "${located.word}" vs "${hit.word}" (trust C) page=${pageIndex} mouse=(${cx.toFixed(0)},${cy.toFixed(0)}) pdf=(${px.toFixed(1)},${py.toFixed(1)})`);
+      // aOff:优先 caretPositionFromPoint(鼠标坐标,浏览器原生精确字符,
+      // 官方 setCaretPosition 同款,消灭 aOff 噪声);回退 range 文本流偏移。
+      let n = -1;
+      if (typeof mouseX === "number" && typeof mouseY === "number") {
+        n = caretNonSpaceOffset(innerWin, mouseX, mouseY);
+      }
+      if (n < 0) {
+        const tlNonSpace = textLayerNonSpaceOffset(innerWin, hit.range);
+        if (tlNonSpace >= 0) n = tlNonSpace;
+      }
+      const aOff = n >= 0 ? nonSpaceToPageOffset(locator, n) : -1;
+      const rng = locatedOffsetRange(locator, located);
+      // 文本流校验仅在「安全对齐区」内可信:公式区等两流不一致处,
+      // aOff 带累积偏差 → 跳过文本流校验,交由几何交叉验证/信任 C。
+      // ±2 容差:caretPositionFromPoint 的 offset 是光标位置(字符后边界),
+      // 数 offset 前字符时系统性多 1;真正错位的实例间距远大于 2,不受影响。
+      const textMismatch =
+        aOff >= 0 && rng && aOff < locator.alignSafeUntil &&
+        (aOff < rng[0] - 2 || aOff >= rng[1] + 2);
+      const cCenter = cChannelCenter(innerWin, locator, located);
+      if (located.word.length > 1) {
+        // 多字符词:文本流校验(原逻辑)
+        if (textMismatch) {
+          const byText = locateWordByText(locator, hit.word, aOff, px, py);
+          // 2026-08-12 不再 byTextGeomOk 拦截(见 byText final 注释)
+          if (byText) return byText;
+        }
+        // 坐标交叉验证兜底:文本流一致但坐标严重偏离(转换偏差极端场景)。
+        // 2026-08-12 基准修正:aCenter(range.getClientRects,textLayer 浏览器
+        // 度量)带偏差会误杀 → 改用【鼠标坐标】与 C 渲染中心比较(真实指向)。
+        if (!textMismatch && typeof mouseY === "number" && cCenter) {
+          const dy = Math.abs(mouseY - cCenter.y);
+          const rowThr = Math.max(16, cCenter.h * 1.8);
+          if (dy > rowThr) {
+            const byText = locateWordByText(
+              locator, hit.word, aOff >= 0 ? aOff : undefined, px, py,
+            );
+            // 2026-08-12 信任 byText;失败信任 located(word 已一致)
+            if (byText) return byText;
+            return located;
+          }
+        }
+      } else {
+        // 单字符词:鼠标邻近校验(替代原 aCenter 基准 —— 带 textLayer 偏差)
+        if (typeof mouseY === "number" && cCenter) {
+          const dy = Math.abs(mouseY - cCenter.y);
+          const rowThr = Math.max(16, cCenter.h * 1.8);
+          if (dy > rowThr) {
+            // C 与鼠标严重不一致 → 尝试文本流修正;失败信任 located
+            if (aOff >= 0) {
+              const byText = locateWordByText(locator, hit.word, aOff, px, py);
+              if (byText) return byText; // 2026-08-12 信任 byText
+            }
+            return located; // 2026-08-12 信任 C,不回退 A
+          }
+        }
+      }
+    }
+    // C 命中 → 信任 C 的字符几何,但先做【鼠标行归属校验】。
+    // 2026-08-12:word 一致 ≠ 实例一致 —— 词边缘/行间时,坐标残差让
+    // locateWordAtPoint 命中相邻词实例,located.word === hit.word 直接放行
+    // → 同词错位。此处用鼠标坐标(真实指向,无 textLayer 偏差)与 located
+    // 渲染中心(cChannelCenter,数据驱动)比较:垂直差 > 行高×1.2 说明命中
+    // 了相邻行/相邻词实例 → 尝试 byText 修正(锚点=鼠标,找正确实例);
+    // 修正失败才信任 located 保底(至少 word 正确,优于不高亮)。
+    if (located) {
+      if (typeof mouseY === "number") {
+        try {
+          const cC = cChannelCenter(innerWin, locator, located);
+          if (cC) {
+            const dy = Math.abs(mouseY - cC.y);
+            const rowThr = Math.max(16, cC.h * 1.8);
+            if (dy > rowThr) {
+              const byText = locateWordByText(locator, hit.word, undefined, px, py);
+              if (byText) return byText;
+              return located;
+            }
+          }
+        } catch { /* ignore */ }
+      }
+      logLocate(`C-HIT "${located.word}" (${located.rects.length} rects) trust-C`);
       return located;
     }
     // 坐标定位失败 → 文本匹配兜底:用 A 取词文本在字符流中定位。
     // 锚点优先取「A 的 range 在 textLayer 文本流中的偏移」(方案 A)——
     // textLayer 流与 chars 流同源,该偏移无歧义对应鼠标所指的词,
     // 不受 textLayer 几何错位 / 坐标偏差影响(悬停第 N 个同词 → 第 N 个)。
+    // ⚠️ 2026-08-12 修复:锚点超出安全对齐区(alignSafeUntil)时,
+    // textAnchor 已带累积偏移,不再可信 → 不传入(退化为坐标锚点)。
     let textAnchor = -1;
     try {
       const tlNonSpace = textLayerNonSpaceOffset(innerWin, hit.range);
-      if (tlNonSpace >= 0) textAnchor = nonSpaceToPageOffset(locator, tlNonSpace);
+      if (tlNonSpace >= 0) {
+        const ta = nonSpaceToPageOffset(locator, tlNonSpace);
+        if (ta >= 0 && ta < locator.alignSafeUntil) textAnchor = ta;
+      }
     } catch {
       /* ignore */
     }
-    const byText = locateWordByText(locator, hit.word, textAnchor, px, py);
+    const byText = locateWordByText(
+      locator,
+      hit.word,
+      textAnchor >= 0 ? textAnchor : undefined,
+      px,
+      py,
+    );
     if (byText) {
-      // 调试增强:打印匹配到的词在 PDF 的位置(at = 首字符 rect 左下角),
-      // 与鼠标 pdf 点对比可判断锚点是否偏移、选中的是哪个同词。
+      // 2026-08-12 不再 GEO-REJECT:byText 已过词边界验证(indexOf + 前后
+      // isWordChar,杜绝 "a" 匹配进单词内),文本正确性有保障。此前几何确认
+      // (aCenter 带 textLayer 偏差)拒绝 → 回退 A → A 已隐藏 → 不高亮。
+      // 权衡:信任 byText 至少显示高亮(词对),远好于干脆不显示。
       const r0 = byText.rects[0];
       const atStr = r0
         ? ` at=(${r0[0].toFixed(1)},${r0[1].toFixed(1)})`
         : " at=none";
-      logLocate(`locateWordHybrid: text-match "${byText.word}" (${byText.rects.length} rects) page=${pageIndex}${atStr} mouse=(${cx.toFixed(0)},${cy.toFixed(0)}) pdf=(${px.toFixed(1)},${py.toFixed(1)})`);
       return byText;
     }
     // 文本匹配也失败 → 词间空隙判定(窗口内无字符 → 非 gap → 回退 A)
     if (isInGap(locator, px, py)) {
-      logLocate(`locateWordHybrid: GAP (no highlight) page=${pageIndex} mouse=(${cx.toFixed(0)},${cy.toFixed(0)}) pdf=(${px.toFixed(1)},${py.toFixed(1)})`);
       return { gap: true as const };
     }
-    logLocate(`locateWordHybrid: no located word (fallback A) page=${pageIndex} mouse=(${cx.toFixed(0)},${cy.toFixed(0)}) pdf=(${px.toFixed(1)},${py.toFixed(1)})`);
   } catch (e) {
     logLocate(`locateWordHybrid error: ${String((e as any)?.message || e)} (fallback A)`);
   }
