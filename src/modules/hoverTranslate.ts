@@ -2142,7 +2142,7 @@ async function autoAddWordWithButton(
     // Build annotation context (same as manual click path).
     const lastPos = (win as any)?.__hoverLastPos as { x?: number; y?: number } | undefined;
     const lastLocated = (win as any)?.__hteLastLocated as
-      | { rects?: [number, number, number, number][]; bundle?: { pageIndex?: number } }
+      | { word?: string; rects?: [number, number, number, number][]; bundle?: { pageIndex?: number } }
       | null
       | undefined;
     const annotationCtx = reader
@@ -2155,6 +2155,8 @@ async function autoAddWordWithButton(
           mouseY: lastPos?.y,
           pdfRects: lastLocated?.rects,
           pageIndex: lastLocated?.bundle?.pageIndex,
+          // 取词高亮命中的词（复合词分段后为鼠标所在段）——注释文本/几何与此一致
+          annotatedWord: lastLocated?.word,
         }
       : undefined;
     try {
@@ -2816,7 +2818,7 @@ function maybeAddWordButton(
     const lastPos = (innerWin as any)?.__hoverLastPos as { x?: number; y?: number } | undefined;
     // 取当前高亮词的 PDF 坐标（position 精确定位用）
     const lastLocated = (innerWin as any)?.__hteLastLocated as
-      | { rects?: [number, number, number, number][]; bundle?: { pageIndex?: number } }
+      | { word?: string; rects?: [number, number, number, number][]; bundle?: { pageIndex?: number } }
       | null
       | undefined;
     const annotationCtx = reader
@@ -2830,6 +2832,8 @@ function maybeAddWordButton(
           // PDF 用户空间坐标 rects + 页码（zotero://open-pdf position 参数）
           pdfRects: lastLocated?.rects,
           pageIndex: lastLocated?.bundle?.pageIndex,
+          // 取词高亮命中的词（复合词分段后为鼠标所在段）——注释文本/几何与此一致
+          annotatedWord: lastLocated?.word,
         }
       : undefined;
     try {
@@ -3208,6 +3212,10 @@ async function addWordToEudic(
     viewportRects?: { top: number; left: number; width: number; height: number }[];
     pageIndex?: number;
     pdfRects?: [number, number, number, number][];
+    mouseX?: number;
+    mouseY?: number;
+    /** 取词高亮实际命中的词（复合词分段后为鼠标所在段，如 "Multi-View" → "Multi"）。 */
+    annotatedWord?: string;
   },
 ): Promise<boolean> {
   // Lemmatise inflected forms to dictionary headwords before API call
@@ -3356,11 +3364,18 @@ async function addWordToEudic(
       const { syncWordAnnotation } = await import("./annotationSync");
       void syncWordAnnotation({
         attachmentID: annotationCtx.attachmentID,
-        word,
+        // 注释文本用取词高亮实际命中的词（复合词分段后 = 鼠标所在段）。
+        // 与取词高亮保持一致：高亮哪个词，注释就标哪个词（v0.4.1 修复）。
+        word: annotationCtx.annotatedWord || word,
         translation: translateResult || "",
         reader: annotationCtx.reader,
         range: annotationCtx.range,
         viewportRects: annotationCtx.viewportRects,
+        // 透传 C 通道已分段 rects + 鼠标坐标：annotationSync 内部重新
+        // locateWord 时无坐标 → 分段失效 → 注释覆盖整个连词（用户报告）。
+        pdfRects: annotationCtx.pdfRects,
+        mouseX: annotationCtx.mouseX,
+        mouseY: annotationCtx.mouseY,
         pageIndex: annotationCtx.pageIndex,
       });
     } catch { /* ignore annotation errors */ }
