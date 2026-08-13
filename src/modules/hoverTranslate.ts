@@ -2142,7 +2142,7 @@ async function autoAddWordWithButton(
     // Build annotation context (same as manual click path).
     const lastPos = (win as any)?.__hoverLastPos as { x?: number; y?: number } | undefined;
     const lastLocated = (win as any)?.__hteLastLocated as
-      | { rects?: [number, number, number, number][]; locator?: { pageIndex?: number } }
+      | { rects?: [number, number, number, number][]; bundle?: { pageIndex?: number } }
       | null
       | undefined;
     const annotationCtx = reader
@@ -2154,7 +2154,7 @@ async function autoAddWordWithButton(
           mouseX: lastPos?.x,
           mouseY: lastPos?.y,
           pdfRects: lastLocated?.rects,
-          pageIndex: lastLocated?.locator?.pageIndex,
+          pageIndex: lastLocated?.bundle?.pageIndex,
         }
       : undefined;
     try {
@@ -2816,7 +2816,7 @@ function maybeAddWordButton(
     const lastPos = (innerWin as any)?.__hoverLastPos as { x?: number; y?: number } | undefined;
     // 取当前高亮词的 PDF 坐标（position 精确定位用）
     const lastLocated = (innerWin as any)?.__hteLastLocated as
-      | { rects?: [number, number, number, number][]; locator?: { pageIndex?: number } }
+      | { rects?: [number, number, number, number][]; bundle?: { pageIndex?: number } }
       | null
       | undefined;
     const annotationCtx = reader
@@ -2829,7 +2829,7 @@ function maybeAddWordButton(
           mouseY: lastPos?.y,
           // PDF 用户空间坐标 rects + 页码（zotero://open-pdf position 参数）
           pdfRects: lastLocated?.rects,
-          pageIndex: lastLocated?.locator?.pageIndex,
+          pageIndex: lastLocated?.bundle?.pageIndex,
         }
       : undefined;
     try {

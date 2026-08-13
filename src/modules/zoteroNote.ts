@@ -951,7 +951,11 @@ export function getNoteTitle(): string {
 /*  Source-link navigation (↗ click in the note editor)                */
 /* ------------------------------------------------------------------ */
 
-/** Parse `zotero://open-pdf/{lib}/items/{key}?page=N&position={json}`. */
+/** Parse `zotero://open-pdf/{lib}/items/{key}?page=N&position={json}`.
+ *  兼容无参数链接（`zotero://open-pdf/library/items/KEY`，旧版/定位失败时
+ *  生成的 src 无 `?page=` 参数）：v0.3.5 修复——正则 `\?(.+)$` 强制要求参数，
+ *  无参数链接解析失败返回 null，导致 `resolveSrcItemID`=0、「当前条目」视图
+ *  下 srcBelongsToItem(0, itemID) 恒 false → 面板全部词条被过滤（空面板）。 */
 export function parseSourceLink(src: string): {
   itemID: number;
   pageIndex: number;
@@ -963,12 +967,12 @@ export function parseSourceLink(src: string): {
     // 导致 position 丢失、跳转退化为仅翻页（无精确位置、无高亮）。
     const cleaned = decodeHtmlDeep(String(src || "").trim());
     const match = cleaned.match(
-      /^zotero:\/\/open-pdf\/(.+?)\/items\/([A-Z0-9]{8})\?(.+)$/i,
+      /^zotero:\/\/open-pdf\/(.+?)\/items\/([A-Z0-9]{8})(?:\?(.+))?$/i,
     );
     if (!match) return null;
     const libraryPath = decodeURIComponent(match[1]);
     const itemKey = decodeURIComponent(match[2]);
-    const params = new URLSearchParams(match[3]);
+    const params = new URLSearchParams(match[3] || "");
     const page = Number(params.get("page") || "0");
     const pageIndex = Number.isFinite(page) && page > 0 ? page - 1 : 0;
     let position: any = null;
