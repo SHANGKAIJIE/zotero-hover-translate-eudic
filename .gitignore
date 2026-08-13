@@ -17,3 +17,6 @@ logs
 
 # Build artifacts
 hover-translate-eudic.xpi
+
+# Backup
+.git.bak/

@@ -38,18 +38,26 @@ import {
   buildTtsFallbackUrls,
 } from "./pronunciation";
 import {
-  locateWordHybrid,
+  locateWord,
   pdfRectsToViewport,
   wordAnchorFromLocated,
-  clearPageLocatorCache,
-  getPdfViewerApp,
+  isInGap,
   type LocatedWord,
-} from "./wordLocator";
+} from "../locate/word-locator";
+import { getPdfViewerApp } from "../locate/pdf-access";
+import { clearPageBundleCache } from "../locate/page-bundle";
 
 const HIGHLIGHT_OVERLAY_ID = `${config.addonRef}-highlight-overlay`;
 const HIGHLIGHT_CLASS = `${config.addonRef}-highlight`;
 const POPUP_ID = `${config.addonRef}-hover-popup`;
 const STYLE_INJECTED_FLAG = `${config.addonRef}-style-injected`;
+
+/**
+ * v0.3.5:「+生词本」按钮图标（用户提供 SVG 加号，v0.3.5 加粗——条宽
+ * 由 85 加大到 128，圆角 64，与发音图标线条感一致；fill=currentColor
+ * 跟随按钮颜色 --hte-raw，16px + pointer-events:none）。
+ */
+const PLUS_ICON_SVG = `<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" style="width:16px;height:16px;fill:currentColor;pointer-events:none"><path d="M128 512a64 64 0 0 1 64-64h640a64 64 0 0 1 64 64 64 64 0 0 1-64 64H192a64 64 0 0 1-64-64zM512 128a64 64 0 0 1 64 64v640a64 64 0 0 1-64 64 64 64 0 0 1-64-64V192a64 64 0 0 1 64-64z" /></svg>`;
 
 // Track attached readers so we can detach cleanly.
 const attached: Map<
@@ -644,6 +652,14 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
   };
   let scaleEventBus: any = null;
   let scaleRetryTimer: number | null = null;
+  // v0.3.5 加固:documentinit(文档初始化/替换)时清空本 reader 的页缓存,
+  // 防御「同 reader 换文档」的旧缓存残留(双层 key 已防 iframe 重建场景,
+  // 此事件兜底窗口不变的场景)。
+  const onDocInit = () => {
+    try {
+      clearPageBundleCache(reader);
+    } catch { /* ignore */ }
+  };
   const tryRegisterScale = () => {
     try {
       const app = getPdfViewerApp(innerWin);
@@ -651,6 +667,7 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       if (eb?.on) {
         eb.on("scalechanging", onScaleChange);
         eb.on("scalechanged", onScaleChange);
+        eb.on("documentinit", onDocInit);
         scaleEventBus = eb;
         dbg(`scalechange reflow registered`);
       } else {
@@ -676,10 +693,11 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       if (scaleEventBus?.off) {
         scaleEventBus.off("scalechanging", onScaleChange);
         scaleEventBus.off("scalechanged", onScaleChange);
+        scaleEventBus.off("documentinit", onDocInit);
       }
     } catch { /* ignore */ }
     try {
-      clearPageLocatorCache(reader);
+      clearPageBundleCache(reader);
     } catch { /* ignore */ }
     try {
       if (hoverTimer) activeWinRef.win.clearTimeout(hoverTimer);
@@ -833,12 +851,18 @@ function onReaderMouseMove(
 
     const hit = getWordAtPoint(innerWin.document, ev.clientX, ev.clientY);
     if (!hit) {
-      // Moved off a word — clear highlight but keep popup (timer closes it).
-      // 递增序号使飞行中的 highlightHit 失效,避免其完成后复活已清除的高亮。
-      (innerWin as any).__hteHighlightSeq = ((innerWin as any).__hteHighlightSeq || 0) + 1;
-      clearHighlight(innerWin);
-      (innerWin as any).__hteLastRange = null; // 自愈:移出词不复活高亮
-      (innerWin as any).__hteCachedC = null; // C 锁定:移出词释放
+      // v0.4.1 跨行连字符词防闪烁:行尾断词(ob- / scurer)之间的行间空隙
+      // 处 caret 取不到词 → hit=null。若上一帧 C 定位有效且鼠标仍在该词
+      // 的高亮区域(两块 rect 的外包矩形)内,保留高亮,避免跨行词移动时
+      // 高亮闪烁/消失(点击翻译走独立路径,不受影响)。
+      if (!shouldKeepHighlightInGap(innerWin, ev.clientX, ev.clientY)) {
+        // Moved off a word — clear highlight but keep popup (timer closes it).
+        // 递增序号使飞行中的 highlightHit 失效,避免其完成后复活已清除的高亮。
+        (innerWin as any).__hteHighlightSeq = ((innerWin as any).__hteHighlightSeq || 0) + 1;
+        clearHighlight(innerWin);
+        (innerWin as any).__hteLastRange = null; // 自愈:移出词不复活高亮
+        (innerWin as any).__hteCachedC = null; // C 锁定:移出词释放
+      }
       // Clear last hit so keydown doesn't trigger on empty space.
       lastHitRef.set(null);
       return;
@@ -1096,8 +1120,19 @@ function getWordAtPoint(
   if (node.nodeType !== 3 /* TEXT_NODE */) return null;
   const text = node.data;
   if (!text) return null;
-  const wr = wordRangeAtOffset(text, cp.offset);
+  // v0.4.1: caret 落在行尾连字符 '-' 上时（如 "ob-" 的 '-'），wordRangeAtOffset
+  // 匹配不到字母段 → 向前取前一段字母（"ob"），后续跨行重组补全为完整词。
+  let wr = wordRangeAtOffset(text, cp.offset);
+  if (!wr && text[cp.offset] === "-") {
+    let cs = Math.min(cp.offset, text.length);
+    while (cs > 0 && /[A-Za-z]/.test(text[cs - 1])) cs--;
+    if (cs < cp.offset) {
+      const w = text.slice(cs, cp.offset);
+      if (w) wr = { word: w, start: cs, end: cp.offset };
+    }
+  }
   if (!wr) return null;
+  let crossLine = false; // 标记:已做跨行连字符重组(consistency check 放宽 '-' )
   try {
     const range = doc.createRange();
     range.setStart(node, wr.start);
@@ -1153,13 +1188,76 @@ function getWordAtPoint(
         }
       }
     }
+    // v0.4.1 跨行连字符断词重组（dehyphenation）：
+    // PDF 行尾断词形如 "ob-" <br> "scurer"（textLayer 中 '-' 与前一行的
+    // 词尾同 span，<br> 由 pdf.js hasEOL 追加）。鼠标落在任意一半时都应
+    // 取到完整词 "obscurer"，否则翻译/加词只拿到半截。
+    // ① 词尾紧邻 '-' + 后续 <br> + 下一行字母开头 → 向后重组
+    // v0.3.5 修复:必须限定「连字符是该 span 的最后一个字符」(行尾断词)。
+    // 此前条件 text[wr.end]==="-" 过宽——词内连字符词(state-of-the-art)
+    // 恰好位于行尾时,caret 在前半段会误触发重组,把前半段与下一行首词
+    // 拼接 → consistency check 失败 → 整个 hit 被丢弃 → 不高亮不翻译。
+    if (
+      !crossLine &&
+      wr.end === text.length - 1 &&
+      text[wr.end] === "-"
+    ) {
+      const span = node.parentElement;
+      const nextEl = span?.nextElementSibling;
+      const nextNext = nextEl?.nextElementSibling;
+      if (
+        nextEl && (nextEl as HTMLElement).tagName === "BR" && nextNext
+      ) {
+        const trimmed = (nextNext.textContent || "").replace(/^\s+/, "");
+        if (trimmed && /^[A-Za-z]/.test(trimmed)) {
+          const nextWr = wordRangeAtOffset(trimmed, 0);
+          if (nextWr && nextWr.start === 0) {
+            word = word + nextWr.word; // "ob" + "scurer"
+            const nextNode = nextNext.firstChild;
+            if (nextNode && nextNode.nodeType === 3) {
+              range.setEnd(nextNode, nextWr.end);
+            }
+            crossLine = true;
+          }
+        }
+      }
+    }
+    // ② 词首是行首（前一兄弟 <br>）+ 上一行 span 以 '-' 结尾 → 向前重组
+    else if (!crossLine && wr.start === 0) {
+      const span = node.parentElement;
+      const prevEl = span?.previousElementSibling;
+      const prevPrev = prevEl?.previousElementSibling;
+      if (
+        prevEl && (prevEl as HTMLElement).tagName === "BR" && prevPrev
+      ) {
+        const prevText = (prevPrev.textContent || "").replace(/\s+$/, "");
+        if (prevText.endsWith("-")) {
+          const prevWr = wordRangeAtOffset(
+            prevText,
+            Math.max(0, prevText.length - 2),
+          );
+          if (prevWr && prevWr.end === prevText.length - 1) {
+            word = prevWr.word + word; // "ob" + "scurer"
+            const prevNode = prevPrev.firstChild;
+            if (prevNode && prevNode.nodeType === 3) {
+              range.setStart(prevNode, prevWr.start);
+            }
+            crossLine = true;
+          }
+        }
+      }
+    }
     // 一致性校验(2026-08-12):合并后 word 必须与 range.toString() 完全一致
     // (去空白后比较——span 行尾/拼接处的空格不影响词文本)。不一致(跨
     // span 边界取到半词 / 词中拆开未合并)时丢弃,防止基于错误 range 的
     // 高亮(宁可不高亮也不高亮错误词)。
+    // v0.4.1:跨行重组时 range 内含 '-' 与 <br> 换行,去空白后还差连字符,
+    // 校验对 crossLine 放宽为「再去 '-' 后相等」(重组只发生在词尾 '-' 场景,
+    // 不会掩盖正常词的错误)。
     try {
       const rangeText = range.toString().replace(/\s+/g, "");
-      if (word !== rangeText) {
+      const checkText = crossLine ? rangeText.replace(/-/g, "") : rangeText;
+      if (word !== checkText) {
         return null;
       }
     } catch {
@@ -1270,7 +1368,7 @@ function applyHighlight(
     // 【同一个 pageEl】(pdfRectsToViewport 返回的,与 viewport 同源)
     // 上,position:absolute 直接赋值 left/top。不能用 range 的 pageEl——
     // 两者 document 可能不同导致整体偏移。
-    const { rects: vpRaw, pageEl } = pdfRectsToViewport(innerWin, located.locator, located.rects);
+    const { rects: vpRaw, pageEl } = pdfRectsToViewport(innerWin, located.bundle, located.rects);
     // 记录高亮挂载文档(per-window 单值,跨文档清理用):pageEl 可能属于
     // viewer iframe 而非事件窗口 reader.html → clearHighlight 需同文档清。
     (innerWin as any).__hteLastMountDoc = pageEl?.ownerDocument ?? doc;
@@ -1407,9 +1505,16 @@ async function highlightHit(
 
   let located: LocatedWord | null = null;
   try {
-    // 传鼠标坐标:让 C 通道用真实鼠标位置定位,而非 A 的 range 中心
-    // (range 是浏览器度量,可能带偏差;鼠标坐标直接转 PDF 更准)
-    const result = await locateWordHybrid(reader, innerWin, hit, mouseX, mouseY);
+    // 传鼠标坐标:让定位管线用真实鼠标位置(PDF 坐标 + 句内消歧),
+    // 而非 A 的 range 中心(range 是浏览器度量,可能带偏差)
+    const result = await locateWord({
+      reader,
+      innerWin,
+      word: hit.word,
+      range: hit.range,
+      mouseX,
+      mouseY,
+    });
     if ((innerWin as any).__hteHighlightSeq !== seq) return; // 过期,丢弃
     // 词间隙(gap):鼠标在词与词之间的空白处 → 不高亮、不显示弹窗
     if (result && (result as { gap?: boolean }).gap) {
@@ -1493,6 +1598,61 @@ function lastHighlightDoc(innerWin: Window): Document | null {
     return (innerWin as any).__hteLastMountDoc as Document | null | undefined ?? null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * v0.4.1:判断鼠标是否仍在上一次 C 定位词的高亮区域内。
+ * 用途:行尾连字符断词(ob- / scurer)的行间空隙处 caret 取词失败 → hit=null,
+ * 但鼠标仍在完整词的两块高亮 rect 的外包矩形内 → 保留高亮防闪烁。
+ * 实现:__hteLastLocated.rects(PDF 坐标)→ viewport 坐标 → union + 扩展 4px。
+ * 无 located 或转换失败 → false(按常规移出词处理)。
+ */
+function shouldKeepHighlightInGap(
+  innerWin: Window,
+  clientX: number,
+  clientY: number,
+): boolean {
+  try {
+    const located = (innerWin as any).__hteLastLocated as LocatedWord | null | undefined;
+    if (!located || !located.bundle || !located.rects?.length) return false;
+    const { rects: vp, pageEl } = pdfRectsToViewport(
+      innerWin,
+      located.bundle,
+      located.rects,
+    );
+    if (!vp.length) return false;
+    let offX = 0;
+    let offY = 0;
+    try {
+      const pr = pageEl?.getBoundingClientRect?.();
+      if (pr) {
+        offX = pr.left;
+        offY = pr.top;
+      }
+    } catch {
+      /* ignore */
+    }
+    const PAD = 4;
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    for (const r of vp) {
+      left = Math.min(left, r.left);
+      top = Math.min(top, r.top);
+      right = Math.max(right, r.left + r.width);
+      bottom = Math.max(bottom, r.top + r.height);
+    }
+    if (!isFinite(left)) return false;
+    return (
+      clientX >= left - PAD &&
+      clientX <= right + PAD &&
+      clientY >= top - PAD &&
+      clientY <= bottom + PAD
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -1977,7 +2137,7 @@ async function autoAddWordWithButton(
   try {
     const win = btn.ownerDocument?.defaultView as Window | null;
     if (win) _cancelAutoClose(win);
-    btn.textContent = "+";
+    btn.innerHTML = PLUS_ICON_SVG;
     btn.setAttribute("disabled", "true");
     // Build annotation context (same as manual click path).
     const lastPos = (win as any)?.__hoverLastPos as { x?: number; y?: number } | undefined;
@@ -2015,7 +2175,7 @@ async function autoAddWordWithButton(
     }
     if (win) _resumeAutoClose(win);
     setTimeout(() => {
-      btn.textContent = "+";
+      btn.innerHTML = PLUS_ICON_SVG;
       btn.style.color = "var(--hte-raw, #666666)";
       btn.style.borderColor = "var(--hte-btn-border, rgba(130,130,130,0.38))";
       btn.removeAttribute("disabled");
@@ -2444,7 +2604,12 @@ function positionPopup(innerWin: Window, popup: HTMLElement, range?: Range) {
   const located = lockedLocated ?? ((innerWin as any).__hteLastLocated as LocatedWord | null | undefined);
   if (located) {
     try {
-      anchor = wordAnchorFromLocated(innerWin, located);
+      // v0.3.5:跨行词(行尾断词 obscurer 跨两行)时按鼠标 Y 选最近一块作锚点,
+      // 弹窗贴近鼠标所在行,而非两行的并集。
+      const lastPos = (innerWin as any).__hoverLastPos as
+        | { x?: number; y?: number }
+        | undefined;
+      anchor = wordAnchorFromLocated(innerWin, located, lastPos?.y);
     } catch {
       anchor = null;
     }
@@ -2592,7 +2757,7 @@ function maybeAddWordButton(
   const doc = container.ownerDocument!;
 
   const btn = doc.createElement("button");
-  btn.textContent = "+";
+  btn.innerHTML = PLUS_ICON_SVG;
   // Circular outline button, placed to the left of word + translation.
   btn.style.cssText = [
     "width:28px",
@@ -2619,7 +2784,7 @@ function maybeAddWordButton(
 
   btn.addEventListener("click", async () => {
     _cancelAutoClose(innerWin);
-    btn.textContent = "+";
+    btn.innerHTML = PLUS_ICON_SVG;
     btn.setAttribute("disabled", "true");
 
     // 等待翻译加载完成（最多 WAIT_TRANSLATION_MS 毫秒）：
@@ -2685,7 +2850,7 @@ function maybeAddWordButton(
     }
     _resumeAutoClose(innerWin);
     setTimeout(() => {
-      btn.textContent = "+";
+      btn.innerHTML = PLUS_ICON_SVG;
       btn.style.color = "var(--hte-raw, #666666)";
       btn.style.borderColor = "var(--hte-btn-border, rgba(130,130,130,0.38))";
       btn.removeAttribute("disabled");

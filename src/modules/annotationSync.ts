@@ -153,18 +153,19 @@ export async function syncWordAnnotation(
       // LocatedWord.rects 本身就是 PDF 用户坐标,无需再做 range→PDF 转换,
       // 且不受 textLayer 错位影响(与取词高亮 trust C 同一数据源)。
       try {
-        const { locateWordHybrid } = await import("./wordLocator");
-        const located = await locateWordHybrid(
-          ctx.reader,
-          viewerWin,
-          { word: ctx.word, range: ctx.range },
-          ctx.mouseX,
-          ctx.mouseY,
-        );
+        const { locateWord } = await import("../locate/word-locator");
+        const located = await locateWord({
+          reader: ctx.reader,
+          innerWin: viewerWin,
+          word: ctx.word,
+          range: ctx.range,
+          mouseX: ctx.mouseX,
+          mouseY: ctx.mouseY,
+        });
         if (located && !(located as { gap?: boolean }).gap) {
-          const loc = located as { rects: PdfRect[]; locator: { pageIndex: number } };
+          const loc = located as { rects: PdfRect[]; bundle: { pageIndex: number } };
           rects = loc.rects;
-          pageIndex = loc.locator.pageIndex;
+          pageIndex = loc.bundle.pageIndex;
           annLog(`hover scene: C-channel char rects, pageIndex=${pageIndex}, rects=${dump(rects)}`);
         }
       } catch (e) {

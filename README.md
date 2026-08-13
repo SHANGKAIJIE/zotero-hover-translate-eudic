@@ -4,7 +4,7 @@
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.3.4-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.3.5-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
 
 <img width="731" height="331" alt="微信图片_20260801191142_62_119_看图王" src="https://github.com/user-attachments/assets/61c1bbaa-706a-4d03-93a6-9e964e6eaed1" />
@@ -17,7 +17,7 @@
   - `悬停`：鼠标悬停在单词上，延迟后自动翻译（可配置延迟）。
   - `修饰键 + 悬停`：按住 `Ctrl` / `Alt` / `Shift`（可组合）悬停即翻译；也支持**先悬停再按下修饰键**。
   - `鼠标左键单击`：单击单词即翻译。
-- **取词高亮**：取词时可以选择对单词施加高亮。
+- **取词高亮**（v0.3.5 重构）：取词时可以对单词施加高亮。定位基于 **PDF 数据层单流字符**（官方 `getPageData` + 词边界信号 `wordBreakAfter`），先定位鼠标所在**句子**、再在句内定位单词（文本匹配 → 前后 2 词上下文指纹 → 鼠标坐标距离三重消歧），根治旧版「高频词（the/a）同词错位」问题。支持**连字符复合词分段高亮**（鼠标指向 `Multi-View` 的 `Multi` 段即只高亮该段）与**跨行连字符断词重组**（`ob-` + 换行 + `scurer` 视为完整词 `obscurer` 翻译与高亮）。
 - **复用 Translate for Zotero 引擎**：翻译结果、字典释义、多语种翻译服务直接复用已安装的 Translate 插件。
 - **一键同步欧路 / 扇贝 / 墨墨 / 本地 / Zotero 笔记生词本**：翻译弹窗内点击圆形 `+` 按钮，将当前单词加入云端指定生词本、本地 CSV 文件或 Zotero 笔记（添加后切换为 `✓` 或 `✗` 状态反馈）。支持**欧路词典**、**扇贝单词**、**墨墨背单词**、**本地生词本**与**Zotero 笔记**五平台切换。
 - **术语库**：划词模式下点击 `+术语库` 按钮，可将术语原文、缩写、释义添加至**本地术语库**与**Zotero 笔记**。
@@ -336,12 +336,18 @@ zotero-hover-translate-eudic/
 │   │   ├── eudicExport.ts      # 生词本导出（CSV/TSV/TXT/JSON）
 │   │   ├── annotationSync.ts   # 注释同步模块（加词→PDF 注释）v0.2.8
 │   │   ├── hideNoteIcon.ts     # 隐藏便签图标（ID 跟踪 + canvas/DOM 双路径 patch）v0.2.8
-│   │   ├── pdfPageData.ts      # PDF 页面文本 & 坐标缓存（精准高亮）v0.2.8
 │   │   ├── preferenceScript.ts # 设置面板交互逻辑
 │   │   ├── selectionButton.ts  # 选区翻译按钮
 │   │   ├── wordbookPanel.ts    # PDF 右侧生词本面板（Item Pane）v0.3.2
 │   │   ├── pronunciation.ts    # 发音模块（TTS 兜底链 / 发音快捷键 / 播放反馈）v0.3.4
 │   │   └── util.ts             # 单词提取/验证工具
+│   ├── locate/                # 取词高亮定位模块（v0.3.5 重构：单流数据 + 句内消歧）
+│   │   ├── pdf-access.ts        # PDF 数据接入（XPC 桥接 / 官方 getPageData）
+│   │   ├── page-bundle.ts       # 页面单流数据模型（wordBreakAfter 词表 / getClosestWord）
+│   │   ├── sentence-splitter.ts # 句子切分（缩写 / 属名 / acronym 例外）
+│   │   ├── sentence-locator.ts  # 句子定位（段落级分割 + 缓存）
+│   │   ├── word-locator.ts      # 单词定位（句内三重消歧 / 复合词分段 / 渲染辅助）
+│   │   └── types.ts             # 共享类型定义
 │   └── utils/                # 工具函数（prefs 等）
 ├── addon/                    # 插件静态资源
 │   ├── content/
