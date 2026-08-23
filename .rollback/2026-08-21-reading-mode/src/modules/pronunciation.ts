@@ -194,7 +194,7 @@ export function flashPronButton(btn: HTMLButtonElement | null | undefined): void
           "color 0.2s, border-color 0.2s, box-shadow 0.2s, filter 0.15s, transform 0.15s";
         btn.style.filter = "brightness(1)";
         btn.style.transform = "scale(1)";
-        btn.style.boxShadow = "none";
+        btn.style.boxShadow = "0 0 4px rgba(128,128,128,0.15)";
       } catch { /* ignore */ }
     }, 130);
   } catch {

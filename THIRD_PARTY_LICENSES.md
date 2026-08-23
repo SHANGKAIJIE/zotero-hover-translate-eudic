@@ -102,6 +102,17 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## 7. zotero-ai-sidebar (Zotero Sentence Translator)
+
+- **仓库**: https://github.com/xuhan-rgb/zotero-ai-sidebar
+- **作者**: qwer
+- **许可证**: [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html)
+- **用途**: PDF 句子/段落定位参考实现；本项目 `src/locate/` 的以下代码**直接移植**自其 `src/context/pdf-locator.ts` 与 `src/translate/sentence-splitter.ts`：
+  - `src/locate/sentence-splitter.ts` — 句子切分（缩写 / 属名缩写 / acronym 例外，支持用户自定义例外词）
+  - `src/locate/page-bundle.ts` — `normalizeWithMap` 文本归一化与偏移回映（含连字符断词 `hyphenBreakEndAt`、连字扩展 `LIGATURES`、零宽字符剥离）；rect 按行分组合并（`mergeRectParts` / `shouldMergeInline`）、最近 anchor 查找（`closestAnchorIndex` / `rectsDist` / `fullAnchorRect`）
+  - `src/locate/sentence-locator.ts` — 段落检测（`paragraphAnchorRanges` / `lineEndsSentence` / 缩进断段）与段内句子锚点分割（`segmenterTextForAnchors` / `anchorIndexByTextRange` / `closestSentenceSegment`）
+- **版权声明**: Copyright (c) qwer (https://github.com/xuhan-rgb)
+
 ---
 
 ## API 服务致谢

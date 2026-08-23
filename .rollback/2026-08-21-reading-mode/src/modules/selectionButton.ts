@@ -24,7 +24,6 @@ import { fetchDictResult, extractPhonetic, stripAudioText } from "./hoverTransla
 import { suggestAbbr, addTermToTerminology } from "./terminology";
 import { syncTermAnnotation } from "./annotationSync";
 import { buildSourceLink } from "./zoteroNote";
-import { injectTermDialogStyle } from "./termDialogStyle";
 
 let registered = false;
 let listener: ((event: any) => void) | null = null;
@@ -766,22 +765,23 @@ async function openAddTermDialog(
       ? (mdoc as any).createElementNS("http://www.w3.org/1999/xhtml", tag)
       : mdoc.createElement(tag);
 
-  // ── 样式注入(幂等,必须与挂载同一个 mdoc)+ DOM 构建 ──
-  // 布局参考豆包风格设计稿(2026-08-24):620px 大圆角卡片、focus 蓝色
-  // 光环、按钮 hover 态;背景走 --color-background(方案 A:亮色纯白),
-  // 亮暗主题自适应。类名与 CSS 见 termDialogStyle.ts。
-  try {
-    injectTermDialogStyle(mdoc);
-  } catch { /* ignore */ }
-
   const overlay = elx("div");
-  overlay.className = "hte-term-mask";
+  overlay.style.cssText = [
+    "position:fixed", "inset:0", "background:rgba(0,0,0,0.35)",
+    "z-index:2147483647", "display:flex", "align-items:center",
+    "justify-content:center",
+  ].join(";");
   const dlg = elx("div");
-  dlg.className = "hte-term-dlg";
+  dlg.style.cssText = [
+    "background:var(--color-sidepane,#fff)", "border:1px solid var(--color-border,#d4d4d4)",
+    "border-radius:10px", "box-shadow:0 8px 24px rgba(0,0,0,0.2)",
+    "padding:16px", "width:380px", "max-width:90vw",
+    "color:var(--fill-primary,#1a1a1a)", "font-size:13px",
+  ].join(";");
 
   const title = elx("div");
-  title.className = "hte-term-title";
   title.textContent = getString("term-add-title");
+  title.style.cssText = "font-weight:600;margin-bottom:10px;";
   dlg.append(title);
 
   const mkField = (
@@ -789,21 +789,23 @@ async function openAddTermDialog(
     value: string,
     isArea = false,
   ): HTMLInputElement | HTMLTextAreaElement => {
-    const item = elx("div");
-    item.className = "hte-term-item";
     const l = elx("label");
-    l.className = "hte-term-label";
     l.textContent = label;
-    item.append(l);
+    l.style.cssText = "display:block;font-size:12px;color:#666;margin-top:6px;";
+    dlg.append(l);
     const input = elx(isArea ? "textarea" : "input") as any;
-    input.className = "hte-term-input";
     // 注意：textarea 的 type 属性为只读（getter-only），直接赋值会抛
     // "TypeError: setting getter-only property \"type\""（Zotero 9 已实测复现）。
     // 因此仅对 input 元素设置 type="text"，textarea 不触碰该属性。
     if (!isArea) input.type = "text";
+    input.style.cssText = [
+      "width:100%", "box-sizing:border-box", "margin-top:2px",
+      "padding:4px 6px", "border:1px solid #ccc", "border-radius:4px",
+      "background:var(--color-sidepane,#fff)", "color:inherit",
+    ].join(";");
+    if (isArea) input.rows = 3;
     input.value = value;
-    item.append(input);
-    dlg.append(item);
+    dlg.append(input);
     return input;
   };
 
@@ -837,10 +839,13 @@ async function openAddTermDialog(
   });
 
   const btnRow = elx("div");
-  btnRow.className = "hte-term-btnrow";
+  btnRow.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:14px;";
   const saveBtn = elx("button");
-  saveBtn.className = "hte-term-save hte-term-btn";
   saveBtn.textContent = getString("term-add-save");
+  saveBtn.style.cssText = [
+    "border:1px solid #1e88e5", "background:#1e88e5", "color:#fff",
+    "border-radius:6px", "cursor:pointer", "padding:4px 14px", "font-size:13px",
+  ].join(";");
   saveBtn.addEventListener("click", async () => {
     saveBtn.setAttribute("disabled", "true");
     const term = termInput.value.trim();
@@ -879,8 +884,11 @@ async function openAddTermDialog(
     resolve(saved);
   });
   const cancelBtn = elx("button");
-  cancelBtn.className = "hte-term-cancel hte-term-btn";
   cancelBtn.textContent = getString("term-add-cancel");
+  cancelBtn.style.cssText = [
+    "border:1px solid #ccc", "background:transparent", "border-radius:6px",
+    "cursor:pointer", "padding:4px 14px", "font-size:13px",
+  ].join(";");
   cancelBtn.addEventListener("click", () => {
     overlay.remove();
     resolve(false);

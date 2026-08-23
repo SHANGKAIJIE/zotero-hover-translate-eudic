@@ -22,7 +22,6 @@ import {
   getAllReaders,
   getReaderByTabID,
   getReaderInnerWindow,
-  getSDTViewWindows,
 } from "../utils/window";
 import { wordRangeAtOffset, snapWordAtOffset, isSingleEnglishWord, expandLigatures, isWordChar } from "./util";
 import { toLemma } from "./lemmatize";
@@ -428,10 +427,10 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     // D6: update last pointer pos here (merged from injectPopupStyle's
     // extra mousemove listener — one listener instead of two per window).
     (win as any).__hoverLastPos = { x: ev.clientX, y: ev.clientY };
-    // 仅对 PDF / SDT 阅读模式渲染窗口处理取词:鼠标移到左侧注释/笔记面板
-    // 等非内容区域时,不取词,并清除所有已监控窗口的高亮——避免注释面板
-    // 文本被误取词后在 PDF/阅读模式上反查到词导致高亮莫名出现、位置混乱。
-    if (!isContentViewerWindow(win)) {
+    // 仅对 PDF 渲染窗口处理取词:鼠标移到左侧注释/笔记面板等非 PDF 区域时,
+    // 不取词,并清除所有已监控窗口的高亮——避免注释面板文本被误取词后
+    // 在 PDF 上反查到词导致高亮莫名出现、位置混乱。
+    if (!isPdfViewerWindow(win)) {
       for (const w of targets) {
         try {
           (w as any).__hteHighlightSeq = ((w as any).__hteHighlightSeq || 0) + 1;
@@ -488,8 +487,8 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       if (!getPref("enableHoverTranslate")) return;
       if (getPref("triggerMode") !== "click") return;
       const win = (ev.view as Window) || activeWinRef.win;
-      // 仅 PDF/阅读模式渲染窗口取词(注释面板点击不触发 preheat)
-      if (!isContentViewerWindow(win)) return;
+      // 仅 PDF 渲染窗口取词(注释面板点击不触发 preheat)
+      if (!isPdfViewerWindow(win)) return;
       const hit = getWordAtPoint(win.document, ev.clientX, ev.clientY);
       if (hit) {
         // Bug B: click 模式同样展开连字——textLayer 里的 ﬁ→fi,否则翻译
@@ -529,8 +528,8 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       }
       const win = (ev.view as Window) || activeWinRef.win;
       activeWinRef.win = win;
-      // 仅 PDF/阅读模式渲染窗口取词(点击注释面板不触发翻译/高亮)
-      if (!isContentViewerWindow(win)) {
+      // 仅 PDF 渲染窗口取词(点击注释面板不触发翻译/高亮)
+      if (!isPdfViewerWindow(win)) {
         clearHover(win);
         return;
       }
@@ -586,23 +585,8 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       /* suppress */
     }
   };
-  const onMouseLeave = (ev?: MouseEvent) => {
+  const onMouseLeave = () => {
     try {
-      // relatedTarget 过滤(2026-08-23):滚轮滚动时鼠标指针未动,但其下方
-      // 的内容节点在变,浏览器会对这种「被动 hover 变化」派发 mouseout
-      // (relatedTarget=新元素,仍在本文档内)。此前一律当作离开处理:取消
-      // 定时器 + seq 递增 + clearHighlight —— 与滚动同步(rAF 重画高亮/
-      // 重定位弹窗)互相打架,表现为「滚轮滚动时跟随时好时坏」:滚动中高亮
-      // 反复被清/重画,滚动结束后最后一次 mouseout 清掉高亮且不再有 scroll
-      // 事件来恢复它。现在仅在指针真正离开内容文档(relatedTarget 为空或不
-      // 在 document 内)时才清理;进入弹窗的 mouseout 同理不清底层高亮。
-      const rt = (ev as any)?.relatedTarget as Node | null | undefined;
-      if (rt) {
-        const doc = (activeWinRef.win as Window | undefined)?.document;
-        if (doc && (rt === doc || rt === doc.documentElement || doc.contains(rt))) {
-          return;
-        }
-      }
       // Only cancel a pending translation; do NOT close the popup here —
       // otherwise moving the pointer off the word instantly hides it and the
       // user cannot click "+生词本". The popup auto-closes via timer or on
@@ -647,381 +631,49 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     }
   };
 
-  // ── v0.4.0 动态窗口管理(Zotero 10 阅读模式适配) ──
-  // Zotero 10 的阅读模式(SDT)iframe 在切换时动态创建/销毁,附加完成后
-  // 必须持续跟踪 iframe 增删:新窗口注册监听,移除窗口注销监听。
-  const registeredWins = new Set<Window>();
-  const winCleanups = new Map<Window, Array<() => void>>();
-  let sdtAttrTimer: number | null = null;
+  // Inject the last-pointer tracking + popup base style into every target.
+  for (const win of targets) {
+    injectPopupStyle(win);
+  }
 
-  /**
-   * 把活动悬停(range)同步到当前位置:重画 SDT 高亮 + 重定位弹窗。
-   * 滚动同步与缩放属性观察共用此入口,保证两条恢复路径行为一致。
-   */
-  const syncHoverToRange = (
-    win: Window,
-    range: Range,
-    opts?: { preferLiveRange?: boolean },
-  ) => {
-    const isSdt = isSDTViewerWindow(win);
-    if (isSdt) applySdtHighlight(win, range);
-    const popup = win.document.getElementById(POPUP_ID) as HTMLElement | null;
-    if (popup) {
-      try { repositionHoverPopup(win, popup, range, opts); } catch { /* ignore */ }
-    }
-  };
-
-  /**
-   * 滚动同步(2026-08-23 重构):弹窗与 SDT 高亮均为 position:fixed(锚定
-   * iframe 视口),内容滚动后若不重新落位,就会与单词脱节 —— 阅读模式下
-   * 表现为「高亮/弹窗随滚轮漂移」(PDF 高亮挂 pageEl absolute 天然跟随,
-   * 故 PDF 仅弹窗需要重定位)。参考 zotero-sentence-translator overlay.ts
-   * (scroll capture + requestAnimationFrame 每帧一次重定位):本实现用
-   * rAF 替代旧的 50ms setTimeout 去抖 —— 消除滚轮连续滚动下可感知的
-   * 跳动滞后,视觉上弹窗/高亮始终锚定在单词上方或下方。
-   *
-   * 同时修复旧实现的过滤缺陷:旧代码从 ev.target 取 Document.defaultView,
-   * 当滚动发生在内部容器元素(Element)上时 defaultView 为 undefined 被
-   * 直接跳过,元素级滚动路径完全不触发重定位(高亮漂移的主因之一)。新
-   * 实现由 registerWin 以闭包绑定 win,任何 target 的滚动都会调度同步。
-   *
-   * 锚定词完全滚出视口(留 24px 缓冲防边缘抖动)时 clearHover 关闭弹窗并
-   * 清高亮,不留悬空浮层干等 auto-close。弹窗重定位强制用 range 活几何作
-   * 锚(preferLiveRange)——located 快照记录的是定位时刻的视口坐标,滚动/
-   * 缩放后已过期,不能作为滚动场景的锚。
-   *
-   * v0.3.7 弹窗跟随解耦:锚定 range 优先取弹窗私有锁定的 __hteRange
-   * (doTranslate 创建时写入,mousemove 的离词清除/换词调度不会碰它)。
-   * 滚动中鼠标移动触发「离词清除」时,__hteLastRange 被清 → 高亮照常消失
-   * (取词/高亮行为与现状完全一致),但已显示的弹窗继续贴着自己的词跟随,
-   * 不再冻结悬空。__hteLastRange 仍负责 SDT 高亮重画(在才重画,不复活)
-   * 与无弹窗场景兜底;弹窗的三条去路不变:滚出视口整组清 / auto-close /
-   * 停留新词换词重建。
-   */
-  const scheduleScrollSync = (win: Window) => {
-    try {
-      const w = win as any;
-      if (w.__hteScrollRaf) return; // 本帧已有待执行任务,合并
-      w.__hteScrollRaf = win.requestAnimationFrame(() => {
-        w.__hteScrollRaf = null;
-        try {
-          const popup = win.document.getElementById(POPUP_ID) as HTMLElement | null;
-          const popupRange = ((popup as any)?.__hteRange as Range | undefined | null) || null;
-          const wordRange = (w.__hteLastRange as Range | null | undefined) || null;
-          const range = popupRange || wordRange;
-          if (!range) return; // 无弹窗且取词状态已断,不复活
-          let rect: DOMRect | null = null;
-          try { rect = range.getBoundingClientRect(); } catch { rect = null; }
-          const vh = win.innerHeight || 0;
-          const vw = win.innerWidth || 0;
-          if (!rect ||
-              rect.bottom < -24 || rect.top > vh + 24 ||
-              rect.right < -24 || rect.left > vw + 24) {
-            clearHover(win); // 锚定词滚出视口:与纯滚动行为一致,整组清除
-            return;
-          }
-          // SDT 高亮重画:仅当取词状态未断(__hteLastRange 在)。离词清除后
-          // 不复活高亮 —— 与现状行为一致。
-          if (wordRange && isSDTViewerWindow(win)) {
-            applySdtHighlight(win, wordRange);
-          }
-          // 弹窗重定位:用弹窗私有锁定的 range 活几何。popupRange 失效
-          // (textLayer 重建)时 reposition 内部保位返回,下一帧 rAF 重试。
-          if (popup && popupRange) {
-            try {
-              repositionHoverPopup(win, popup, popupRange, { preferLiveRange: true });
-            } catch { /* ignore */ }
-          }
-          // 问题2(2026-08-23):取词状态已断但联动高亮在显示(鼠标悬停弹窗)
-          // → 滚动后重渲染 fixed 覆盖层(PDF 模式高亮挂 pageEl absolute
-          // 天然跟随,仅 SDT 需要重建)。
-          if (!wordRange && isSDTViewerWindow(win)) {
-            remountAnchorHighlight(win);
-          }
-        } catch { /* ignore */ }
-      });
-    } catch { /* ignore */ }
-  };
-
-  /**
-   * SDT 阅读模式 documentElement 属性变化监听(2026-08-22 新增)。
-   *
-   * Zotero 10 阅读模式的两个动态量都写在 <html> 上:
-   *  - 缩放:_setScale → style.setProperty("--scale", ...) → CSS
-   *    zoom:var(--scale) 改变 body 子元素布局 → fixed 高亮错位(用户报告:
-   *    阅读模式下缩放时取词高亮出问题);
-   *  - 亮暗:_updateColorScheme → dataset.colorScheme / style.colorScheme。
-   *
-   * MutationObserver(attributeFilter: style/class/data-color-scheme)捕获后:
-   *  - 缩放(style/class):按 __hteLastRange 重渲染高亮 + 弹窗重定位
-   *    (与滚动同步 scheduleScrollSync 同一套恢复逻辑;PDF eventBus 的 scalechanging 在
-   *    阅读模式不触发,这是唯一可靠信号);
-   *  - data-color-scheme:清主题缓存 + 全局换肤(弹窗颜色实时跟随,
-   *    高亮重渲染自动采用新 blend/bg)。
-   */
-  const makeSdtAttrObserver = (w: Window): MutationObserver => {
-    const obs = new (w as any).MutationObserver((mutations: any[]) => {
-      try {
-        let themeChanged = false;
-        let layoutChanged = false;
-        for (const m of mutations || []) {
-          if (m?.attributeName === "data-color-scheme") {
-            // 仅当值真的变了才换肤(初始化期可能重复 set 相同值)
-            const cur = w.document?.documentElement?.getAttribute("data-color-scheme");
-            if (cur && cur !== (w as any).__hteLastColorScheme) {
-              (w as any).__hteLastColorScheme = cur;
-              themeChanged = true;
-            }
-          } else if (m?.attributeName === "style" || m?.attributeName === "class") {
-            layoutChanged = true;
-          }
-        }
-        if (themeChanged) {
-          _cachedDark = null;
-          refreshAllPopupThemes();
-        }
-        if (layoutChanged || themeChanged) {
-          if (sdtAttrTimer != null) w.clearTimeout(sdtAttrTimer);
-          sdtAttrTimer = w.setTimeout(() => {
-            sdtAttrTimer = null;
-            const range = (w as any).__hteLastRange as Range | null | undefined;
-            if (range) {
-              // 缩放改变布局几何,located 快照同样过期 → preferLiveRange
-              syncHoverToRange(w, range, { preferLiveRange: true });
-              return;
-            }
-            // 问题2(2026-08-23):取词状态已断但联动高亮在显示(鼠标悬停
-            // 弹窗中)→ 缩放后重渲染,否则 fixed 覆盖层停留旧坐标。
-            remountAnchorHighlight(w);
-          }, 80);
-        }
-      } catch { /* ignore */ }
-    });
-    try {
-      obs.observe(w.document.documentElement, {
-        attributes: true,
-        attributeFilter: ["style", "class", "data-color-scheme"],
-      });
-    } catch { /* ignore */ }
-    return obs;
-  };
-
-  /** 注册单个窗口(capture 阶段监听 + 样式注入 + 快捷键)。幂等。 */
-  const registerWin = (win: Window) => {
-    if (registeredWins.has(win)) return;
-    try {
-      injectPopupStyle(win);
-    } catch { /* ignore */ }
-    const offs: Array<() => void> = [];
-    // 滚动同步:闭包绑定本窗口(修复旧 ev.target→defaultView 在元素级滚动
-    // 时取不到窗口的缺陷),capture 同时覆盖 document 与内部容器两级滚动。
-    const onWinScroll = () => {
-      scheduleScrollSync(win);
-    };
+  // Register on every collected window (capture phase).
+  const shortcutCleanups: (() => void)[] = [];
+  for (const win of targets) {
     try {
       win.addEventListener("mousemove", onMouseMove as any, true);
       win.addEventListener("mousedown", onMouseDown as any, true);
       win.addEventListener("mouseup", onMouseUp as any, true);
       win.addEventListener("keydown", onKeyDown as any, true);
       win.addEventListener("mouseout", onMouseLeave as any, true);
-      win.addEventListener("scroll", onWinScroll, true);
       win.document.addEventListener("selectionchange", onSelectionChange as any);
+      // 加词快捷键：独立 capture 监听（命中后 activeBtn.click()，不干扰现有 onKeyDown）。
+      shortcutCleanups.push(installAddWordShortcut(win));
+      // 发音快捷键：独立 capture 监听（命中后播放当前取词单词发音）。
+      shortcutCleanups.push(installPronunciationShortcut(win));
     } catch (e) {
       dbg(`register failed on ${safeHref(win)}: ${e}`);
-      return;
     }
-    offs.push(() => {
-      try { win.removeEventListener("mousemove", onMouseMove as any, true); } catch { /* ignore */ }
-      try { win.removeEventListener("mousedown", onMouseDown as any, true); } catch { /* ignore */ }
-      try { win.removeEventListener("mouseup", onMouseUp as any, true); } catch { /* ignore */ }
-      try { win.removeEventListener("keydown", onKeyDown as any, true); } catch { /* ignore */ }
-      try { win.removeEventListener("mouseout", onMouseLeave as any, true); } catch { /* ignore */ }
-      try { win.removeEventListener("scroll", onWinScroll, true); } catch { /* ignore */ }
-      // 取消挂起的 rAF 滚动同步任务,防注销后回调访问已卸载状态
-      try {
-        if ((win as any).__hteScrollRaf) {
-          win.cancelAnimationFrame((win as any).__hteScrollRaf);
-          delete (win as any).__hteScrollRaf;
-        }
-      } catch { /* ignore */ }
-      try {
-        win.document.removeEventListener("selectionchange", onSelectionChange as any);
-      } catch { /* ignore */ }
-    });
-    // 加词/发音快捷键：独立 capture 监听（命中后 activeBtn.click()，不干扰现有 onKeyDown）。
-    try { offs.push(installAddWordShortcut(win)); } catch { /* ignore */ }
-    try { offs.push(installPronunciationShortcut(win)); } catch { /* ignore */ }
-    // Zotero 10 阅读模式(SDT)：观察 <html> 的 style/class/data-color-scheme
-    // 变化 → 缩放重渲染高亮 + 亮暗切换实时换肤(问题1/2/3 修复)。
-    if (isSDTViewerWindow(win)) {
-      try {
-        const obs = makeSdtAttrObserver(win);
-        try {
-          (win as any).__hteLastColorScheme =
-            win.document?.documentElement?.getAttribute("data-color-scheme") || "";
-        } catch { /* ignore */ }
-        offs.push(() => {
-          try { obs.disconnect(); } catch { /* ignore */ }
-        });
-      } catch { /* ignore */ }
-    }
-    registeredWins.add(win);
-    winCleanups.set(win, offs);
-  };
-
-  /** 注销单个窗口(移除监听 + 清残留高亮/弹窗)。幂等。 */
-  const unregisterWin = (win: Window) => {
-    if (!registeredWins.has(win)) return;
-    registeredWins.delete(win);
-    const offs = winCleanups.get(win);
-    if (offs) {
-      for (const off of offs) {
-        try { off(); } catch { /* ignore */ }
-      }
-    }
-    winCleanups.delete(win);
-    try {
-      clearHover(win);
-    } catch { /* ignore */ }
-  };
-
-  /** 重新收集窗口并增量注册/注销(阅读模式 iframe 动态增删时调用)。 */
-  const refreshTargets = () => {
-    let next: Window[];
-    try {
-      next = collectWindows(innerWin);
-    } catch {
-      return;
-    }
-    const nextSet = new Set<Window>(next);
-    let changed = next.length !== targets.length;
-    if (!changed) {
-      for (const w of targets) {
-        if (!nextSet.has(w)) { changed = true; break; }
-      }
-    }
-    if (!changed) return; // 窗口集合无变化,零开销
-    for (const w of targets) {
-      if (!nextSet.has(w)) unregisterWin(w);
-    }
-    for (const w of next) registerWin(w);
-    targets.length = 0;
-    targets.push(...next);
-    if (!nextSet.has(activeWinRef.win)) {
-      activeWinRef.win = next[0] ?? innerWin;
-    }
-  };
-
-  // 初始注册所有窗口。
-  for (const win of targets) registerWin(win);
-
-  // ── [v0.4.x P5] 阅读模式(SDT)健壮注册路径 ──
-  // collectWindows + MutationObserver 依赖「reader.html 顶层 document 能
-  // 枚举到 SDT iframe」。若该链路在 Zotero 10 某场景下失效,SDT 窗口收不到
-  // 任何监听 → 悬停取词/高亮/弹窗全部不生效。这里直接从 Reader 实例的
-  // SDTView 私有属性取 iframeWindow 注册(不经过 DOM 枚举),并每 500ms
-  // 轮询补注册(阅读模式切换无事件可订阅,轮询最可靠)。
-  const tryRegisterSdtViews = (): boolean => {
-    try {
-      let added = false;
-      for (const w of getSDTViewWindows(reader)) {
-        try {
-          if (w.document && isSDTViewerWindow(w) && !registeredWins.has(w)) {
-            registerWin(w);
-            added = true;
-          }
-        } catch { /* ignore */ }
-      }
-      return added;
-    } catch { /* ignore */ }
-    return false;
-  };
-  try {
-    if (tryRegisterSdtViews()) refreshTargets();
-  } catch { /* ignore */ }
-  let sdtPollTimer: number | null = null;
-  try {
-    sdtPollTimer =
-      (innerWin as any).setInterval?.(() => {
-        try {
-          if (tryRegisterSdtViews()) refreshTargets();
-        } catch { /* ignore */ }
-      }, 500) ?? null;
-  } catch { /* ignore */ }
-
-  // 观察 reader.html 的 iframe 增删(阅读模式切换 / 文档重建)。
-  // 400ms 去抖;refreshTargets 内部做集合对比,窗口无变化时零开销。
-  let winObserver: MutationObserver | null = null;
-  let winObserverTimer: number | null = null;
-  try {
-    const body = innerWin.document.body;
-    if (body && typeof MutationObserver !== "undefined") {
-      winObserver = new MutationObserver(() => {
-        if (winObserverTimer != null) innerWin.clearTimeout(winObserverTimer);
-        winObserverTimer = innerWin.setTimeout(() => {
-          winObserverTimer = null;
-          refreshTargets();
-        }, 400);
-      });
-      winObserver.observe(body, { childList: true, subtree: true });
-    }
-  } catch { /* ignore */ }
+  }
 
   // ── scalechange reflow:缩放变化时用 C 字符 rect 重算高亮 + 重定位弹窗 ──
   // 参考 sentence-translator 的 reflow 机制,消除缩放后高亮/弹窗漂移。
   const onScaleChange = () => {
     try {
-      const win = activeWinRef.win;
-      const located = (win as any).__hteLastLocated as LocatedWord | null | undefined;
-      const range = (win as any).__hteLastRange as Range | null | undefined;
-      if (!located || !range) {
-        // 问题2(2026-08-23):取词状态已断但联动高亮在显示(鼠标悬停弹窗)
-        // → 缩放后重渲染(textLayer 重建会清掉挂载的高亮)。
-        remountAnchorHighlight(win);
-        return;
-      }
+      const located = (activeWinRef.win as any).__hteLastLocated as LocatedWord | null | undefined;
+      const range = (activeWinRef.win as any).__hteLastRange as Range | null | undefined;
+      if (!located || !range) return;
       // 先清空旧高亮,再按当前 viewport 重算(位置跟随新缩放)
-      applyHighlight(win, range, located);
-      const popup = win.document.getElementById(POPUP_ID) as HTMLElement | null;
+      applyHighlight(activeWinRef.win, range, located);
+      const popup = activeWinRef.win.document.getElementById(POPUP_ID) as HTMLElement | null;
       if (popup) {
         try {
-          repositionHoverPopup(win, popup, range);
+          repositionHoverPopup(activeWinRef.win, popup, range);
         } catch { /* ignore */ }
       }
     } catch { /* ignore */ }
   };
   let scaleEventBus: any = null;
   let scaleRetryTimer: number | null = null;
-  // v0.4.x 缩放兜底(2026-08-23 问题1-A):PDF 模式缩放时 textLayer 重建
-  // (replaceChildren)会销毁弹窗锚定 Range,而 scalechanging 派发时重建尚未
-  // 完成、scalechanged 只由工具栏下拉派发(Ctrl+滚轮不触发)——重建完成后
-  // 无任何事件,所有重定位都被"range 失效保位"挡住 → 弹窗停留旧坐标。
-  // 监听 pdf.js 的 textlayerrendered(viewer.mjs 每页文本层渲染完成时派发),
-  // 去抖后用 C 快照(live viewport)终态重定位一次。高亮不受影响(自愈
-  // observer 负责),此处只管弹窗。
-  let tlrDebounceTimer: number | null = null;
-  const onTextLayerRendered = () => {
-    try {
-      const win = activeWinRef.win;
-      if (!win.document.getElementById(POPUP_ID)) return;
-      if (tlrDebounceTimer != null) win.clearTimeout(tlrDebounceTimer);
-      tlrDebounceTimer = win.setTimeout(() => {
-        tlrDebounceTimer = null;
-        try {
-          const popup = win.document.getElementById(POPUP_ID) as HTMLElement | null;
-          if (!popup) return;
-          repositionHoverPopup(
-            win,
-            popup,
-            (popup as any).__hteRange as Range | undefined,
-          );
-          // 问题2配套:textLayer 重建完成后联动高亮若在显示也需重挂
-          // (旧高亮已被 replaceChildren 清掉)。
-          remountAnchorHighlight(win);
-        } catch { /* ignore */ }
-      }, 60);
-    } catch { /* ignore */ }
-  };
   // v0.3.5 加固:documentinit(文档初始化/替换)时清空本 reader 的页缓存,
   // 防御「同 reader 换文档」的旧缓存残留(双层 key 已防 iframe 重建场景,
   // 此事件兜底窗口不变的场景)。
@@ -1037,7 +689,6 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       if (eb?.on) {
         eb.on("scalechanging", onScaleChange);
         eb.on("scalechanged", onScaleChange);
-        eb.on("textlayerrendered", onTextLayerRendered);
         eb.on("documentinit", onDocInit);
         scaleEventBus = eb;
         dbg(`scalechange reflow registered`);
@@ -1059,18 +710,11 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
         (innerWin as any).clearTimeout?.(scaleRetryTimer);
         scaleRetryTimer = null;
       }
-      try {
-        if (tlrDebounceTimer != null) {
-          (innerWin as any).clearTimeout?.(tlrDebounceTimer);
-          tlrDebounceTimer = null;
-        }
-      } catch { /* ignore */ }
     } catch { /* ignore */ }
     try {
       if (scaleEventBus?.off) {
         scaleEventBus.off("scalechanging", onScaleChange);
         scaleEventBus.off("scalechanged", onScaleChange);
-        scaleEventBus.off("textlayerrendered", onTextLayerRendered);
         scaleEventBus.off("documentinit", onDocInit);
       }
     } catch { /* ignore */ }
@@ -1089,36 +733,29 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
     }
     hoverTimer = null;
     preheatTimer = null;
-    // 断开阅读模式窗口观察器(防泄漏)
-    try {
-      if (winObserver) {
-        winObserver.disconnect();
-        winObserver = null;
-      }
-    } catch { /* ignore */ }
-    try {
-      if (winObserverTimer != null) {
-        innerWin.clearTimeout(winObserverTimer);
-        winObserverTimer = null;
-      }
-    } catch { /* ignore */ }
-    // (旧 sdtScrollTimer 清理已移除:滚动同步改为 per-window rAF,
-    //  由上方 unregisterWin → offs 统一取消,见 registerWin 内清理分支)
-    // 清理阅读模式 SDT 轮询注册定时器
-    try {
-      if (sdtPollTimer != null) {
-        (innerWin as any).clearInterval?.(sdtPollTimer);
-        sdtPollTimer = null;
-      }
-    } catch { /* ignore */ }
-    // 注销全部已注册窗口(移除监听 + 清残留高亮/弹窗)
-    for (const win of [...registeredWins]) {
+    for (const win of targets) {
       try {
-        unregisterWin(win);
+        win.removeEventListener("mousemove", onMouseMove as any, true);
+        win.removeEventListener("mousedown", onMouseDown as any, true);
+        win.removeEventListener("mouseup", onMouseUp as any, true);
+        win.removeEventListener("keydown", onKeyDown as any, true);
+        win.removeEventListener("mouseout", onMouseLeave as any, true);
+        win.document.removeEventListener(
+          "selectionchange",
+          onSelectionChange as any,
+        );
+      } catch {
+        /* ignore */
+      }
+      // Clear any popup/highlight left in every window.
+      clearHover(win);
+    }
+    for (const off of shortcutCleanups) {
+      try {
+        off();
       } catch { /* ignore */ }
     }
-    registeredWins.clear();
-    winCleanups.clear();
+    shortcutCleanups.length = 0;
     // 高亮自愈:断开观察器(清理资源,防泄漏)
     try {
       disconnectHighlightObserver();
@@ -1192,26 +829,6 @@ function isPdfViewerWindow(win: Window): boolean {
   }
 }
 
-/**
- * 是否为 Zotero 10 阅读模式(Reading Mode / SDT)渲染窗口。
- * SDTView 把文档结构渲染为可重排 HTML(article#sdt-content)到独立 iframe,
- * 文本是真实 DOM 文本 —— 取词用 caretPositionFromPoint、高亮用 range
- * getClientRects() 即浏览器权威几何,无需 pdf.js 坐标换算。
- */
-function isSDTViewerWindow(win: Window): boolean {
-  try {
-    if (!win?.document) return false;
-    return !!win.document.querySelector("#sdt-content");
-  } catch {
-    return false;
-  }
-}
-
-/** 内容渲染窗口(PDF viewer iframe 或 SDT 阅读模式 iframe)——取词/高亮目标。 */
-function isContentViewerWindow(win: Window): boolean {
-  return isPdfViewerWindow(win) || isSDTViewerWindow(win);
-}
-
 /** Diagnostic logger that bypasses ztoolkit's production console disable. */
 function dbg(msg: string) {
   try {
@@ -1262,26 +879,7 @@ function onReaderMouseMove(
       (isSelectionPopupActive(innerWin) || isTranslatePopupVisible(innerWin));
 
     const hit = getWordAtPoint(innerWin.document, ev.clientX, ev.clientY);
-    // v0.4.x(2026-08-23 问题2配套):指针在翻译弹窗内时按"锚定区"处理 ——
-    // 弹窗 z-index 最大,caretPositionFromPoint 要么命中弹窗自身文本
-    // (英文原词行),要么落在 padding/空白处返回 null;两种情况都不应触发
-    // 离词清除,否则联动高亮(bindPopupAnchorHighlight 挂载后)会被后续
-    // mousemove 立即清掉(诊断日志实证:+150ms alive=0)。视觉由联动高亮接管。
-    let inPopupZone = false;
-    try {
-      inPopupZone = !!((ev.target as Element)?.closest?.(`#${POPUP_ID}`));
-    } catch { /* ignore */ }
-    const hitInPopup =
-      !!hit && !inPopupZone && (() => {
-        try {
-          return !!hit.range.startContainer?.parentElement?.closest?.(
-            `#${POPUP_ID}`,
-          );
-        } catch {
-          return false;
-        }
-      })();
-    if (!hit || hitInPopup || inPopupZone) {
+    if (!hit) {
       // v0.4.1 跨行连字符词防闪烁:行尾断词(ob- / scurer)之间的行间空隙
       // 处 caret 取不到词 → hit=null。若上一帧 C 定位有效且鼠标仍在该词
       // 的高亮区域(两块 rect 的外包矩形)内,保留高亮,避免跨行词移动时
@@ -1290,11 +888,7 @@ function onReaderMouseMove(
         // Moved off a word — clear highlight but keep popup (timer closes it).
         // 递增序号使飞行中的 highlightHit 失效,避免其完成后复活已清除的高亮。
         (innerWin as any).__hteHighlightSeq = ((innerWin as any).__hteHighlightSeq || 0) + 1;
-        // 问题2配套:指针在弹窗锚定区内时不清高亮 —— 视觉由联动高亮接管
-        // (覆盖 hit=null 空白区与命中弹窗内文本两种情况)。
-        if (!inPopupZone && !hitInPopup) {
-          clearHighlight(innerWin);
-        }
+        clearHighlight(innerWin);
         (innerWin as any).__hteLastRange = null; // 自愈:移出词不复活高亮
         (innerWin as any).__hteCachedC = null; // C 锁定:移出词释放
       }
@@ -1551,15 +1145,11 @@ function getWordAtPoint(
   // 划线标注后会在文本层上方叠加 annotation layer（SVG 覆盖元素），它拦截
   // caretPositionFromPoint 的命中测试，返回 annotation 元素而非文本节点，
   // 导致取词失效（必须先点击一下才能恢复）。
-  // Zotero 没有内置 "reading-caret-position" class。这里改为在取词期间临时
-  // 禁用 annotation 层 pointer-events,取词后立即恢复,不依赖任何 Zotero 内部
-  // 实现。
-  // 选择器覆盖两种注解覆盖层:
-  //   - ".annotationLayer":pdf.js 原生注解层(Zotero 9 PDF 模式)
-  //   - "#annotation-overlay":Zotero 10 DOMView(含 SDT 阅读模式)的 React
-  //     注解 shadow-root 宿主,它会拦截 caretPositionFromPoint 命中测试。
+  // 注意：Zotero 并没有内置 "reading-caret-position" class（Zotero 7 源码中
+  // 不存在，之前的修复因此无效）。这里改为在取词期间临时禁用 annotation
+  // layer 的 pointer-events，取词后立即恢复，不依赖任何 Zotero 内部实现。
   const layers = doc.querySelectorAll(
-    ".annotationLayer, #annotation-overlay",
+    ".annotationLayer",
   ) as NodeListOf<HTMLElement>;
   const prevPointerEvents: string[] = [];
   layers.forEach((el: HTMLElement) => {
@@ -1826,117 +1416,6 @@ function mergeViewportRects(
   return out;
 }
 
-/**
- * C 通道高亮【纯渲染】:只挂载高亮 div(与 applyHighlight located 分支
- * 完全同规则:live viewport 换算 + pageEl absolute / fixed 兜底 + 主题
- * blend),不写 __hteLastLocated、不接自愈 observer —— 供弹窗联动高亮
- * (问题2,2026-08-23)复用,避免污染取词管线全局状态。仅写
- * __hteLastMountDoc/__hteLastMountPageEl(clearHighlight 跨文档清理所需)。
- */
-function mountLocatedHighlight(innerWin: Window, located: LocatedWord) {
-  const doc = innerWin.document;
-  const color = getPref("highlightColor") || "rgba(255,233,79,1.0)";
-  const dark = isDarkMode(innerWin);
-  const blend = dark ? "normal" : "multiply";
-  const bg = dark ? toTranslucent(color, 0.4) : color;
-  const { rects: vpRaw, pageEl } = pdfRectsToViewport(
-    innerWin,
-    located.bundle,
-    located.rects,
-  );
-  (innerWin as any).__hteLastMountDoc = pageEl?.ownerDocument ?? doc;
-  (innerWin as any).__hteLastMountPageEl = pageEl;
-  // 逐字符 rect → 合并同行相邻为整块(2026-08-12 修复,同 applyHighlight)
-  const vp = mergeViewportRects(vpRaw);
-  for (const r of vp) {
-    const el = doc.createElement("div");
-    el.className = HIGHLIGHT_CLASS;
-    if (pageEl) {
-      el.style.cssText = [
-        "position:absolute",
-        `left:${r.left}px`, `top:${r.top}px`,
-        `width:${r.width}px`, `height:${r.height}px`,
-        `background:${bg}`, "border-radius:2px",
-        "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
-      ].join(";");
-      pageEl.appendChild(el);
-    } else {
-      el.style.cssText = [
-        "position:fixed", `left:${r.left}px`, `top:${r.top}px`,
-        `width:${r.width}px`, `height:${r.height}px`,
-        `background:${bg}`, "border-radius:2px",
-        "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
-      ].join(";");
-      doc.body?.appendChild(el);
-    }
-  }
-}
-
-/**
- * Range 高亮【纯渲染】(问题2 阅读模式回退):用弹窗锁定的 __hteRange 的
- * getClientRects() 渲染 —— PDF 模式有 pageEl 时挂 pageEl absolute(A 通道
- * 同规则);无 pageEl(SDT 阅读模式)时挂事件窗口 body position:fixed。
- * 不写取词管线状态(仅 lastMountDoc/PageEl 清理所需)。返回是否成功渲染。
- */
-function mountRangeHighlight(innerWin: Window, range: Range): boolean {
-  try {
-    const doc = innerWin.document;
-    const rects = range.getClientRects();
-    if (!rects?.length) return false;
-    const color = getPref("highlightColor") || "rgba(255,233,79,1.0)";
-    const dark = isDarkMode(innerWin);
-    const blend = dark ? "normal" : "multiply";
-    const bg = dark ? toTranslucent(color, 0.4) : color;
-    const pageEl = findPageElement(range.startContainer);
-    if (!pageEl) {
-      // SDT 阅读模式:fixed 覆盖层锚定 iframe 视口
-      const rect = range.getBoundingClientRect();
-      if (!rect || (rect.width === 0 && rect.height === 0)) return false;
-      const el = doc.createElement("div");
-      el.className = HIGHLIGHT_CLASS;
-      // zoom:normal(同 applySdtHighlight):SDT 规则
-      // body > :not(#annotation-overlay) { zoom:var(--scale,1) } 会命中本
-      // 覆盖层,r.left/top 已是视觉坐标(含缩放),再被放大即双重缩放错位。
-      el.style.cssText = [
-        "position:fixed",
-        "zoom:normal",
-        `left:${rect.left}px`, `top:${rect.top}px`,
-        `width:${rect.width}px`, `height:${rect.height}px`,
-        `background:${bg}`, "border-radius:2px",
-        "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
-      ].join(";");
-      doc.body?.appendChild(el);
-      (innerWin as any).__hteLastMountDoc = doc;
-      (innerWin as any).__hteLastMountPageEl = null;
-      return true;
-    }
-    const pageRect = pageEl.getBoundingClientRect();
-    let mounted = false;
-    for (const r of Array.from(rects)) {
-      if (r.width === 0 && r.height === 0) continue;
-      const el = doc.createElement("div");
-      el.className = HIGHLIGHT_CLASS;
-      el.style.cssText = [
-        "position:absolute",
-        `left:${r.left - pageRect.left}px`,
-        `top:${r.top - pageRect.top}px`,
-        `width:${r.width}px`, `height:${r.height}px`,
-        `background:${bg}`, "border-radius:2px",
-        "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
-      ].join(";");
-      pageEl.appendChild(el);
-      mounted = true;
-    }
-    if (mounted) {
-      (innerWin as any).__hteLastMountDoc = pageEl.ownerDocument ?? doc;
-      (innerWin as any).__hteLastMountPageEl = pageEl;
-    }
-    return mounted;
-  } catch {
-    return false;
-  }
-}
-
 function applyHighlight(
   innerWin: Window,
   range: Range,
@@ -1961,16 +1440,45 @@ function applyHighlight(
   // 【不要再减 pageEl 位置】——否则双重偏移,高亮完全错位
   // (sentence-translator 的 positionPdfRect 同此逻辑,已验证)。
   if (located) {
-    // 纯渲染(不写 __hteLastLocated / 不接自愈 observer —— 那些是取词
-    // 管线状态,由调用方按语义决定是否写入)
-    mountLocatedHighlight(innerWin, located);
+    // 坐标基准:convertToViewportPoint 返回 page 局部坐标,挂到
+    // 【同一个 pageEl】(pdfRectsToViewport 返回的,与 viewport 同源)
+    // 上,position:absolute 直接赋值 left/top。不能用 range 的 pageEl——
+    // 两者 document 可能不同导致整体偏移。
+    const { rects: vpRaw, pageEl } = pdfRectsToViewport(innerWin, located.bundle, located.rects);
+    // 记录高亮挂载文档(per-window 单值,跨文档清理用):pageEl 可能属于
+    // viewer iframe 而非事件窗口 reader.html → clearHighlight 需同文档清。
+    (innerWin as any).__hteLastMountDoc = pageEl?.ownerDocument ?? doc;
+    // 逐字符 rect → 合并同行相邻为整块(2026-08-12 修复:同一单词
+    // 不再渲染多块紧挨高亮,对照 zotero-ai-sidebar mergeRectParts)。
+    const vp = mergeViewportRects(vpRaw);
+    if (vp.length) {
+      for (const r of vp) {
+        const el = doc.createElement("div");
+        el.className = HIGHLIGHT_CLASS;
+        if (pageEl) {
+          el.style.cssText = [
+            "position:absolute",
+            `left:${r.left}px`, `top:${r.top}px`,
+            `width:${r.width}px`, `height:${r.height}px`,
+            `background:${bg}`, "border-radius:2px",
+            "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
+          ].join(";");
+          pageEl.appendChild(el);
+        } else {
+          el.style.cssText = [
+            "position:fixed", `left:${r.left}px`, `top:${r.top}px`,
+            `width:${r.width}px`, `height:${r.height}px`,
+            `background:${bg}`, "border-radius:2px",
+            "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
+          ].join(";");
+          doc.body?.appendChild(el);
+        }
+      }
+    }
     // 记录 C 命中结果，供弹窗锚定 / scalechange reflow 复用
     (innerWin as any).__hteLastLocated = located;
     // 高亮自愈：观察高亮挂载的 pageEl（fixed 兜底时不观察）
-    observeHighlightPage(
-      innerWin,
-      (innerWin as any).__hteLastMountPageEl as HTMLElement | null,
-    );
+    observeHighlightPage(innerWin, pageEl);
     return;
   }
   (innerWin as any).__hteLastLocated = null;
@@ -2015,48 +1523,6 @@ function applyHighlight(
   (innerWin as any).__hteLastMountDoc = pageEl.ownerDocument ?? doc;
   // 高亮自愈：观察高亮挂载的 pageEl（A 通道）
   observeHighlightPage(innerWin, pageEl);
-}
-
-/**
- * Zotero 10 阅读模式(SDT)高亮:真实 DOM 文本,range.getClientRects() 即
- * 浏览器权威几何(无 pdf.js 坐标换算 / 无 C 通道)。在 SDT iframe 内创建
- * position:fixed 覆盖层(锚定 iframe 视口)。
- *
- * 滚动跟随:fixed 覆盖层不随文本滚动 —— registerWin 的 scroll capture
- * (scheduleScrollSync)以 rAF 每帧按当前 range rects 重渲染,视觉零滞后;
- * 悬停中的 mousemove 也会持续重渲染,双保险。锚定词滚出视口即整组清除。
- */
-function applySdtHighlight(innerWin: Window, range: Range) {
-  clearHighlight(innerWin);
-  const doc = innerWin.document;
-  const color = getPref("highlightColor") || "rgba(255,233,79,1.0)";
-  const dark = isDarkMode(innerWin);
-  // 与 applyHighlight 同规则:日间 multiply(黑字可读),夜间 normal+半透明
-  const blend = dark ? "normal" : "multiply";
-  const bg = dark ? toTranslucent(color, 0.4) : color;
-  const rects = range.getClientRects();
-  if (!rects?.length) return;
-  for (const r of Array.from(rects)) {
-    if (r.width === 0 && r.height === 0) continue;
-    const el = doc.createElement("div");
-    el.className = HIGHLIGHT_CLASS;
-    // zoom:normal(2026-08-22):SDT 样式表规则
-    // body > :not(#annotation-overlay) { zoom: var(--scale,1) } 会命中本
-    // 覆盖层 —— CSS zoom 缩放元素自身的 left/top 偏移与尺寸,而这里写入的
-    // r.left/r.top 已是 getClientRects() 的视觉坐标(含缩放),再被放大即
-    // 双重缩放错位(缩放字体后高亮漂移,仅重开阅读模式恢复)。inline
-    // zoom:normal 优先级高于样式表规则,抵消之。
-    el.style.cssText = [
-      "position:fixed",
-      "zoom:normal",
-      `left:${r.left}px`, `top:${r.top}px`,
-      `width:${r.width}px`, `height:${r.height}px`,
-      `background:${bg}`, "border-radius:2px",
-      "pointer-events:none", "z-index:20", `mix-blend-mode:${blend}`,
-    ].join(";");
-    doc.body?.appendChild(el);
-  }
-  (innerWin as any).__hteLastMountDoc = doc;
 }
 
 /**
@@ -2112,17 +1578,6 @@ async function highlightHit(
   const seq = ((innerWin as any).__hteHighlightSeq || 0) + 1;
   (innerWin as any).__hteHighlightSeq = seq;
   (innerWin as any).__hteLastRange = hit.range;
-
-  // ── Zotero 10 阅读模式(SDT)分支 ──
-  // SDT 把文档渲染为真实 DOM 文本(article#sdt-content),range 即浏览器
-  // 权威几何 —— 无需 pdf.js C 通道(locateWord 的 getPageData/坐标换算
-  // 在此完全不可用)。直接按 range rects 渲染高亮,滚动由 scheduleScrollSync 重渲染。
-  if (isSDTViewerWindow(innerWin)) {
-    (innerWin as any).__hteLastLocated = null;
-    (innerWin as any).__hteCachedC = null;
-    applySdtHighlight(innerWin, hit.range);
-    return null;
-  }
 
   let located: LocatedWord | null = null;
   try {
@@ -2455,13 +1910,6 @@ async function doTranslate(
 
   // Build popup shell.
   clearPopup(innerWin);
-  // 字距/词距隔离规则(见 ensurePopupSpacingStyle 注释):必须在弹窗挂载前
-  // 就位,避免 SDT 的 body * 规则先命中造成一帧排版跳动。
-  try {
-    ensurePopupSpacingStyle(doc);
-  } catch (e) {
-    dbg(`ensurePopupSpacingStyle error: ${String((e as any)?.message || e)}`);
-  }
   const popup = doc.createElement("div");
   popup.id = POPUP_ID;
   popup.dataset.word = word;
@@ -2469,30 +1917,15 @@ async function doTranslate(
   (popup as any).__hteTranslating = true;
   popup.style.cssText = [
     "position:fixed",
-    // zoom:normal(2026-08-22):SDT 模式下弹窗挂 SDT doc.body,被
-    // body > :not(#annotation-overlay) { zoom:var(--scale,1) } 命中 ——
-    // positionPopup 写入的 left/top 是 getBoundingClientRect 视觉坐标,
-    // 再被 zoom 放大即双重缩放,缩放字体后弹窗漂移/变大。inline
-    // zoom:normal 抵消;PDF 模式下无此规则,normal 为默认值无副作用。
-    "zoom:normal",
     "z-index:2147483647",
+    "min-width:90px",
     "max-width:380px",
     "background:var(--hte-bg, #ffffff)",
     "border:1px solid var(--hte-border, #d4d4d4)",
     "border-radius:8px",
     "box-shadow:var(--hte-shadow, 0 4px 16px rgba(0,0,0,0.18))",
     "padding:6px 8px",
-    // 显式无衬线 UI 字体栈(2026-08-22):与 Zotero reader.css body 的
-    // font-family 完全一致。原先 inherit 在阅读模式会继承 SDT 正文的
-    // Georgia 衬线体(SDT :root 规则),导致同一弹窗两种模式观感不一致;
-    // inline 声明优先级高于任何样式表规则,两种模式统一为 PDF 模式观感。
-    "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif",
-    // 行高隔离(2026-08-22):阅读模式 SDT 的行高规则会沿继承链进入弹窗,
-    // 未显式设行高的单词行/状态行被撑高 → 单词与译文间距、弹窗整体高度
-    // 跟随阅读模式行距变化。inline normal 切断继承链;被 SDT body * 直接
-    // 命中的后代由 ensurePopupSpacingStyle 的 ID 选择器规则兜底;译文行
-    // 保留自身显式 ZPPT lineHeight,不受影响。
-    "line-height:normal",
+    "font-family:inherit",
     "transition:background-color .2s, border-color .2s, color .2s",
   ].join(";");
   // 主题色板写入 CSS 变量必须在 cssText 赋值之后（cssText 会整体替换 style 属性）
@@ -2501,7 +1934,7 @@ async function doTranslate(
   const raw = doc.createElement("div");
   raw.textContent = word;
   raw.style.cssText =
-    "color:var(--hte-raw, #666666);font-size:12px;margin-bottom:0;word-break:break-word;transition:color .2s;";
+    "color:var(--hte-raw, #666666);font-size:12px;margin-bottom:2px;word-break:break-word;transition:color .2s;";
 
   const status = doc.createElement("div");
   status.textContent = getString("hover-popup-translating");
@@ -2509,7 +1942,7 @@ async function doTranslate(
     "color:var(--hte-status, #888888);font-size:12px;font-style:italic;transition:color .2s;";
 
   const result = doc.createElement("div");
-  result.style.cssText = `color:var(--hte-primary, #1a1a1a);white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};font-weight:400;padding-left:2px;transition:color .2s;`;
+  result.style.cssText = `color:var(--hte-primary, #1a1a1a);white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};font-weight:400;padding-left:4px;transition:color .2s;`;
 
   // Flex row: left column (word + translation) + right circular button.
   // 简洁(仅译文)模式：保持原布局，row 铺满弹窗内容宽度（弹窗宽度自适应内容，
@@ -2523,7 +1956,7 @@ async function doTranslate(
   const row = doc.createElement("div");
   row.dataset.hteRow = "1"; // 核心区标记（syncPopupLayout 按实际位置调整布局用）
   row.style.cssText = isFullMode
-    ? "display:flex;align-items:center;gap:6px;width:fit-content;max-width:380px;"
+    ? "display:flex;align-items:center;gap:6px;width:fit-content;min-width:90px;max-width:380px;"
     : "display:flex;align-items:center;gap:6px;";
 
   const leftCol = doc.createElement("div");
@@ -2554,19 +1987,6 @@ async function doTranslate(
   // 发音按钮 — 与 +按钮 同时创建（出现时机参考+按钮）。音频 URL 翻译完成后填充。
   const pronBtn = maybeAddPronunciationButton(innerWin, row, wordBtn);
 
-  // 竖向分割线（2026-08-23）：分隔文字区与按钮区，两侧各 12px（row gap 6px + margin 6px）。
-  // 按钮方位自适应：右侧模式插在第一个按钮前；左侧模式（wordButtonPosition=left，
-  // 按钮在行首 [＋][▶][文字]）插在最后一个按钮之后。无按钮时不插入。
-  const groupFirst = wordBtn || pronBtn;
-  const groupLast = pronBtn || wordBtn;
-  if (groupFirst && groupLast && groupLast.parentNode === row) {
-    const divider = doc.createElement("div");
-    divider.style.cssText =
-      "width:1px;height:28px;flex-shrink:0;align-self:center;background:var(--hte-divider,#e0e0e0);";
-    const leftMode = ((getPref("wordButtonPosition") as string) || "right") === "left";
-    row.insertBefore(divider, leftMode ? groupLast.nextSibling : groupFirst);
-  }
-
   // Position anchored to the word's Range bounding box (same coordinates as the
   // highlight) so the popup stays close to the hovered word; falls back to the
   // last mouse position when no range is available.  Called after the popup is
@@ -2585,9 +2005,6 @@ async function doTranslate(
   // positionPopup 优先用本快照（创建时的词），不再被后续 __hteLastLocated
   // （鼠标移到新词后更新）拖走——弹窗锚定锁定到创建时的词。
   (popup as any).__hteLocated = (innerWin as any).__hteLastLocated ?? null;
-  // 问题2(2026-08-23):鼠标移入弹窗反向高亮所属单词 —— 绑定提前到弹窗
-  // 挂载后立即生效,翻译加载期间移入也可显示高亮(用户需求 2026-08-23)。
-  bindPopupAnchorHighlight(innerWin, popup);
 
   // 间距恒定修正：positionPopup 在翻译开始前调用，此时弹窗是「翻译中」高度；
   // 译文/释义填充后弹窗尺寸变化，若不重新定位，多行译文会向下延伸而盖住单词。
@@ -2630,23 +2047,11 @@ async function doTranslate(
     const dictPromise = (async () => {
       const dictR = await fetchDictResult(word, reader);
       if (dictR?.result) {
-        const short = extractFirstDefinition(dictR.result, dictR.service);
-        if (short) {
-          return {
-            ok: true,
-            result: short,
-            task: { audio: dictR.audio },
-          };
-        }
-        // 字典引擎简译提取为空（如科林斯/海词对部分词条首义为空、
-        // 词典结果结构异常等）→ 回退翻译引擎兜底，避免弹窗显示「(无译文)」。
-        // 注意：forceTranslateEngine=true 强制直接用翻译源，避免再走词典源
-        // 拿到相同词典条目；audio 由翻译 task 提供。
-        dbg(
-          `dict engine: empty first definition for "${word}" (service=${dictR.service}), ` +
-            `falling back to translate engine`,
-        );
-        return translateWord(word, reader, true);
+        return {
+          ok: true,
+          result: extractFirstDefinition(dictR.result, dictR.service),
+          task: { audio: dictR.audio },
+        };
       }
       return translateWord(word, reader);
     })();
@@ -2927,82 +2332,6 @@ function bindPopupHoverPause(innerWin: Window, popup: HTMLElement) {
   }
 }
 
-/**
- * 问题2(2026-08-23):鼠标移入翻译弹窗 → 反向高亮弹窗所属单词;
- * 移出弹窗清除,恢复"离词无高亮"原状。
- *
- * 实现:复用 bindPopupHoverPause 已挂载 mouseenter/mouseleave 的时机,
- * 用弹窗创建时锁定的 __hteLocated(C 通道快照)走 mountLocatedHighlight
- * 纯渲染 —— live viewport 换算,滚动/缩放后位置依然正确。不写
- * __hteLastLocated/__hteLastRange/C 锁定,取词管线状态零污染。
- * 注:联动高亮不接自愈 observer —— 悬停弹窗期间缩放导致 textLayer 重建时,
- * 高亮可能被清掉一次,鼠标微动即恢复常态,可接受。
- */
-/**
- * 重渲染联动高亮(若在显示中):SDT 缩放字体/滚动后,fixed 覆盖层停留
- * 旧坐标,需按当前几何重建。由 SDT 属性观察器与滚动 rAF 同步调用。
- */
-function remountAnchorHighlight(innerWin: Window) {
-  try {
-    const popup = (innerWin as any).__hteAnchorPopup as HTMLElement | null;
-    if (!popup || innerWin.document.getElementById(POPUP_ID) !== popup) return;
-    const located = (popup as any).__hteLocated as LocatedWord | null | undefined;
-    const r = (popup as any).__hteRange as Range | null | undefined;
-    clearHighlight(innerWin);
-    if (located?.rects?.length && located.bundle) {
-      mountLocatedHighlight(innerWin, located);
-    } else if (r) {
-      mountRangeHighlight(innerWin, r);
-    }
-  } catch { /* ignore */ }
-}
-
-function bindPopupAnchorHighlight(innerWin: Window, popup: HTMLElement) {
-  try {
-    let shown = false;
-    const render = () => {
-      // 延迟到本帧事件处理完毕再判定:进入弹窗时 mouseenter 先于 mousemove,
-      // 此刻 __hteLastRange 可能仍是"上一个词"的残留(离词清除尚未执行)。
-      // 推迟一拍后:若用户真仍在词上(__hteLastRange 有效)→ 跳过;否则渲染。
-      innerWin.setTimeout(() => {
-        try {
-          if (shown) return;
-          const lr = (innerWin as any).__hteLastRange;
-          const located = (popup as any).__hteLocated as LocatedWord | null | undefined;
-          // 用户仍在词上(正常取词高亮在位) → 不叠加联动高亮
-          if (lr) return;
-          clearHighlight(innerWin); // 清残留(含上次联动)
-          // 优先 C 通道快照(PDF 模式,缩放不变);无快照(阅读模式 SDT /
-          // gap 保持路径)→ 回退弹窗锁定的 Range 直接渲染
-          const r = (popup as any).__hteRange as Range | null | undefined;
-          if (located?.rects?.length && located.bundle) {
-            mountLocatedHighlight(innerWin, located);
-            shown = true;
-          } else if (r) {
-            shown = mountRangeHighlight(innerWin, r);
-          }
-          // 窗口级登记:供 SDT 缩放属性观察器 / 滚动 rAF 同步在取词状态已断
-          // (__hteLastRange 为空)时重渲染联动高亮 —— 否则悬停弹窗期间缩放
-          // 字体/滚动后,fixed 覆盖层停留旧坐标(用户报告 2026-08-23)。
-          (innerWin as any).__hteAnchorPopup = shown ? popup : null;
-        } catch { /* ignore */ }
-      }, 0);
-    };
-    const clear = () => {
-      if (!shown) return;
-      shown = false;
-      try {
-        (innerWin as any).__hteAnchorPopup = null;
-        clearHighlight(innerWin);
-      } catch { /* ignore */ }
-    };
-    popup.addEventListener("mouseenter", render);
-    popup.addEventListener("mouseleave", clear);
-    // 弹窗销毁时若鼠标仍在其上(mouseleave 不会触发),由 clearPopup 调用兜底
-    (popup as any).__hteAnchorClear = clear;
-  } catch { /* ignore */ }
-}
-
 /** Auto-close the hover popup after a delay (keeps it clickable meanwhile).
  *  Stores the expiry timestamp so the timer can be paused & resumed
  *  later (e.g. while a button feedback cycle is in progress). */
@@ -3183,8 +2512,6 @@ async function fillDictionaryResult(
 async function translateWord(
   word: string,
   reader: _ZoteroTypes.ReaderInstance,
-  /** 强制只用翻译源 translateSource（不经过词典源 dictSource）。字典引擎简译提取为空时的兜底场景传 true。 */
-  forceTranslateEngine = false,
 ): Promise<{
   ok: boolean;
   result: string;
@@ -3209,13 +2536,10 @@ async function translateWord(
   //     service 数组让 pdf-translate 处理回退）；
   //   - 译文引擎 = 翻译引擎（稍慢，释义更贴切）：一律直接用翻译源
   //     translateSource，不再经过词典源。
-  //   - forceTranslateEngine=true（简译兜底）：同翻译引擎模式，直接用
-  //     translateSource，避免再次拿到相同的词典完整条目。
   const translateSource = getPdfTranslateSource() || "";
   let service: string | string[] | undefined = translateSource || undefined;
   try {
     if (
-      !forceTranslateEngine &&
       getPref("translateEngine") === "dict" &&
       isSingleEnglishWord(word)
     ) {
@@ -3285,7 +2609,6 @@ function repositionHoverPopup(
   innerWin: Window,
   popup: HTMLElement,
   range?: Range | null,
-  opts?: { preferLiveRange?: boolean },
 ): void {
   try {
     let hasAnchor = false;
@@ -3298,7 +2621,7 @@ function repositionHoverPopup(
       dbg(`reposition skip: range invalid, keeping current position`);
       return;
     }
-    positionPopup(innerWin, popup, range ?? undefined, opts);
+    positionPopup(innerWin, popup, range ?? undefined);
   } catch (e) {
     dbg(`reposition error: ${String((e as any)?.message || e)}`);
   }
@@ -3355,95 +2678,45 @@ function syncPopupLayout(popup: HTMLElement, placeBelow: boolean): void {
   }
 }
 
-function positionPopup(
-  innerWin: Window,
-  popup: HTMLElement,
-  range?: Range,
-  opts?: { preferLiveRange?: boolean },
-) {
+function positionPopup(innerWin: Window, popup: HTMLElement, range?: Range) {
   const vw = innerWin.innerWidth;
   const vh = innerWin.innerHeight;
   const EST_W = 240;
   const EST_H = 120;
   const GAP = 8;
 
-  // 活几何锚定:range.getClientRects() 是浏览器实时坐标(滚动/缩放后自动
-  // 更新)。v0.3.6 起创建(std)与滚动同步(preferLiveRange)统一优先用本
-  // 函数 —— 两阶段同一几何源,滚动开始首帧不再出现「快照锚→活几何锚」
-  // 切换的一次性横向跳变(PDF textLayer scale 放大两套坐标的偏差,实测
-  // 6~13px;对齐 zotero-sentence-translator 的单一锚源方案)。
-  // 跨行词(range 拆成多块)时按鼠标 Y 选最近一块作锚点(与 v0.3.5 快照
-  // 路径的选块语义一致),弹窗贴近鼠标所在行而非两行并集。
-  const liveRangeAnchor = (): { x: number; top: number; bottom: number } | null => {
-    if (!range) return null;
+  // 优先锚定单词 Range 的包围盒（与高亮同一套坐标，弹窗永远贴近文本）。
+  // C 通道优先：用字符 rect 的视口坐标（精确）；否则回退 range 几何。
+  // v0.3.4 修复「弹窗跟随鼠标跑偏」：锚定优先用【弹窗创建时锁定的 located
+  // 快照】——弹窗永远贴近创建它的那个词；不再被后续鼠标移动更新的
+  // __hteLastLocated 拖走（译文加载期间鼠标移到其他词 → 弹窗位置稳定）。
+  let anchor: { x: number; top: number; bottom: number } | null = null;
+  const lockedLocated = (popup as any).__hteLocated as LocatedWord | null | undefined;
+  const located = lockedLocated ?? ((innerWin as any).__hteLastLocated as LocatedWord | null | undefined);
+  if (located) {
     try {
-      const all = Array.from(range.getClientRects() ?? []).filter(
-        (r) => r.width !== 0 || r.height !== 0,
-      );
-      if (!all.length) return null;
-      let chosen = all;
+      // v0.3.5:跨行词(行尾断词 obscurer 跨两行)时按鼠标 Y 选最近一块作锚点,
+      // 弹窗贴近鼠标所在行,而非两行的并集。
       const lastPos = (innerWin as any).__hoverLastPos as
         | { x?: number; y?: number }
         | undefined;
-      if (all.length > 1 && typeof lastPos?.y === "number") {
-        let best: DOMRect | null = null;
-        let bestDist = Infinity;
-        for (const r of all) {
-          const d = Math.abs(r.top + r.height / 2 - lastPos.y);
-          if (d < bestDist) {
-            bestDist = d;
-            best = r;
-          }
-        }
-        if (best) chosen = [best];
-      }
+      anchor = wordAnchorFromLocated(innerWin, located, lastPos?.y);
+    } catch {
+      anchor = null;
+    }
+  }
+  if (!anchor && range) {
+    const rects = range.getClientRects();
+    if (rects?.length) {
       let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
-      for (const r of chosen) {
+      for (const r of rects) {
+        if (r.width === 0 && r.height === 0) continue;
         left = Math.min(left, r.left);
         right = Math.max(right, r.right);
         top = Math.min(top, r.top);
         bottom = Math.max(bottom, r.bottom);
       }
-      return isFinite(left) ? { x: left, top, bottom } : null;
-    } catch {
-      return null;
-    }
-  };
-
-  // 锚定选择(v0.3.6 重构):
-  // 1. preferLiveRange(滚动/缩放同步):只用 range 活几何;暂不可用(range
-  //    瞬时失效、textLayer 更新等)时放弃本次定位并保持当前位置 —— 绝不回退
-  //    过期快照,否则弹窗会先跳到旧行屏幕位置再跳回来。下一帧 rAF 会重试。
-  // 2. 创建(std)路径:同样优先 range 活几何。range 参数是弹窗创建时锁定的
-  //    那个词的 Range,不受后续 __hteLastLocated 更新影响,v0.3.4「防拖走」
-  //    语义保持不变。
-  // 3. located 快照仅作兜底:range 几何不可用(如 textLayer 尚未建好)时,
-  //    才用创建时锁定的 C 通道 PDF 坐标往返变换定位(wordAnchorFromLocated,
-  //    v0.3.5 跨行选块)。
-  let anchor: { x: number; top: number; bottom: number } | null = null;
-  if (opts?.preferLiveRange) {
-    anchor = liveRangeAnchor();
-    // v0.4.x 缩放兜底(2026-08-23):PDF 模式缩放会重建 textLayer
-    // (replaceChildren),锚定 Range 失效后旧实现"保位跳过"且无下一帧
-    // rAF(scroll 事件已停止)→ 弹窗永久停留旧缩放坐标。改为回退下方
-    // C 快照路径(wordAnchorFromLocated 用 live viewport + live pageEl
-    // rect 实时换算 PDF 坐标,天然缩放不变),不再保位。
-  }
-  if (!anchor) {
-    anchor = liveRangeAnchor();
-  }
-  if (!anchor) {
-    const lockedLocated = (popup as any).__hteLocated as LocatedWord | null | undefined;
-    const located = lockedLocated ?? ((innerWin as any).__hteLastLocated as LocatedWord | null | undefined);
-    if (located) {
-      try {
-        const lastPos = (innerWin as any).__hoverLastPos as
-          | { x?: number; y?: number }
-          | undefined;
-        anchor = wordAnchorFromLocated(innerWin, located, lastPos?.y);
-      } catch {
-        anchor = null;
-      }
+      if (isFinite(left)) anchor = { x: left, top, bottom };
     }
   }
 
@@ -3524,7 +2797,7 @@ function applyBtnFeedback(btn: HTMLButtonElement): void {
     };
     const onLeave = () => {
       btn.style.transition = PRESS_TRANSITION;
-      btn.style.boxShadow = "none";
+      btn.style.boxShadow = "0 0 4px rgba(128,128,128,0.15)";
       btn.style.filter = "brightness(1)";
       btn.style.transform = "scale(1)";
     };
@@ -3583,7 +2856,7 @@ function maybeAddWordButton(
     "min-width:28px",
     "flex-shrink:0",
     "border-radius:6px",
-    "box-shadow:none",
+    "box-shadow:0 0 4px rgba(128,128,128,0.15)",
     "border:1.5px solid var(--hte-btn-border, rgba(130,130,130,0.38))",
     "background:var(--hte-btn-bg, rgba(255,255,255,0.04))",
     "padding:0",
@@ -3733,7 +3006,7 @@ function maybeAddPronunciationButton(
     "min-width:28px",
     "flex-shrink:0",
     "border-radius:6px",
-    "box-shadow:none",
+    "box-shadow:0 0 4px rgba(128,128,128,0.15)",
     "border:1.5px solid var(--hte-btn-border, rgba(130,130,130,0.38))",
     "background:var(--hte-btn-bg, rgba(255,255,255,0.04))",
     "padding:0",
@@ -3861,31 +3134,9 @@ export async function fetchDictResult(
 /** Extract first definition line from a dictionary result, stripping word-class labels. */
 /** 词性标记词表（用于识别定义行与剥离 POS 前缀）。 */
 const POS_WORDS =
-  "linkv|attrib|auxv|interrog|interj|prefix|suffix|abbr|modal|modv|phr|idm|comb|pref|suff|sing|pl|pred|na|noun|verb|adjective|adverb|preposition|conjunction|pronoun|interjection|article|determiner|numeral|quantifier|symbol|n|vt|vi|adj|adv|a|ad|prep|conj|pron|int|art|aux|det|num|qua|sym|v|verbal|adverbial|prepositional|conjunctional|pronounal" +
-  // 海词特殊缩写：<strong>vbl.</strong> 出现在 ul.dict-basic-ul > li
-  "|vbl";
+  "linkv|attrib|auxv|interrog|interj|prefix|suffix|abbr|modal|modv|phr|idm|comb|pref|suff|sing|pl|pred|na|noun|verb|adjective|adverb|preposition|conjunction|pronoun|interjection|article|determiner|numeral|quantifier|symbol|n|vt|vi|adj|adv|a|ad|prep|conj|pron|int|art|aux|det|num|qua|sym|v";
 
-/**
- * 中文词性词表（科林斯 en-zh、海词中文释义、有道中文词典 等中文版词典）。
- * 包含复合词性（"及物动词"/"不及物动词"等）——科林斯常以"及物动词"
- * 单独成行；不含会与 `及物动词` 部分匹配的正则串（避免被 `动词` 单字
- * 误伤为复合词）。中文没有 \b word boundary，故 ZH_POS 单独走一条
- * look-ahead 正则。
- */
-const ZH_POS_WORDS =
-  "形容词|副词|动词|名词|介词|连词|代词|数词|量词|助词|叹词|助动词|象声词|拟声词|语气词|区别词|方位词|词缀|前缀|后缀|缩略语|简称|及物动词|不及物动词|情态动词|系动词|短语动词|动词短语|名词短语|形容词短语|副词短语|介词短语|固定搭配|派生词|派生|习语|例句|词组|短语|俚语|同义词|反义词|近义词|同根词|变形|变位";
-
-/**
- * 纯 IPA 音标行字符白名单：字母 + IPA 符号 + 基础标点。
- * 用于让 FreeDictAPI 的 "həˈloʊ,hɛˈloʊ" / "wɜːrld" 这类无前缀无括号的
- * 音标行通过 isPhoneticLine 检测（英文句子/定义含 "/" 等字符会被排除）。
- * 覆盖常用 IPA 块：U+0250-U+02AF（IPA 扩展）、U+02B0-U+02FF（间距修饰字母，
- * 包含 ʰ ʲ ʷ 等上标）、U+0300-U+036F（组合变音符号）。
- */
-const IPA_LINE_CHARS =
-  "a-zA-Z\\u0250-\\u02AF\\u02B0-\\u02FF\\u0300-\\u036F,.;:\\s-";
-
-/** 是否是音标/发音行（英 [...]、美 [...]、uk /.../、/ˈ.../、纯 IPA 等）。 */
+/** 是否是音标/发音行（英 [...]、美 [...]、uk /.../、/ˈ.../ 等）。 */
 function isPhoneticLine(l: string): boolean {
   return (
     // 语言前缀 + 音标：英 [...]、美 [...]、uk /.../、us /.../（容忍 uk/'... 复制失真）
@@ -3896,38 +3147,13 @@ function isPhoneticLine(l: string): boolean {
     // "uk ˈkɒmpjʊtə" / "ˈkɒmpjʊtə" 等无括号形式
     (/^[a-z]+ /i.test(l) &&
       /[ˈˌəɜɪʊɔɒæɛʌθðʃʒŋɡʔɑ]/.test(l) &&
-      !/[\u4e00-\u9fff]/.test(l)) ||
-    // 纯 IPA 行（FreeDictAPI 的 "həˈloʊ,hɛˈloʊ"、剑桥音标 "kæt" 等）
-    // 条件：行仅由字母+IPA+基础标点组成，且至少含一个 IPA 字符，无中文，
-    //       无句末标点，长度 < 80（避免误判长英文句子）
-    new RegExp(`^[${IPA_LINE_CHARS}]+$`, "i").test(l) &&
-      /[ˈˌəɜɪʊɔɒæɛʌθðʃʒŋɡʔɑɝɚɘɵɤɨ]/.test(l) &&
-      !/[\u4e00-\u9fff]/.test(l) &&
-      !/[.!?]$/.test(l) &&
-      l.length < 80
+      !/[\u4e00-\u9fff]/.test(l))
   );
 }
 
-/** 是否是单独一行的词性标记：剑桥/科林斯的 "noun"/"verb"，剑桥的 "noun[C]"、"verb[I,T]" 变体；中文版词典的 "形容词"/"名词"/"及物动词" 等（含 [count] 等可数性标记）。 */
+/** 是否是单独一行的词性标记：剑桥/科林斯的 "noun"/"verb"，剑桥的 "noun[C]"、"verb[I,T]" 变体。 */
 function isBarePosLine(l: string): boolean {
-  return (
-    // 英文 POS 整行（含 [bracket] 变体）
-    new RegExp(`^(${POS_WORDS})\\b(?:\\[[^\\]]*\\])?\\.?\\s*$`, "i").test(l) ||
-    // 中文 POS 整行（可含 [count] 等可数性/语法标记）
-    new RegExp(`^(?:${ZH_POS_WORDS})(?:\\[[^\\]]*\\])?\\s*$`).test(l)
-  );
-}
-
-/** 剥离行首 POS 前缀（英文 + 中文），可同时消费紧随其后的 [bracket] 标记（如科林斯 [count] / [不可数]）。无匹配时返回原字符串。 */
-function stripPosPrefix(l: string): string {
-  // 英文 POS：word boundary, optional [bracket], optional dot, optional space
-  const en = l.replace(new RegExp(`^(${POS_WORDS})\\b(?:\\[[^\\]]*\\])?\\.?\\s*`, "i"), "");
-  if (en !== l) return en;
-  // 中文 POS：中文无 \b，可选 [bracket]，可选空格
-  return l.replace(
-    new RegExp(`^(?:${ZH_POS_WORDS})(?:\\[[^\\]]*\\])?\\s*`),
-    "",
-  );
+  return new RegExp(`^(${POS_WORDS})\\b(?:\\[[^\\]]*\\])?\\.?\\s*$`, "i").test(l);
 }
 
 /**
@@ -3978,7 +3204,7 @@ function extractFirstDefinition(dict: string, service?: string): string {
     if (!l || isPhoneticLine(l) || isBarePosLine(l)) continue;
     // 剑桥英文定义行（"1. guideword definition"）位于其中文释义之前，跳过
     if (/^\d+[.、)）]\s+[A-Za-z]/.test(l)) continue;
-    const stripped = stripPosPrefix(l);
+    const stripped = l.replace(new RegExp(`^(${POS_WORDS})\\b\\.?\\s*`, "i"), "");
     if (/[\u4e00-\u9fff]/.test(stripped) && !/^[A-Za-z]/.test(stripped)) {
       candidate = l;
       break;
@@ -3995,7 +3221,7 @@ function extractFirstDefinition(dict: string, service?: string): string {
     }
   }
 
-  // 3. 无中文（en-en / ru / 单释义行）：第一个非音标/非词性/非噪音行
+  // 2. 无中文（en-en / ru / 单释义行）：第一个非音标/非词性/非噪音行
   if (!candidate) {
     for (const l of lines) {
       if (!l || isPhoneticLine(l) || isBarePosLine(l)) continue;
@@ -4009,7 +3235,7 @@ function extractFirstDefinition(dict: string, service?: string): string {
 
   let r = candidate;
   if (/[\u4e00-\u9fff]/.test(r)) {
-    r = stripPosPrefix(r);
+    r = r.replace(new RegExp(`^(${POS_WORDS})\\b\\.?\\s*`, "i"), "");
   } else {
     r = r.replace(/^\[[a-z]+\]\s*/i, "");
   }
@@ -4025,24 +3251,12 @@ function cleanDefinition(r: string, jp: boolean): string {
   // 必应网络释义行："网络释义:是;过去式;..." → 剥前缀，取冒号后的第一条
   r = r.replace(/^\s*网络释义\s*[:：]\s*/, "");
   r = r.replace(/^\s*\d+[.、)）]\s*/, "");
-
-  // 剥离行首括号/方括号注释（科林斯的例句 "(world, attitudes, role)"、
-  // 标签 "(COMPUTING)"、可数性标记 "[count]"/"[count or uncount]" 等）。
-  // 重复剥离以处理多层括号或括号后再接内容的情况——cleanDefinition
-  // 末尾会再次扫除剩余括号注释；这里只清行首，避免 split 时被
-  // 括号内的逗号/空格误导。
-  let prev: string;
-  do {
-    prev = r;
-    r = r.replace(/^\s*[（(\[【][^）)\]】]*[）)\]】]\s*/, "");
-  } while (r !== prev);
-
   if (jp || /[\u4e00-\u9fff\u3040-\u30ff]/.test(r)) {
     r = r.split(/[:：;；|、,，\s]+/)[0].trim();
   } else {
     r = r.split(/[;；|]/)[0].trim();
   }
-  r = r.replace(/\s*[(（\[][^)）\]]+[)）\]]\s*/g, " ").replace(/\s+/g, " ").trim();
+  r = r.replace(/\s*[(（][^)）]+[)）]\s*/g, " ").replace(/\s+/g, " ").trim();
   return r;
 }
 
@@ -4110,32 +3324,6 @@ async function addWordToEudic(
     } catch { /* ignore */ }
   }
   const platform = getPref("wordbookPlatform") as string;
-  // ── Zotero 10 阅读模式(SDT)适配(2026-08-22) ──
-  // SDT 悬停场景无 C 通道(__hteLastLocated=null)，annotationCtx 缺
-  // pdfRects/pageIndex → src 跳转链接缺 position 参数、注释同步失败。
-  // 用官方 mapper(SDTView.toSelector) 把 SDT range 映射回 PDF 用户坐标，
-  // 回填后下游 buildSourceLink 与 syncWordAnnotation 自然恢复。
-  try {
-    const ctxAny = annotationCtx as any;
-    if (ctxAny?.range && ctxAny.reader &&
-        !(ctxAny.pdfRects?.length) &&
-        !Number.isInteger(ctxAny.pageIndex)) {
-      const { sdtRangeToSourcePosition } = await import("../utils/window");
-      const sdtPos = sdtRangeToSourcePosition(ctxAny.reader, ctxAny.range);
-      if (sdtPos) {
-        ctxAny.pdfRects = sdtPos.rects;
-        ctxAny.pageIndex = sdtPos.pageIndex;
-      } else {
-        // mapper 失败 → page 兜底（至少生成 ?page=N 定位当前页）。
-        // Zotero 10 实例无 reader.state.pageIndex，需多路径探测。
-        const { getReaderCurrentPageIndex } = await import("../utils/window");
-        const pg = getReaderCurrentPageIndex(ctxAny.reader);
-        if (pg != null) {
-          ctxAny.pageIndex = pg;
-        }
-      }
-    }
-  } catch { /* ignore */ }
   // 构建原文跳转链接（zotero://open-pdf/...），供本地生词表 / Zotero 笔记条目跳转使用
   let src = "";
   try {
@@ -4292,68 +3480,6 @@ async function addWordToEudic(
 
 /* ----------------------------- helpers ----------------------------- */
 
-/**
- * 解析 CSS 颜色字符串为 {r,g,b,a}。支持 #rgb/#rrggbb/rgb()/rgba()。
- * 解析失败返回 null。alpha 缺省为 1。
- */
-function parseRgba(color: string): { r: number; g: number; b: number; a: number } | null {
-  const c = String(color || "").trim();
-  const hex = c.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
-  if (hex) {
-    let h = hex[1];
-    if (h.length === 3) h = h.split("").map((x) => x + x).join("");
-    return {
-      r: parseInt(h.slice(0, 2), 16),
-      g: parseInt(h.slice(2, 4), 16),
-      b: parseInt(h.slice(4, 6), 16),
-      a: 1,
-    };
-  }
-  const rgb = c.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)/i);
-  if (rgb) {
-    return {
-      r: parseInt(rgb[1]),
-      g: parseInt(rgb[2]),
-      b: parseInt(rgb[3]),
-      a: rgb[4] !== undefined ? parseFloat(rgb[4]) : 1,
-    };
-  }
-  return null;
-}
-
-/** RGB 亮度（0-255，Rec.601 加权）。 */
-function rgbLuminance(r: number, g: number, b: number): number {
-  return (r * 299 + g * 587 + b * 114) / 1000;
-}
-
-/**
- * 读取窗口「实际渲染背景」亮度（跳过透明层）。
- *
- * 2026-08-22 修复：旧逻辑把透明背景 rgba(0,0,0,0) 的 rgb(0,0,0) 当黑色
- * （亮度 0 < 128 → 误判深色）。Zotero 10 阅读模式 SDT iframe 的 body
- * 背景是透明的（实际底色由 documentElement 的 --background-color 提供），
- * 旧逻辑必然误判。现在逐层（body → documentElement）解析，alpha < 0.05
- * 的透明层跳过，只统计真实可见底色。
- */
-function renderedBackgroundLuminance(innerWin: Window): number | null {
-  try {
-    const doc = innerWin.document;
-    if (!doc) return null;
-    const layers: HTMLElement[] = [];
-    try { if (doc.body) layers.push(doc.body as HTMLElement); } catch { /* ignore */ }
-    try { if (doc.documentElement) layers.push(doc.documentElement as HTMLElement); } catch { /* ignore */ }
-    for (const el of layers) {
-      const bg = innerWin.getComputedStyle(el)?.backgroundColor || "";
-      const parsed = parseRgba(bg);
-      if (!parsed) continue;
-      // 透明层（如 rgba(0,0,0,0)）不代表实际底色，跳过
-      if (parsed.a < 0.05) continue;
-      return rgbLuminance(parsed.r, parsed.g, parsed.b);
-    }
-  } catch { /* ignore */ }
-  return null;
-}
-
 /** Detect if Zotero is in dark mode using multiple strategies. */
 function isDarkMode(innerWin?: Window): boolean {
   // Strategy 1 (zotero-style 约定): main window <window> root `theme`
@@ -4376,38 +3502,44 @@ function isDarkMode(innerWin?: Window): boolean {
   } catch {
     /* ignore */
   }
-  // Strategy 1.5 (2026-08-22 新增): Zotero 10 阅读模式(SDT) iframe 的
-  // data-color-scheme 属性 —— 官方 DOMView._updateColorScheme 把最终生效的
-  // 亮暗写入 SDT documentElement.dataset.colorScheme（reader.js 的
-  // :root[data-color-scheme=dark] CSS 与其同源）。这是阅读模式亮暗的
-  // 权威信号：显式 dark/light 直接采用，不再落入后面的系统/背景猜测
-  // （修复：阅读模式弹窗恒深色、高亮恒半透明「像覆盖层」）。
+  // Strategy 2: Check the inner window's matchMedia (system-level fallback,
+  // only consulted when the main window has no theme attribute).
   if (innerWin) {
     try {
-      const sdtScheme = innerWin.document?.documentElement?.getAttribute?.(
-        "data-color-scheme",
-      );
-      if (sdtScheme === "dark") return true;
-      if (sdtScheme === "light") return false;
+      const mql = innerWin.matchMedia("(prefers-color-scheme: dark)");
+      if (mql) {
+        if (mql.matches) return true;
+      }
+    } catch {
+      /* matchMedia not available */
+    }
+  }
+  // Strategy 3: Check the computed background color of the reader's body.
+  if (innerWin) {
+    try {
+      const win: Window = innerWin;
+      const body: any = win.document.body || win.document.documentElement;
+      if (body) {
+        const bg = win.getComputedStyle(body)?.backgroundColor || "";
+        const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        if (m) {
+          const r = parseInt(m[1]), g = parseInt(m[2]), b = parseInt(m[3]);
+          const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+          if (brightness < 128) return true;
+        }
+      }
     } catch {
       /* ignore */
     }
   }
-  // Strategy 2 (2026-08-22 重写): innerWin 实际渲染背景亮度。
-  // 透明层跳过（旧逻辑把 SDT 透明 body 当纯黑 → 恒判深色）。
-  if (innerWin) {
-    const lum = renderedBackgroundLuminance(innerWin);
-    if (lum != null && lum < 128) return true;
-    if (lum != null) return false;
-  }
-  // Strategy 3: Check Zotero UI theme preference.
+  // Strategy 4: Check Zotero UI theme preference.
   try {
     const uiTheme = Zotero.Prefs.get("ui.theme", true);
     if (uiTheme === "dark" || uiTheme === 2) return true;
   } catch {
     /* ignore */
   }
-  // Strategy 4: Zotero 9/10 主窗口 CSS 变量（--material-*）或根背景亮度。
+  // Strategy 5: Zotero 9 主窗口 CSS 变量（--material-*）或 body 背景亮度。
   // Zotero 9 / zotero-style 6 用 CSS 变量驱动明暗主题，theme 属性可能缺失。
   try {
     const mainWin = Zotero.getMainWindow();
@@ -4419,69 +3551,35 @@ function isDarkMode(innerWin?: Window): boolean {
           cs.getPropertyValue("--material-background") ||
           cs.getPropertyValue("--fill-primary") ||
           "";
-        const parsed = parseRgba(bgVar);
-        if (parsed && parsed.a >= 0.05) {
-          const lum = rgbLuminance(parsed.r, parsed.g, parsed.b);
-          if (lum < 128) return true;
-          return false;
-        }
-        // 根元素自身背景（非透明才有效）
-        const rootParsed = parseRgba(cs.backgroundColor || "");
-        if (rootParsed && rootParsed.a >= 0.05) {
-          const lum = rgbLuminance(rootParsed.r, rootParsed.g, rootParsed.b);
-          if (lum < 128) return true;
-          return false;
+        if (bgVar) {
+          const lum = cssColorLuminance(bgVar);
+          if (lum != null && lum < 128) return true;
         }
       }
     }
   } catch {
     /* ignore */
   }
-  // Strategy 5 (系统级兜底，最后): matchMedia。SDT iframe 会继承系统
-  // color-scheme，只能作为无任何显式信号时的最后猜测。
-  if (innerWin) {
-    try {
-      const mql = innerWin.matchMedia("(prefers-color-scheme: dark)");
-      if (mql) {
-        if (mql.matches) return true;
-      }
-    } catch {
-      /* matchMedia not available */
-    }
-  }
   return false;
 }
 
 /** 计算 CSS 颜色字符串的亮度（0-255）。支持 #rgb/#rrggbb/rgb()/rgba()/var 解析失败返回 null。 */
 function cssColorLuminance(color: string): number | null {
-  const parsed = parseRgba(color);
-  if (!parsed) return null;
-  return rgbLuminance(parsed.r, parsed.g, parsed.b);
-}
-
-/**
- * 弹窗排版隔离(2026-08-22):向宿主文档注入一条规则,固定弹窗及其全部
- * 后代的字距/词距。背景:Zotero 10 阅读模式(SDT)样式表规则
- * `body, body * { letter-spacing/word-spacing: var(--content-*) }` 会命中
- * 弹窗的每一个后代元素——直接命中的规则优先于从 popup 根继承,所以仅在
- * 弹窗根元素 inline 声明不够,子元素(含动态创建的按钮)仍会跟随阅读模式
- * 的字间距/词间距设置变化(2026-08-22 追加:line-height 同理——SDT 的行高
- * 规则直接命中弹窗后代,未显式设行高的单词行/状态行被撑高,弹窗高度与
- * 单词-译文间距跟随阅读模式行距滑块变化)。本规则用 ID 选择器(特异性
- * (1,0,0) 高于 body * 的 (0,0,2))覆盖之,无需 !important;PDF 模式下无
- * 冲突规则,normal 即默认值。字距取 normal(2026-08-22 用户确认,由
- * 0.02em 回退):保持字体默认密度,与主流桌面 UI 弹窗一致。译文行的显式
- * 内联 line-height(ZPPT lineHeight pref)优先级更高,不受影响。
- * 幂等:按 style 元素 id 查重,弹窗反复重建不重复注入。
- */
-function ensurePopupSpacingStyle(doc: Document) {
-  const STYLE_ID = `${POPUP_ID}-spacing-style`;
-  if (doc.getElementById(STYLE_ID)) return;
-  const style = doc.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent =
-    `#${POPUP_ID}, #${POPUP_ID} * { letter-spacing: normal; word-spacing: normal; line-height: normal; }`;
-  (doc.head ?? doc.documentElement)?.appendChild(style);
+  const c = String(color || "").trim();
+  const hex = c.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3) h = h.split("").map((x) => x + x).join("");
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000;
+  }
+  const rgb = c.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (rgb) {
+    return (parseInt(rgb[1]) * 299 + parseInt(rgb[2]) * 587 + parseInt(rgb[3]) * 114) / 1000;
+  }
+  return null;
 }
 
 /** Return theme-aware color set for the popup. Caches dark-mode result (D5). */
@@ -4578,10 +3676,6 @@ function clearHover(innerWin: Window) {
 function clearPopup(innerWin: Window) {
   const el = innerWin.document.getElementById(POPUP_ID);
   if (!el) return;
-  // 问题2兜底:鼠标仍在弹窗上时销毁(mouseleave 不触发),清联动高亮
-  try {
-    (el as any).__hteAnchorClear?.();
-  } catch { /* ignore */ }
   // 断开 ResizeObserver，避免移除后残留观察器
   try {
     const ro = (el as any).__hteResizeObserver as ResizeObserver | undefined;

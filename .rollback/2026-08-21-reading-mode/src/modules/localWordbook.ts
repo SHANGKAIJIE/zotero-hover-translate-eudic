@@ -76,7 +76,7 @@ async function readContent(file: any): Promise<string> {
   if (!file.exists()) return "";
   try {
     // Zotero 7+ async API
-    return mergeQuotedNewlines(stripBom(String(await Zotero.File.getContentsAsync(file) || "")));
+    return stripBom(String(await Zotero.File.getContentsAsync(file) || ""));
   } catch {
     // Fallback: synchronous stream read
     try {
@@ -85,67 +85,11 @@ async function readContent(file: any): Promise<string> {
       istream.init(file, 0x01, 0o444, 0);
       const content = Zotero.File.getContents(istream) as string || "";
       istream.close();
-      return mergeQuotedNewlines(stripBom(content));
+      return stripBom(content);
     } catch {
       return "";
     }
   }
-}
-
-/**
- * 把文本字段清洗为单行（2026-08-22 修复 exp 多行问题）。
- *
- * 翻译结果常含换行符（多词性释义分行），旧版 esc() 按引号包裹写成合法的
- * 多行 CSV 字段，但欧路词典批量导入把引号内换行当真实行断开，导致词条
- * 被拆散。统一策略：换行 → 空格（与正常单行词条 lead 的「释义间空格分隔」
- * 格式一致），并压缩连续空白。word/phon/exp/src 全部过此清洗。
- */
-function flattenText(val: unknown): string {
-  return String(val == null ? "" : val)
-    .replace(/\r\n?|\n/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
- * 合并 CSV 引号字段内的跨行内容为单行（读取侧兼容）。
- *
- * 存量文件中旧版写入的多行 exp（引号包裹、内部含 \n/\r）会让「按行 split」
- * 的解析逻辑错位。本函数按 CSV 状态机扫描：仅在双引号字段内部的换行替换为
- * 空格；行分隔符与引号转义("")不受影响。readContent 统一调用后：
- *  - getWords/updateWordByIndex/deleteWordByIndex 行定位恢复正确；
- *  - addWord 全量回写时存量多行行自动规整为单行（无需用户手动清理）。
- */
-function mergeQuotedNewlines(content: string): string {
-  if (!content) return content;
-  let out = "";
-  let inQ = false;
-  for (let i = 0; i < content.length; i++) {
-    const ch = content[i];
-    if (inQ) {
-      if (ch === '"') {
-        // "" → 引号转义，原样保留两个字符
-        if (i + 1 < content.length && content[i + 1] === '"') {
-          out += '""';
-          i++;
-        } else {
-          inQ = false;
-          out += ch;
-        }
-      } else if (ch === "\r" || ch === "\n") {
-        // 引号字段内的换行 → 空格（连续 \r\n 合并为一个空格）
-        if (!(out.endsWith(" ") && (content[i - 1] === "\r" || content[i - 1] === "\n"))) {
-          out += " ";
-        }
-      } else {
-        out += ch;
-      }
-    } else {
-      if (ch === '"') inQ = true;
-      out += ch;
-    }
-  }
-  return out;
 }
 
 /** Escape a single CSV field. */
@@ -256,13 +200,13 @@ export async function addWord(params: {
       ? Math.max(1, Number(params.tries) || 1)
       : 0;
     const row = [
-      esc(flattenText(params.word)),
-      esc(flattenText(params.phon)),
-      esc(flattenText(params.exp)),
+      esc(params.word),
+      esc(params.phon || ""),
+      esc(params.exp || ""),
       esc(add_time),
       esc(status),
       tries ? String(tries) : "",
-      esc(flattenText(params.src)),
+      esc(params.src || ""),
     ];
     const line = row.join(",");
 
@@ -388,12 +332,12 @@ async function updateWord(
       const tries = patch.tries !== undefined ? patch.tries : curTries;
       const newCols = [
         cols[0], // word（保持原样）
-        patch.phon !== undefined ? flattenText(patch.phon) : (cols[1] || ""),
-        patch.exp !== undefined ? flattenText(patch.exp) : (cols[2] || ""),
+        patch.phon !== undefined ? patch.phon : (cols[1] || ""),
+        patch.exp !== undefined ? patch.exp : (cols[2] || ""),
         cols[3] || "", // add_time 保持
         esc(status),
         tries ? String(tries) : "",
-        patch.src !== undefined ? esc(flattenText(patch.src)) : (cols[6] !== undefined ? (cols[6] || "").trim() : ""),
+        patch.src !== undefined ? esc(patch.src) : (cols[6] !== undefined ? (cols[6] || "").trim() : ""),
       ];
       return newCols.join(",");
     });
@@ -440,13 +384,13 @@ export async function updateWordByIndex(
     const target = dataLines[index];
     const cols = splitCsvLine(target.raw);
     const newCols = [
-      esc(flattenText(patch.word !== undefined ? patch.word : (cols[0] || ""))),
-      esc(flattenText(patch.phon !== undefined ? patch.phon : (cols[1] || ""))),
-      esc(flattenText(patch.exp !== undefined ? patch.exp : (cols[2] || ""))),
+      esc(patch.word !== undefined ? patch.word : (cols[0] || "")),
+      esc(patch.phon !== undefined ? patch.phon : (cols[1] || "")),
+      esc(patch.exp !== undefined ? patch.exp : (cols[2] || "")),
       cols[3] || "", // add_time 保持
       cols[4] !== undefined ? (cols[4] || "").trim() : "", // status 保持
       cols[5] !== undefined ? (cols[5] || "").trim() : "", // tries 保持
-      esc(flattenText(patch.src !== undefined ? patch.src : (cols[6] !== undefined ? (cols[6] || "").trim() : ""))),
+      esc(patch.src !== undefined ? patch.src : (cols[6] !== undefined ? (cols[6] || "").trim() : "")),
     ];
     lines[target.idx] = newCols.join(",");
 

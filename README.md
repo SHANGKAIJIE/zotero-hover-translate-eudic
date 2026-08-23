@@ -4,7 +4,7 @@
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%20%7C%208%20%7C%209-blue)](https://www.zotero.org/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.3.5-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
+[![Version](https://img.shields.io/badge/version-0.3.6-orange)](https://github.com/SHANGKAIJIE/zotero-hover-translate-eudic/releases)
 [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
 
 <img width="731" height="331" alt="微信图片_20260801191142_62_119_看图王" src="https://github.com/user-attachments/assets/61c1bbaa-706a-4d03-93a6-9e964e6eaed1" />
@@ -17,7 +17,8 @@
   - `悬停`：鼠标悬停在单词上，延迟后自动翻译（可配置延迟）。
   - `修饰键 + 悬停`：按住 `Ctrl` / `Alt` / `Shift`（可组合）悬停即翻译；也支持**先悬停再按下修饰键**。
   - `鼠标左键单击`：单击单词即翻译。
-- **取词高亮**（v0.3.5 重构）：取词时可以对单词施加高亮。定位基于 **PDF 数据层单流字符**（官方 `getPageData` + 词边界信号 `wordBreakAfter`），先定位鼠标所在**句子**、再在句内定位单词（文本匹配 → 前后 2 词上下文指纹 → 鼠标坐标距离三重消歧），根治旧版「高频词（the/a）同词错位」问题。支持**连字符复合词分段高亮**（鼠标指向 `Multi-View` 的 `Multi` 段即只高亮该段）与**跨行连字符断词重组**（`ob-` + 换行 + `scurer` 视为完整词 `obscurer` 翻译与高亮）。
+- **取词高亮**（v0.3.5 重构）：取词时可以对单词施加高亮。
+- **Zotero 10 阅读模式支持**：悬停取词、翻译浮层、取词高亮、`+生词本` / 发音按钮与快捷键在 Zotero 10 阅读模式（Reading Mode / SDT 可重排文档）下同样可用，阅读模式与 PDF 模式之间切换自动生效；隐藏便签图标功能对阅读模式同样生效。
 - **复用 Translate for Zotero 引擎**：翻译结果、字典释义、多语种翻译服务直接复用已安装的 Translate 插件。
 - **一键同步欧路 / 扇贝 / 墨墨 / 本地 / Zotero 笔记生词本**：翻译弹窗内点击圆形 `+` 按钮，将当前单词加入云端指定生词本、本地 CSV 文件或 Zotero 笔记（添加后切换为 `✓` 或 `✗` 状态反馈）。支持**欧路词典**、**扇贝单词**、**墨墨背单词**、**本地生词本**与**Zotero 笔记**五平台切换。
 - **术语库**：划词模式下点击 `+术语库` 按钮，可将术语原文、缩写、释义添加至**本地术语库**与**Zotero 笔记**。
@@ -97,9 +98,9 @@ npm start
 | 字典引擎（更快，取首条释义） | 单词优先调用词典源（如必应词典，免费且稳定），失败自动回退翻译源；短语/非单词仍走翻译源。 |
 | 翻译引擎（稍慢，释义更贴切） | 一律直接调用翻译源，不经过词典源，返回最贴合上下文的译文。 |
 
-> 翻译引擎复用 Translate 插件，若翻译结果 **[请求错误]**，可去该插件切换翻译引擎。
+> 若翻译结果 **[请求错误]**，可去 Translate 插件切换翻译引擎。
 
-> 字典引擎的「首条释义」提取已适配 Translate 插件全部词典源，取第一条中文释义。字典引擎**直接查询鼠标悬停的原文词，不做词形还原**——词形还原仅作用于「加生词本」流程（由下方「词形选择」控制），确保悬停翻译始终查当前单词。
+> 字典引擎的「首条释义」提取已适配 Translate 插件全部词典源。可在Translate插件设置面板的字典服务切换不同字典。
 
 **翻译显示模式**：控制翻译弹窗中的内容：
 | 模式 | 说明 |
@@ -386,6 +387,7 @@ zotero-hover-translate-eudic/
 - [bulletproof-system/zotero-maimemo-sync](https://github.com/bulletproof-system/zotero-maimemo-sync) — 墨墨背单词同步参考（AGPL-3.0-or-later）
 - [honwhy/shanbay-ext](https://github.com/honwhy/shanbay-ext) — 扇贝单词助手 V3，扇贝 API 参考实现（MIT；Trie 解码算法已移植至本插件）
 - [chen7447/word-translator-zotero](https://github.com/chen7447/word-translator-zotero) — PDF 右侧生词本面板参考实现（MIT；ItemPane 面板机制已移植至本插件）
+- [xuhan-rgb/zotero-ai-sidebar](https://github.com/xuhan-rgb/zotero-ai-sidebar) — zotero-sentence-translator，句子/段落定位参考实现（文本归一化、句子切分与段落检测代码移植自该仓库）
 - [墨墨开放 API](https://open.maimemo.com/) — 墨墨背单词云词本接口
 - [欧路 OpenAPI 获取授权](https://my.eudic.net/OpenAPI/Authorization) — 欧路词典 OpenAPI 授权获取
 

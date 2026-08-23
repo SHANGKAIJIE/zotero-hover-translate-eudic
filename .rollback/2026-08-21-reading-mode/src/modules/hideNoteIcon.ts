@@ -62,14 +62,6 @@ const STATE_KEY = "__hteNoteIconPatchV2";
 /** 已 attach 的 reader 集合（防重复 patch）。 */
 const attachedReaders = new Set<any>();
 
-/**
- * 每个 reader 最近一次看到的 SDT 阅读模式视图数。
- * 阅读模式 iframe(视图)在切换时动态创建/销毁,而注入的 patch 只在注入
- * 时刻遍历当前存在的视图 —— 已 attach 的 reader 若 SDT 视图数量变化,
- * 需要重新注入 patch 以覆盖新创建的 SDT DOMView(幂等,按 prototype 去重)。
- */
-const sdtViewCounts = new Map<any, number>();
-
 /** 轮询定时器。 */
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -550,14 +542,10 @@ function buildPatchSource(params: PatchParams): string {
       // 避免标签相同/文本相似导致误判；不依赖标注颜色）
       return !!(annotation.id && p.TRACKED_IDS.includes(annotation.id));
     };
-    // DOM React 路径专用判定：
-    //  - note(独立便签)：仅由 hideNoteIconNotes 控制(与 canvas 路径一致),
-    //    由 setAnnotations wrapper 从渲染列表【过滤移除】(置空 comment 无法
-    //    移除 note —— StaggeredNotes 直接从注释列表渲染 Note/CommentIcon)
-    //  - 其余(高亮/下划线/图片)：置空 comment → CommentIcon 不渲染
+    // DOM React 路径专用判定：note 类型不走这里（其图标由 canvas _drawNote 处理，
+    // comment 是 note 内容，绝不能置空）
     state.shouldHideDom = (annotation) => {
-      if (!annotation) return false;
-      if (annotation.type === "note") return !!state.params.HIDE_NOTES;
+      if (!annotation || annotation.type === "note") return false;
       return state.shouldHide(annotation);
     };
     const patchLayer = (layer) => {
@@ -586,17 +574,9 @@ function buildPatchSource(params: PatchParams): string {
               state.counters.setAnnotations += 1;
               const hidden = full.filter((a) => state.shouldHideDom(a));
               state.counters.setAnnotationsHidden += hidden.length;
-              // 独立便签(type=note)：从渲染列表【过滤移除】(StaggeredNotes 从
-              // 列表渲染,置空 comment 无效);其余(高亮/下划线/图片):置空
-              // comment → CommentIcon 不渲染。弹窗/数据源由下方
-              // _annotationsByID 还原为完整列表,不受影响。
-              render = full
-                .filter((a) => !(a.type === "note" && state.shouldHideDom(a)))
-                .map((a) =>
-                  state.shouldHideDom(a)
-                    ? Object.assign({}, a, { comment: null })
-                    : a,
-                );
+              render = full.map((a) =>
+                state.shouldHideDom(a) ? Object.assign({}, a, { comment: null }) : a
+              );
             }
             const result = orig.call(this, render);
             // 弹窗/数据源保持原始 comment
@@ -774,17 +754,6 @@ function buildPatchSource(params: PatchParams): string {
         patchLayer(page?._layer);
       }
     }
-    // Zotero 10 阅读模式(SDT)视图:DOM React 渲染层(DOMView 子类,带
-    // _renderAnnotations),便签/注释图标渲染进 #annotation-render-root 的
-    // AnnotationOverlay 组件。patchLayer 包装 DOMView.prototype.setAnnotations:
-    // 置空 comment 隐藏高亮/下划线便签 + 过滤 note 隐藏独立便签。
-    const sdtViews = [
-      root._reader?._primarySDTView,
-      root._reader?._secondarySDTView,
-    ].filter(Boolean);
-    for (const sdtView of sdtViews) {
-      patchLayer(sdtView);
-    }
 
     // 重渲染：canvas 路径失效签名并重绘；DOM 路径强制同步渲染
     if (changed) {
@@ -801,17 +770,6 @@ function buildPatchSource(params: PatchParams): string {
           page?._pageRenderer?._layer?._renderAnnotations?.(true);
           page?._detailRenderer?._layer?._renderAnnotations?.(true);
         }
-      }
-      // SDT 阅读模式视图:用当前注释数据强制走一遍 setAnnotations wrapper
-      // (其内部已按最新参数过滤 note/置空 comment 并同步重渲染)。
-      for (const sdtView of sdtViews) {
-        try {
-          const src = sdtView.__hteFullAnnotations ?? sdtView._annotations;
-          if (Array.isArray(src)) {
-            sdtView.setAnnotations(src);
-            changed = true;
-          }
-        } catch { /* ignore */ }
       }
     }
     // 诊断：返回自上次注入以来的计数增量 + 环境信息
@@ -836,12 +794,6 @@ function buildPatchSource(params: PatchParams): string {
           // Zotero 10: page._layer = PDFView（集成原 AnnotationLayer 职责）
           const l3 = page?._layer;
           if (l3 && Array.isArray(l3._annotations)) all.push(...l3._annotations);
-        }
-      }
-      // Zotero 10 阅读模式:SDT 视图的注释列表(_annotations,含 note/高亮/下划线)
-      for (const sdtView of sdtViews) {
-        if (sdtView && Array.isArray(sdtView._annotations)) {
-          all.push(...sdtView._annotations);
         }
       }
       liveKeys = [...new Set(all.map((a) => a && a.id).filter(Boolean))];
@@ -871,7 +823,6 @@ function buildPatchSource(params: PatchParams): string {
       readerFound: !!root._reader,
       views: views.length,
       pages: views.reduce((n, v) => n + (v._pages ? v._pages.length : 0), 0),
-      sdtViews: sdtViews.length,
       layers: state.layerPatches.length,
       renderers: state.rendererPatches.length,
       changed,
@@ -915,17 +866,13 @@ function attachToReader(reader: any): boolean {
       // 必须手动切换 pref 或新增生词（触发全量 reapplyAll）才生效"。
       // 修复：未就绪时返回 false，由轮询在 PDF 页面就绪后重试，直到 patch 安装成功。
       if (params.mode !== "off") {
-        // 就绪判定:PDF 页面 或 SDT 阅读模式视图任一存在,且至少一个
-        // layer/renderer 原型被 patch(dom 路径 layers / canvas 路径 renderers)。
-        // SDT 视图存在时 patchLayer 必然创建 layerPatch(有 _renderAnnotations),
-        // 因此 layers>0 即证明 DOM React 路径已安装。
         const ready =
           !!ok.readerFound &&
-          ((ok.pages as number) > 0 || (ok.sdtViews as number) > 0) &&
+          (ok.pages as number) > 0 &&
           ((ok.layers as number) > 0 || (ok.renderers as number) > 0);
         if (!ready) {
           noteLog(
-            `attach deferred (reader/page not ready): readerFound=${ok.readerFound} pages=${ok.pages} sdtViews=${ok.sdtViews} layers=${ok.layers} renderers=${ok.renderers}`,
+            `attach deferred (reader/page not ready): readerFound=${ok.readerFound} pages=${ok.pages} layers=${ok.layers} renderers=${ok.renderers}`,
           );
           return false;
         }
@@ -992,47 +939,6 @@ function scanAllReaders(): void {
   }
 }
 
-/**
- * 轮询检测阅读模式(SDT 视图)切换:已 attach 的 reader 上 SDT 视图数量
- * 变化时重新注入 patch(幂等),使新创建的 SDT DOMView 的 setAnnotations
- * 被包装(隐藏高亮/下划线便签 + 独立便签)。主开关关闭时无需重注入
- * (off 模式由其他路径恢复),但数量变化仍记录,以便开启后轮询重放。
- */
-function scanSdtViews(): void {
-  const enabled = !!getPref("hideNoteIcon");
-  for (const reader of getAllReaders()) {
-    const win = getReaderInnerWindow(reader);
-    if (!win) continue;
-    let n = 0;
-    try {
-      n =
-        Number(
-          win.eval.call(
-            win,
-            `(() => {
-              const r = window._reader;
-              if (!r) return 0;
-              return (r._primarySDTView ? 1 : 0) + (r._secondarySDTView ? 1 : 0);
-            })()`,
-          ),
-        ) || 0;
-    } catch {
-      continue;
-    }
-    const prev = sdtViewCounts.get(reader);
-    if (prev !== undefined && prev !== n && enabled) {
-      noteLog(`sdt views changed: ${prev} -> ${n}, re-injecting`);
-      try {
-        // 忽略 attachedReaders 标记,直接重新注入(幂等)
-        attachToReader(reader);
-      } catch (e) {
-        noteLog("sdt re-inject error: " + dumpErr(e));
-      }
-    }
-    sdtViewCounts.set(reader, n);
-  }
-}
-
 // 上次观察到的 patch 参数签名（保险丝用）
 let lastParamsKey = "";
 
@@ -1072,7 +978,6 @@ export function initHideNoteIcon(): void {
   pollTimer = setInterval(() => {
     try {
       scanAllReaders();
-      scanSdtViews();
       pollPrefParams();
     } catch (e) {
       noteLog("poll error: " + dumpErr(e));
@@ -1142,5 +1047,4 @@ export function cleanupHideNoteIcon(): void {
     }
   }
   attachedReaders.clear();
-  sdtViewCounts.clear();
 }

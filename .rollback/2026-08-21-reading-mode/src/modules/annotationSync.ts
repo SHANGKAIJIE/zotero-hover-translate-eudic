@@ -131,85 +131,77 @@ export async function syncWordAnnotation(
       rects = ctx.pdfRects;
       pageIndex = ctx.pageIndex != null ? ctx.pageIndex : 0;
       annLog(`selection scene: using pre-computed pdfRects, pageIndex=${pageIndex}, rects=${dump(rects)}`);
-    } else if (ctx.range) {
-      // ── SDT(阅读模式)二次兜底(2026-08-22)──
-      // 上游 addToWordbookAllPlatforms 已尝试回填；若仍缺 pdfRects（如
-      // toSelector 间歇失败 / ctx 构造路径遗漏），此处用官方 mapper 再试
-      // 一次，避免直接落入 findPdfViewerWindow→domRectsToPdfRects 的
-      // 必败路径（SDT DOM 无 .page[data-page-number] 结构）。
-      try {
-        const { sdtRangeToSourcePosition } = await import("../utils/window");
-        const sdtPos = ctx.reader
-          ? sdtRangeToSourcePosition(ctx.reader, ctx.range)
-          : null;
-        if (sdtPos) {
-          rects = sdtPos.rects as PdfRect[];
-          pageIndex = sdtPos.pageIndex;
+    } else {
+      // hover scene (ctx.range) or legacy selection scene (ctx.viewportRects)
+      // — both need the PDFViewerApplication window for coordinate conversion.
+      const viewerWin = findPdfViewerWindow(ctx.reader, ctx.range);
+      if (!viewerWin) {
+        annLog(`syncWordAnnotation FAIL: PDFViewerApplication window not found. ` +
+          `hasReader=${!!ctx.reader}, hasRange=${!!ctx.range}`);
+        if (ctx.reader) {
+          annLog(`reader keys: ${dump(Object.keys(ctx.reader))}`);
+          annLog(`reader._internalReader keys: ${ctx.reader._internalReader ? dump(Object.keys(ctx.reader._internalReader)) : "none"}`);
         }
-      } catch { /* mapper 不可用 → 继续走下方 PDF 模式原有路径 */ }
+        return false;
+      }
+      annLog(`PDFViewerApplication window found successfully`);
+
+      if (ctx.range) {
+      // hover scene — C 通道优先：字符 rect（PDF 数据层）直接作为批注几何。
+      // 修复:Zotero 9 批注渲染(getPageRects)与 A 通道同源,都基于 textLayer
+      // range 的浏览器度量,textLayer span 错位时批注位置偏移。C 通道的
+      // LocatedWord.rects 本身就是 PDF 用户坐标,无需再做 range→PDF 转换,
+      // 且不受 textLayer 错位影响(与取词高亮 trust C 同一数据源)。
+      try {
+        const { locateWord } = await import("../locate/word-locator");
+        const located = await locateWord({
+          reader: ctx.reader,
+          innerWin: viewerWin,
+          word: ctx.word,
+          range: ctx.range,
+          mouseX: ctx.mouseX,
+          mouseY: ctx.mouseY,
+        });
+        if (located && !(located as { gap?: boolean }).gap) {
+          const loc = located as { rects: PdfRect[]; bundle: { pageIndex: number } };
+          rects = loc.rects;
+          pageIndex = loc.bundle.pageIndex;
+          annLog(`hover scene: C-channel char rects, pageIndex=${pageIndex}, rects=${dump(rects)}`);
+        }
+      } catch (e) {
+        annLog(`hover scene: C-channel error (${dumpErr(e)}), fallback DOM range`);
+      }
       if (!rects) {
-        // mapper 不可用 → 继续原有 hover 流程（PDF 模式正常路径）
-        const viewerWin = findPdfViewerWindow(ctx.reader, ctx.range);
-        if (!viewerWin) {
-          annLog(`syncWordAnnotation FAIL: PDFViewerApplication window not found. ` +
-            `hasReader=${!!ctx.reader}, hasRange=${!!ctx.range}`);
+        // C 通道不可用(API 缺失 / 页未构建 / 定位失败)→ 回退 DOM Range 转换
+        annLog(`hover scene: converting DOM Range to PDF rects`);
+        const conv = domRectsToPdfRects(ctx.range, viewerWin);
+        if (!conv) {
+          annLog(`syncWordAnnotation FAIL: failed to convert DOM Range to PDF rects`);
           return false;
         }
-        annLog(`PDFViewerApplication window found successfully`);
-        try {
-          const { locateWord } = await import("../locate/word-locator");
-          const located = await locateWord({
-            reader: ctx.reader,
-            innerWin: viewerWin,
-            word: ctx.word,
-            range: ctx.range,
-            mouseX: ctx.mouseX,
-            mouseY: ctx.mouseY,
-          });
-          if (located && !(located as { gap?: boolean }).gap) {
-            const loc = located as { rects: PdfRect[]; bundle: { pageIndex: number } };
-            rects = loc.rects;
-            pageIndex = loc.bundle.pageIndex;
-            annLog(`hover scene: C-channel char rects, pageIndex=${pageIndex}, rects=${dump(rects)}`);
-          }
-        } catch (e) {
-          annLog(`hover scene: C-channel error (${dumpErr(e)}), fallback DOM range`);
-        }
-        if (!rects) {
-          annLog(`hover scene: converting DOM Range to PDF rects`);
-          const conv = domRectsToPdfRects(ctx.range, viewerWin);
-          if (!conv) {
-            annLog(`syncWordAnnotation FAIL: failed to convert DOM Range to PDF rects`);
-            return false;
-          }
-          rects = conv.rects;
-          pageIndex = conv.pageIndex;
-          annLog(`hover scene: pageIndex=${pageIndex}, rects=${dump(rects)}`);
-        }
+        rects = conv.rects;
+        pageIndex = conv.pageIndex;
+        annLog(`hover scene: pageIndex=${pageIndex}, rects=${dump(rects)}`);
       }
-    } else if (
-      ctx.viewportRects && ctx.viewportRects.length > 0 &&
-      ctx.pageIndex != null
-    ) {
-      // legacy selection scene — convert viewport rects to PDF coords.
-      annLog(`legacy selection scene: converting viewport rects to PDF rects, ` +
-        `viewportRects=${dump(ctx.viewportRects)}, pageIndex=${ctx.pageIndex}`);
-      const viewerWin = findPdfViewerWindow(ctx.reader);
-      if (!viewerWin) {
-        annLog(`syncWordAnnotation FAIL: PDFViewerApplication window not found (legacy selection)`);
+      } else if (
+        ctx.viewportRects && ctx.viewportRects.length > 0 &&
+        ctx.pageIndex != null
+      ) {
+        // legacy selection scene — convert viewport rects to PDF coords.
+        annLog(`legacy selection scene: converting viewport rects to PDF rects, ` +
+          `viewportRects=${dump(ctx.viewportRects)}, pageIndex=${ctx.pageIndex}`);
+        const conv = viewportRectsToPdfRects(ctx.viewportRects, ctx.pageIndex, viewerWin);
+        if (!conv) {
+          annLog(`syncWordAnnotation FAIL: failed to convert viewport rects to PDF rects`);
+          return false;
+        }
+        rects = conv;
+        pageIndex = ctx.pageIndex;
+        annLog(`legacy selection scene: rects=${dump(rects)}`);
+      } else {
+        annLog(`syncWordAnnotation FAIL: no range, no viewportRects, no pdfRects provided`);
         return false;
       }
-      const conv = viewportRectsToPdfRects(ctx.viewportRects, ctx.pageIndex, viewerWin);
-      if (!conv) {
-        annLog(`syncWordAnnotation FAIL: failed to convert viewport rects to PDF rects`);
-        return false;
-      }
-      rects = conv;
-      pageIndex = ctx.pageIndex;
-      annLog(`legacy selection scene: rects=${dump(rects)}`);
-    } else {
-      annLog(`syncWordAnnotation FAIL: no range, no viewportRects, no pdfRects provided`);
-      return false;
     }
 
     if (!rects || rects.length === 0) {

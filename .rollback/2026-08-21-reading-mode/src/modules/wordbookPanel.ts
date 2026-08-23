@@ -58,7 +58,6 @@ import {
   deleteAnnotationsForWord,
 } from "./zoteroNote";
 import { playAudio, buildTtsFallbackUrls } from "./pronunciation";
-import { injectTermDialogStyle } from "./termDialogStyle";
 
 const ref = config.addonRef;
 const PLUGIN_ID = config.addonID;
@@ -1039,49 +1038,40 @@ function openEditTermDialog(
   w: PanelWord,
   idx: number,
 ): void {
-  // 样式注入与元素创建必须用 overlay **实际挂载**的 document——
-  // mountOverlay 把遮罩挂到主窗口 documentElement（非面板 doc），
-  // 若在面板 doc 注入样式/创建元素，类名将无样式或需跨文档 adopt。
-  let mdoc = doc;
-  try {
-    const mainDoc = (Zotero.getMainWindow() as any)?.document;
-    if (mainDoc?.documentElement) mdoc = mainDoc;
-  } catch { /* fall through */ }
-  try {
-    injectTermDialogStyle(mdoc);
-  } catch { /* ignore */ }
+  const overlay = el(doc, "div", {
+    style:
+      "position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:2147483647;" +
+      "display:flex;align-items:center;justify-content:center;",
+  });
+  const dlg = el(doc, "div", {
+    style:
+      "background:var(--color-sidepane,#fff);border:1px solid var(--color-border,#d4d4d4);" +
+      "border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.2);padding:16px;width:360px;max-width:90vw;",
+  });
+  dlg.append(el(doc, "div", { style: "font-weight:600;margin-bottom:10px;" }, ["编辑术语"]));
 
-  const overlay = el(mdoc, "div", { class: "hte-term-mask" });
-  const dlg = el(mdoc, "div", { class: "hte-term-dlg" });
-  dlg.append(el(mdoc, "div", { class: "hte-term-title" }, ["编辑术语"]));
-
-  // 与添加弹窗一致：释义用可拖高的 textarea（min-height:110px）
-  const mkField = (
-    label: string,
-    value: string,
-    isArea = false,
-  ): HTMLInputElement | HTMLTextAreaElement => {
-    const item = el(mdoc, "div", { class: "hte-term-item" });
-    item.append(el(mdoc, "label", { class: "hte-term-label" }, [label]));
-    const input = el(mdoc, isArea ? "textarea" : "input", {
-      class: "hte-term-input",
-    }) as HTMLInputElement | HTMLTextAreaElement;
-    // 注意：textarea 的 type 属性为只读，仅对 input 设置 type="text"
-    if (!isArea) (input as HTMLInputElement).type = "text";
+  const mkField = (label: string, value: string): HTMLInputElement => {
+    dlg.append(el(doc, "label", { style: "display:block;font-size:12px;color:#666;margin-top:6px;" }, [label]));
+    const input = el(doc, "input", {
+      type: "text",
+      style: "width:100%;box-sizing:border-box;margin-top:2px;padding:4px 6px;border:1px solid #ccc;border-radius:4px;",
+    }) as HTMLInputElement;
     input.value = value;
-    item.append(input);
-    dlg.append(item);
+    dlg.append(input);
     return input;
   };
 
-  const termInput = mkField("术语", w.word) as HTMLInputElement;
-  const abbrInput = mkField("缩写（选填）", w.abbr || "") as HTMLInputElement;
-  const expInput = mkField("释义", w.exp, true) as HTMLTextAreaElement;
+  const termInput = mkField("术语", w.word);
+  const abbrInput = mkField("缩写（选填）", w.abbr || "");
+  const expInput = mkField("释义", w.exp);
 
-  const btnRow = el(mdoc, "div", { class: "hte-term-btnrow" });
-  const saveBtn = el(mdoc, "button", { class: "hte-term-save hte-term-btn" }, ["保存"]);
+  const btnRow = el(doc, "div", { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:14px;" });
+  const saveBtn = el(doc, "button", {
+    style:
+      "border:1px solid #1e88e5;background:#1e88e5;color:#fff;border-radius:6px;" +
+      "cursor:pointer;padding:4px 14px;font-size:13px;",
+  }, ["保存"]);
   saveBtn.addEventListener("click", async () => {
-    saveBtn.setAttribute("disabled", "true");
     const patch = {
       term: termInput.value.trim(),
       abbr: abbrInput.value.trim(),
@@ -1110,7 +1100,9 @@ function openEditTermDialog(
       refreshAllPanels();
     }
   });
-  const cancelBtn = el(mdoc, "button", { class: "hte-term-cancel hte-term-btn" }, ["取消"]);
+  const cancelBtn = el(doc, "button", {
+    style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:4px 14px;font-size:13px;",
+  }, ["取消"]);
   cancelBtn.addEventListener("click", () => overlay.remove());
   btnRow.append(cancelBtn, saveBtn);
   dlg.append(btnRow);
@@ -1185,49 +1177,44 @@ function openEditDialog(
   w: PanelWord,
   idx: number,
 ): void {
-  // 样式注入与元素创建必须用 overlay **实际挂载**的 document（mountOverlay
-  // 挂主窗口 documentElement）。此前用面板 doc + 面板内样式表，CSS 按文档
-  // 树作用不到主窗口里的弹窗 → 对话框无背景、输入框无边框色、暗色全失效。
-  let mdoc = doc;
-  try {
-    const mainDoc = (Zotero.getMainWindow() as any)?.document;
-    if (mainDoc?.documentElement) mdoc = mainDoc;
-  } catch { /* fall through */ }
-  try {
-    injectTermDialogStyle(mdoc);
-  } catch { /* ignore */ }
+  // 遮罩层（挂主窗口，覆盖全屏）
+  const overlay = el(doc, "div", {
+    class: `${ref}-panel-overlay`,
+    style:
+      "position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:2147483647;" +
+      "display:flex;align-items:center;justify-content:center;",
+  });
+  // 对话框
+  const dlg = el(doc, "div", {
+    class: `${ref}-panel-dialog`,
+    style:
+      "border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.2);padding:16px;width:340px;max-width:90vw;",
+  });
+  dlg.append(el(doc, "div", { style: "font-weight:600;margin-bottom:10px;" }, [getString("hte-panel-edit-title")]));
 
-  const overlay = el(mdoc, "div", { class: "hte-term-mask" });
-  const dlg = el(mdoc, "div", { class: "hte-term-dlg" });
-  dlg.append(el(mdoc, "div", { class: "hte-term-title" }, [getString("hte-panel-edit-title")]));
-
-  // 与术语弹窗统一：word/phon 用 input，释义用可拖高 textarea
-  const mkField = (
-    label: string,
-    value: string,
-    isArea = false,
-  ): HTMLInputElement | HTMLTextAreaElement => {
-    const item = el(mdoc, "div", { class: "hte-term-item" });
-    item.append(el(mdoc, "label", { class: "hte-term-label" }, [label]));
-    const input = el(mdoc, isArea ? "textarea" : "input", {
-      class: "hte-term-input",
-    }) as HTMLInputElement | HTMLTextAreaElement;
-    // textarea 的 type 属性为只读，仅对 input 设置 type="text"
-    if (!isArea) (input as HTMLInputElement).type = "text";
+  const mkField = (label: string, value: string): HTMLInputElement => {
+    dlg.append(el(doc, "label", { style: "display:block;font-size:12px;margin-top:6px;" }, [label]));
+    const input = el(doc, "input", {
+      type: "text",
+      style: "width:100%;box-sizing:border-box;margin-top:2px;padding:4px 6px;border:1px solid;border-radius:4px;",
+    }) as HTMLInputElement;
     input.value = value;
-    item.append(input);
-    dlg.append(item);
+    dlg.append(input);
     return input;
   };
 
-  const wordInput = mkField(getString("hte-panel-edit-word"), w.word) as HTMLInputElement;
-  const phonInput = mkField(getString("hte-panel-edit-phon"), w.phon) as HTMLInputElement;
-  const expInput = mkField(getString("hte-panel-edit-exp"), w.exp, true) as HTMLTextAreaElement;
+  const wordInput = mkField(getString("hte-panel-edit-word"), w.word);
+  const phonInput = mkField(getString("hte-panel-edit-phon"), w.phon);
+  const expInput = mkField(getString("hte-panel-edit-exp"), w.exp);
 
-  const btnRow = el(mdoc, "div", { class: "hte-term-btnrow" });
-  const saveBtn = el(mdoc, "button", { class: "hte-term-save hte-term-btn" }, [getString("hte-panel-edit-save")]);
+  const btnRow = el(doc, "div", { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:14px;" });
+  const saveBtn = el(doc, "button", {
+    type: "button",
+    style:
+      "border:1px solid #1e88e5;background:#1e88e5;color:#fff;border-radius:6px;" +
+      "cursor:pointer;padding:4px 14px;font-size:13px;",
+  }, [getString("hte-panel-edit-save")]);
   saveBtn.addEventListener("click", async () => {
-    saveBtn.setAttribute("disabled", "true");
     const patch = {
       word: wordInput.value.trim(),
       phon: phonInput.value.trim(),
@@ -1255,7 +1242,10 @@ function openEditDialog(
       refreshAllPanels();
     }
   });
-  const cancelBtn = el(mdoc, "button", { class: "hte-term-cancel hte-term-btn" }, [getString("hte-panel-edit-cancel")]);
+  const cancelBtn = el(doc, "button", {
+    type: "button",
+    style: "border:1px solid;background:transparent;border-radius:6px;cursor:pointer;padding:4px 14px;font-size:13px;",
+  }, [getString("hte-panel-edit-cancel")]);
   cancelBtn.addEventListener("click", () => overlay.remove());
   btnRow.append(cancelBtn, saveBtn);
   dlg.append(btnRow);
@@ -1399,29 +1389,33 @@ function showConfirm(
   message: string,
   onOk: () => void,
 ): void {
-  // 同 openEditDialog：样式注入与元素创建用主窗口 document（mountOverlay
-  // 的实际挂载点），否则面板样式表作用不到弹窗（无背景/暗色失效）。
-  let mdoc = doc;
-  try {
-    const mainDoc = (Zotero.getMainWindow() as any)?.document;
-    if (mainDoc?.documentElement) mdoc = mainDoc;
-  } catch { /* fall through */ }
-  try {
-    injectTermDialogStyle(mdoc);
-  } catch { /* ignore */ }
+  const overlay = el(doc, "div", {
+    class: `${ref}-panel-overlay`,
+    style:
+      "position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:2147483647;" +
+      "display:flex;align-items:center;justify-content:center;",
+  });
+  const dlg = el(doc, "div", {
+    class: `${ref}-panel-dialog`,
+    style:
+      "border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.2);padding:16px;width:320px;max-width:90vw;",
+  });
+  dlg.append(el(doc, "div", { style: "font-weight:600;margin-bottom:8px;" }, [title]));
+  dlg.append(el(doc, "div", { style: "font-size:13px;margin-bottom:14px;word-break:break-word;" }, [message]));
 
-  const overlay = el(mdoc, "div", { class: "hte-term-mask" });
-  const dlg = el(mdoc, "div", { class: "hte-term-dlg" });
-  dlg.append(el(mdoc, "div", { class: "hte-term-title" }, [title]));
-  dlg.append(el(mdoc, "div", { style: "font-size:13px;margin-bottom:14px;word-break:break-word;color:var(--fill-secondary,#525252);" }, [message]));
-
-  const btnRow = el(mdoc, "div", { class: "hte-term-btnrow" });
-  const okBtn = el(mdoc, "button", { class: "hte-term-danger hte-term-btn" }, [getString("hte-panel-confirm-ok")]);
+  const btnRow = el(doc, "div", { style: "display:flex;justify-content:flex-end;gap:8px;" });
+  const okBtn = el(doc, "button", {
+    type: "button",
+    style: "border:1px solid #d9534f;background:#d9534f;color:#fff;border-radius:6px;cursor:pointer;padding:4px 14px;font-size:13px;",
+  }, [getString("hte-panel-confirm-ok")]);
   okBtn.addEventListener("click", () => {
     overlay.remove();
     onOk();
   });
-  const cancelBtn = el(mdoc, "button", { class: "hte-term-cancel hte-term-btn" }, [getString("hte-panel-confirm-cancel")]);
+  const cancelBtn = el(doc, "button", {
+    type: "button",
+    style: "border:1px solid;background:transparent;border-radius:6px;cursor:pointer;padding:4px 14px;font-size:13px;",
+  }, [getString("hte-panel-confirm-cancel")]);
   cancelBtn.addEventListener("click", () => overlay.remove());
   btnRow.append(cancelBtn, okBtn);
   dlg.append(btnRow);
