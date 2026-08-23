@@ -2480,7 +2480,7 @@ async function doTranslate(
     "background:var(--hte-bg, #ffffff)",
     "border:1px solid var(--hte-border, #d4d4d4)",
     "border-radius:8px",
-    "box-shadow:var(--hte-shadow, 0 4px 16px rgba(0,0,0,0.18))",
+    "box-shadow:var(--hte-shadow, 0 4px 12px rgba(0,0,0,0.15))",
     "padding:6px 8px",
     // 显式无衬线 UI 字体栈(2026-08-22):与 Zotero reader.css body 的
     // font-family 完全一致。原先 inherit 在阅读模式会继承 SDT 正文的
@@ -4514,7 +4514,7 @@ function getThemeColors(innerWin?: Window) {
     btnBg: "rgba(255,255,255,0.04)",
     btnBorder: "rgba(130,130,130,0.38)",
     divider: "#e0e0e0",
-    shadow: "0 4px 16px rgba(0,0,0,0.18)",
+    shadow: "0 4px 12px rgba(0,0,0,0.15)",
   };
 }
 
