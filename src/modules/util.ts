@@ -148,6 +148,13 @@ export function snapWordAtOffset(
   lang?: string,
 ): { word: string; start: number; end: number } | null {
   if (!text || offset < 0 || offset > text.length) return null;
+  // 统一拉丁校验（2026-08-23 中文误取修复）：所有分支（Segmenter 降级/
+  // 正则回退）的返回值都过这道闸——非纯拉丁词一律 null。背景：UAX#29
+  // 把连续汉字/假名/谚文判为 isWordLike，Segmenter 降级分支会把整段
+  // CJK 字串当"单词"返回，导致阅读模式下中文被误高亮+误翻译（PDF 的
+  // C 通道与划词路径均为纯正则，无此问题）。校验字符集与 WORD_RUN 同源。
+  const latinOnly = (w: string) =>
+    /^[A-Za-z\u00C0-\u024F\uFB00-\uFB06]+$/.test(w);
 
   // 优先用 Intl.Segmenter（UAX#29，借鉴 Zotero reader.js）
   if ("Segmenter" in Intl) {
@@ -167,12 +174,14 @@ export function snapWordAtOffset(
             const s = m.index;
             const e = s + m[0].length;
             if (offset >= s && offset <= e) {
+              if (!latinOnly(m[0])) return null;
               return { word: m[0], start: s, end: e };
             }
             if (s > segEnd) break;
           }
           // 正则在 segment 范围未匹配到（连字导致 Segmenter 边界与正则
-          // 不一致）→ 降级到 segment 本身
+          // 不一致）→ 降级到 segment 本身；含 CJK 等非拉丁字符 → 不取词
+          if (!latinOnly(segment.segment)) return null;
           return {
             word: segment.segment,
             start: segStart,

@@ -37,6 +37,7 @@ import {
   installPronunciationShortcut,
   playAudio,
   buildTtsFallbackUrls,
+  setPronPlaying,
 } from "./pronunciation";
 import {
   locateWord,
@@ -52,6 +53,8 @@ import { clearPageBundleCache } from "../locate/page-bundle";
 const HIGHLIGHT_OVERLAY_ID = `${config.addonRef}-highlight-overlay`;
 const HIGHLIGHT_CLASS = `${config.addonRef}-highlight`;
 const POPUP_ID = `${config.addonRef}-hover-popup`;
+// 双弹窗(2026-08-23):完整模式的字典释义独立弹窗
+const DICT_POPUP_ID = `${config.addonRef}-hover-dict-popup`;
 const STYLE_INJECTED_FLAG = `${config.addonRef}-style-injected`;
 
 /**
@@ -60,6 +63,9 @@ const STYLE_INJECTED_FLAG = `${config.addonRef}-style-injected`;
  * 跟随按钮颜色 --hte-raw，16px + pointer-events:none）。
  */
 const PLUS_ICON_SVG = `<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" style="width:16px;height:16px;fill:currentColor;pointer-events:none"><path d="M128 512a64 64 0 0 1 64-64h640a64 64 0 0 1 64 64 64 64 0 0 1-64 64H192a64 64 0 0 1-64-64zM512 128a64 64 0 0 1 64 64v640a64 64 0 0 1-64 64 64 64 0 0 1-64-64V192a64 64 0 0 1 64-64z" /></svg>`;
+
+// 加载中动画（处理中状态，Sam Herbert spinner，描边跟随按钮 currentColor 灰色）
+const LOADING_ICON_SVG = `<!--By Sam Herbert (@sherb), for everyone. More @ http://goo.gl/7AJzbL--><svg viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg" style="width:20px;height:20px" stroke="currentColor"><g fill="none" fill-rule="evenodd" stroke-width="2"><circle cx="22" cy="22" r="1"><animate attributeName="r" begin="0s" dur="1.8s" values="1; 20" calcMode="spline" keyTimes="0; 1" keySplines="0.165, 0.84, 0.44, 1" repeatCount="indefinite"/><animate attributeName="stroke-opacity" begin="0s" dur="1.8s" values="1; 0" calcMode="spline" keyTimes="0; 1" keySplines="0.3, 0.61, 0.355, 1" repeatCount="indefinite"/></circle><circle cx="22" cy="22" r="1"><animate attributeName="r" begin="-0.9s" dur="1.8s" values="1; 20" calcMode="spline" keyTimes="0; 1" keySplines="0.165, 0.84, 0.44, 1" repeatCount="indefinite"/><animate attributeName="stroke-opacity" begin="-0.9s" dur="1.8s" values="1; 0" calcMode="spline" keyTimes="0; 1" keySplines="0.3, 0.61, 0.355, 1" repeatCount="indefinite"/></circle></g></svg>`;
 
 // Track attached readers so we can detach cleanly.
 const attached: Map<
@@ -231,6 +237,9 @@ function refreshAllPopupThemes() {
       // 弹窗换肤：更新根元素 CSS 变量
       const popup = innerWin.document.getElementById(POPUP_ID) as HTMLElement | null;
       if (popup) applyThemeVars(popup, getThemeColors(innerWin));
+      // 双弹窗:释义弹窗同步换肤(否则主题切换后两窗一深一浅)
+      const dictPopup = innerWin.document.getElementById(DICT_POPUP_ID) as HTMLElement | null;
+      if (dictPopup) applyThemeVars(dictPopup, getThemeColors(innerWin));
       // 悬停高亮换色：夜间 normal+半透明（白字可读），日间 multiply+原色
       const dark = isDarkMode(innerWin);
       const blend = dark ? "normal" : "multiply";
@@ -470,7 +479,12 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       // click proceed). Otherwise clear hover so selection can start fresh.
       const target = ev.target as HTMLElement | null;
       const popup = activeWinRef.win.document.getElementById(POPUP_ID);
-      if (popup && target && popup.contains(target)) {
+      const dictPopup = activeWinRef.win.document.getElementById(DICT_POPUP_ID);
+      // 双弹窗:点在主弹窗或释义弹窗内都保留弹窗(释义文字可选中复制)
+      if (
+        (popup && target && popup.contains(target)) ||
+        (dictPopup && target && dictPopup.contains(target))
+      ) {
         return;
       }
       // Clear hover in ALL monitored windows so no stale popup survives
@@ -513,7 +527,11 @@ async function attachToReader(reader: _ZoteroTypes.ReaderInstance) {
       // the popup before its click handler can fire.
       const target = ev.target as HTMLElement | null;
       const popup = activeWinRef.win.document.getElementById(POPUP_ID);
-      if (popup && target && popup.contains(target)) {
+      const dictPopupUp = activeWinRef.win.document.getElementById(DICT_POPUP_ID);
+      if (
+        (popup && target && popup.contains(target)) ||
+        (dictPopupUp && target && dictPopupUp.contains(target))
+      ) {
         return;
       }
       // Yield to Zotero's selection toolbar / Translate's selection popup
@@ -1269,13 +1287,15 @@ function onReaderMouseMove(
     // mousemove 立即清掉(诊断日志实证:+150ms alive=0)。视觉由联动高亮接管。
     let inPopupZone = false;
     try {
-      inPopupZone = !!((ev.target as Element)?.closest?.(`#${POPUP_ID}`));
+      inPopupZone = !!((ev.target as Element)?.closest?.(
+        `#${POPUP_ID}, #${DICT_POPUP_ID}`,
+      ));
     } catch { /* ignore */ }
     const hitInPopup =
       !!hit && !inPopupZone && (() => {
         try {
           return !!hit.range.startContainer?.parentElement?.closest?.(
-            `#${POPUP_ID}`,
+            `#${POPUP_ID}, #${DICT_POPUP_ID}`,
           );
         } catch {
           return false;
@@ -1561,20 +1581,38 @@ function getWordAtPoint(
   const layers = doc.querySelectorAll(
     ".annotationLayer, #annotation-overlay",
   ) as NodeListOf<HTMLElement>;
-  const prevPointerEvents: string[] = [];
-  layers.forEach((el: HTMLElement) => {
-    prevPointerEvents.push(el.style.pointerEvents);
+  // 收集需要临时禁用的全部元素：宿主 + shadow root 内所有后代。
+  // 关键(2026-08-23 实证修复):阅读模式(SDT/DOMView)的 #annotation-overlay
+  // 是 attachShadow({mode:"open"}) 宿主（zotero/reader dom-view.tsx:374），
+  // 其 shadow 内部每个标注矩形 .annotation-div 显式声明
+  // pointer-events:auto（annotations.scss，供点击弹出标注菜单）。CSS 规则
+  // "父 none + 子显式 auto → 子仍可命中"意味着仅禁用宿主无效——高亮/
+  // 下划线矩形仍拦截 caretPositionFromPoint → 返回注解元素而非文本节点
+  // → 该文本取词失效。必须递归进 shadowRoot 把后代一并禁用。
+  // （PDF 模式走 C 通道 word-locator 定位，不经过本函数，不受影响。）
+  const disabled: HTMLElement[] = [];
+  const prevPE: string[] = [];
+  const suppress = (el: HTMLElement) => {
+    disabled.push(el);
+    prevPE.push(el.style.pointerEvents);
     el.style.pointerEvents = "none";
-  });
+    // 穿透 open shadow root（标注矩形的显式 auto 必须逐个覆盖）
+    try {
+      el.shadowRoot?.querySelectorAll<HTMLElement>("*").forEach(suppress);
+    } catch { /* ignore */ }
+  };
+  layers.forEach(suppress);
   let cp: any = null;
   try {
     cp = (doc as any).caretPositionFromPoint
       ? (doc as any).caretPositionFromPoint(x, y)
       : null;
   } finally {
-    layers.forEach((el: HTMLElement, i: number) => {
-      el.style.pointerEvents = prevPointerEvents[i];
-    });
+    for (let i = disabled.length - 1; i >= 0; i--) {
+      try {
+        disabled[i].style.pointerEvents = prevPE[i];
+      } catch { /* ignore */ }
+    }
   }
   if (!cp || !cp.offsetNode) return null;
   const node = cp.offsetNode;
@@ -2512,19 +2550,13 @@ async function doTranslate(
   result.style.cssText = `color:var(--hte-primary, #1a1a1a);white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};font-weight:400;padding-left:2px;transition:color .2s;`;
 
   // Flex row: left column (word + translation) + right circular button.
-  // 简洁(仅译文)模式：保持原布局，row 铺满弹窗内容宽度（弹窗宽度自适应内容，
-  // 下限 90px / 上限 380px），leftCol flex:1 占满剩余空间，+ 按钮位于弹窗
-  // 内容区右缘 —— 单词/译文较短时，按钮与文字之间自然保留一段间距。
-  // 完整(译文+字典释义)模式：字典释义会把弹窗撑到很宽，若 row 仍铺满则
-  // + 按钮会被推到弹窗最右端。因此让 row 收缩为与简洁模式相同的自适应宽度
-  // （width:fit-content + 同样的 90/380 上下限），leftCol 保持 flex:1，
-  // 使 + 按钮始终位于与简洁模式相同的水平位置，文字与按钮之间的间距也保留。
+  // 双弹窗(2026-08-23):字典释义已独立为释义弹窗，主弹窗不再被释义撑宽，
+  // 完整模式的 width:fit-content 特例退役——两种模式 row 样式统一，
+  // + 按钮位置天然一致。
   const isFullMode = getPref("translateDisplayMode") === "full";
   const row = doc.createElement("div");
   row.dataset.hteRow = "1"; // 核心区标记（syncPopupLayout 按实际位置调整布局用）
-  row.style.cssText = isFullMode
-    ? "display:flex;align-items:center;gap:6px;width:fit-content;max-width:380px;"
-    : "display:flex;align-items:center;gap:6px;";
+  row.style.cssText = "display:flex;align-items:center;gap:6px;";
 
   const leftCol = doc.createElement("div");
   leftCol.style.cssText = "flex:1;min-width:0;";
@@ -2534,15 +2566,13 @@ async function doTranslate(
   leftCol.appendChild(result);
   row.appendChild(leftCol);
   popup.appendChild(row);
-  // 字典释义独立区域：避免撑高 leftCol，使 + 按钮始终与"单词+译文"垂直居中对齐。
-  // 布局方向跟随弹窗与单词的相对位置——核心区（单词/译文/+按钮）永远靠近单词：
-  //  - 弹窗在单词上方（preferTop）：释义放弹窗上部，核心区在下（贴近单词顶部）
-  //  - 弹窗在单词下方：释义放弹窗下部，核心区在上（贴近单词底部）
-  const dictArea = doc.createElement("div");
-  dictArea.dataset.hteDict = "1"; // 释义区标记（syncPopupLayout 调整用）
-  if (isFullMode && getPref("popupPosition") !== "bottom") {
-    popup.insertBefore(dictArea, row); // 释义在 row 之前（弹窗上部）
-  } else {
+  // 双弹窗(2026-08-23):完整模式字典释义独立为释义弹窗（在
+  // fillDictionaryResult 成功返回时惰性创建），主弹窗不再内嵌释义区；
+  // 简译模式保留空 dictArea（syncPopupLayout 守卫兼容，行为不变）。
+  let dictArea: HTMLElement | null = null;
+  if (!isFullMode) {
+    dictArea = doc.createElement("div");
+    dictArea.dataset.hteDict = "1"; // 释义区标记（syncPopupLayout 调整用）
     popup.appendChild(dictArea);
   }
 
@@ -2554,17 +2584,20 @@ async function doTranslate(
   // 发音按钮 — 与 +按钮 同时创建（出现时机参考+按钮）。音频 URL 翻译完成后填充。
   const pronBtn = maybeAddPronunciationButton(innerWin, row, wordBtn);
 
-  // 竖向分割线（2026-08-23）：分隔文字区与按钮区，两侧各 12px（row gap 6px + margin 6px）。
-  // 按钮方位自适应：右侧模式插在第一个按钮前；左侧模式（wordButtonPosition=left，
-  // 按钮在行首 [＋][▶][文字]）插在最后一个按钮之后。无按钮时不插入。
-  const groupFirst = wordBtn || pronBtn;
-  const groupLast = pronBtn || wordBtn;
-  if (groupFirst && groupLast && groupLast.parentNode === row) {
-    const divider = doc.createElement("div");
-    divider.style.cssText =
-      "width:1px;height:28px;flex-shrink:0;align-self:center;background:var(--hte-divider,#e0e0e0);";
+  // 竖向分割线已移除（2026-08-23 用户需求），但保持原有间距：分割线时代
+  // 文字↔按钮 = gap 6px + 线 + gap 6px ≈ 13px。现改为在靠文字一侧的按钮上
+  // 加 7px margin（+row gap 6px ≈ 13px），视觉间距不变。
+  const btnGroupFirst = wordBtn || pronBtn;
+  const btnGroupLast = pronBtn || wordBtn;
+  if (btnGroupFirst && btnGroupLast && btnGroupLast.parentNode === row) {
     const leftMode = ((getPref("wordButtonPosition") as string) || "right") === "left";
-    row.insertBefore(divider, leftMode ? groupLast.nextSibling : groupFirst);
+    // 右侧按钮模式：文字在左 → 第一个按钮（最靠近文字）加左 margin；
+    // 左侧按钮模式：文字在右 → 最后一个按钮（最靠近文字）加右 margin。
+    if (leftMode) {
+      btnGroupLast.style.marginRight = "6px";
+    } else {
+      btnGroupFirst.style.marginLeft = "6px";
+    }
   }
 
   // Position anchored to the word's Range bounding box (same coordinates as the
@@ -2607,6 +2640,14 @@ async function doTranslate(
     dbg(`popup resize observer created (${popup.offsetWidth}x${popup.offsetHeight})`);
   } catch (e) {
     dbg(`ResizeObserver unavailable: ${String((e as any)?.message || e)}`);
+  }
+
+  // 双弹窗并行优化(2026-08-23):完整模式的词典释义查询与主翻译同时发射，
+  // 不再等简译返回后再查（原串行 = 两段网络延迟叠加，释义明显偏慢）。
+  // 安全性：fillDictionaryResult 写回前校验 popup.dataset.word === word，
+  // 用户提前移走时结果被丢弃；简译模式下不发射，零开销。
+  if (isFullMode) {
+    void fillDictionaryResult(word, reader, doc, fontSize, lineHeight);
   }
 
   // Perform translation via Translate for Zotero.
@@ -2769,9 +2810,15 @@ async function doTranslate(
   } else {
     setActivePron(null);
   }
-  // 自动发音（需求二）：不依赖发音按钮开关；播放成功时按钮做按下反馈
-  if (getPref("enableAutoPronunciation") && audioUrls.length > 0) {
-    playAudio(audioUrls, innerWin, pronBtn || null);
+  // 自动发音（需求二）：不依赖发音按钮开关；播放成功时按钮做按下反馈。
+  // 播放中状态：自动发音同样显示均衡器动画（与点击路径一致）。
+  if (getPref("enableAutoPronunciation") && audioUrls.length > 0 && pronBtn) {
+    setPronPlaying(pronBtn, true);
+    playAudio(audioUrls, innerWin, pronBtn, (playing) => {
+      if (!playing) setPronPlaying(pronBtn, false);
+    });
+  } else if (getPref("enableAutoPronunciation") && audioUrls.length > 0) {
+    playAudio(audioUrls, innerWin);
   }
 
   // Append any extra tasks the engine already returned.
@@ -2782,11 +2829,8 @@ async function doTranslate(
     }
   }
 
-  // Full mode: also query Translate for Zotero's dictionary service for a
-  // richer, dictionary-style result (matches the selection popup output).
-  if (getPref("translateDisplayMode") === "full") {
-    void fillDictionaryResult(word, reader, doc, dictArea, fontSize, lineHeight);
-  }
+  // 双弹窗:full 模式词典查询已在主翻译发起时并行发射（见上方），
+  // 此处不再重复查询。
 
   // extraTasks 与 full 模式释义可能已同步填充 → 再重定位一次
   repositionHoverPopup(innerWin, popup, range);
@@ -2821,7 +2865,7 @@ async function autoAddWordWithButton(
   try {
     const win = btn.ownerDocument?.defaultView as Window | null;
     if (win) _cancelAutoClose(win);
-    btn.innerHTML = PLUS_ICON_SVG;
+    btn.innerHTML = LOADING_ICON_SVG; // 处理中：加载动画（灰色，跟随按钮 currentColor）
     btn.setAttribute("disabled", "true");
     // Build annotation context (same as manual click path).
     const lastPos = (win as any)?.__hoverLastPos as { x?: number; y?: number } | undefined;
@@ -3110,7 +3154,6 @@ async function fillDictionaryResult(
   word: string,
   reader: _ZoteroTypes.ReaderInstance,
   doc: Document,
-  container: HTMLElement,
   fontSize: string,
   lineHeight: string,
 ) {
@@ -3154,26 +3197,22 @@ async function fillDictionaryResult(
         .replace(/\s+(n\.|adj\.|adv\.|v\.|vi\.|vt\.|prep\.|conj\.|pron\.|int\.|网络释义)\s*/gi,
           (_: string, pos: string) => `\n<span style="color:var(--hte-primary, #1a1a1a)">${pos}</span> `)
         .replace(/^\n+/, '');
-      appendExtraResult(
-        doc,
-        container,
-        formatted,
-        fontSize,
-        lineHeight,
-        true,
-        // 分割线方向与 dictArea 插入位置一致：弹窗在单词上方时释义在弹窗上部，
-        // 分隔线放释义底部（与下方核心区分隔）；否则放释义顶部
-        getPref("popupPosition") !== "bottom" ? "bottom" : "top",
-      );
-      // 释义已填入 → 重定位，保持与单词固定间距
+      // 双弹窗竞态校验：词典查询有网络延迟，期间用户可能已移到新词——
+      // 主弹窗必须还在且 dataset.word 仍是本词，否则丢弃结果
       const popup = doc.getElementById(POPUP_ID) as HTMLElement | null;
-      if (popup) {
-        repositionHoverPopup(
-          doc.defaultView as Window,
-          popup,
-          (popup as any).__hteRange as Range | undefined,
-        );
+      if (!popup || popup.dataset.word !== word) {
+        dbg(`fillDictionaryResult: stale result for "${word}", dropped`);
+        return;
       }
+      const win = doc.defaultView as Window;
+      const dict = createDictPopup(win, word);
+      if (!dict) return;
+      const body = doc.createElement("div");
+      body.style.cssText = `color:var(--hte-secondary, #555555);white-space:pre-wrap;word-break:break-word;font-size:${fontSize}px;line-height:${lineHeight};transition:color .2s;`;
+      body.innerHTML = formatted;
+      dict.appendChild(body);
+      // 释义弹窗首帧定位（此后由 positionPopup 尾部跟随维护）
+      positionDictPopup(win, popup);
     }
   } catch (e: any) {
     dbg(`dict query failed: ${e?.message || e}`);
@@ -3462,10 +3501,18 @@ function positionPopup(
     const spaceBelow = vh - anchor.bottom;
     const spaceAbove = anchor.top;
     const preferTop = getPref("popupPosition") !== "bottom";
+    // 双弹窗(2026-08-23 组合方案):完整模式方向决策按「主弹窗+释义弹窗」
+    // 总高预留——释义弹窗预估 ~140px + 间距 6px，让主弹窗在创建时就可能
+    // 为释义让位翻到另一侧，避免释义出现后两窗分居单词两侧遮住高亮词。
+    const dictEst = getPref("translateDisplayMode") === "full" ? 146 : 0;
     if (preferTop) {
-      placeBelow = spaceAbove < Math.min(H, 132) && spaceBelow > spaceAbove;
+      placeBelow =
+        spaceAbove < Math.min(H + dictEst, 132 + dictEst) &&
+        spaceBelow > spaceAbove;
     } else {
-      placeBelow = spaceBelow >= spaceAbove || spaceBelow >= Math.min(H, 132);
+      placeBelow =
+        spaceBelow >= spaceAbove ||
+        spaceBelow >= Math.min(H + dictEst, 132 + dictEst);
     }
     if (placeBelow) {
       y = anchor.bottom + GAP;
@@ -3501,6 +3548,172 @@ function positionPopup(
       dbg(`syncPopupLayout error: ${String((e as any)?.message || e)}`);
     }
   }
+  // 双弹窗:主弹窗落定后释义弹窗跟随（滚动/缩放/textLayer 重建等所有
+  // 重定位路径都经过本函数，跟随能力在此一处收敛）
+  try {
+    positionDictPopup(innerWin, popup);
+  } catch { /* ignore */ }
+}
+
+/**
+ * 双弹窗(2026-08-23 组合方案):字典释义弹窗定位。
+ * 规则：
+ *  - 两弹窗恒在单词**同一侧**，释义弹窗位于主弹窗外侧（绝不越过单词，
+ *    避免遮挡高亮词）；
+ *  - 实际在哪一侧由主弹窗相对锚定单词的位置决定（positionPopup 已按
+ *    总高预留做过方向决策，此处跟随其实际落位）；
+ *  - 外侧空间不足 → 收缩 max-height（内容滚轮查看），仍不翻转；
+ *  - 仅当外侧连最小可读高度(80px)都没有（词几乎贴屏幕边）才回退到
+ *    主弹窗内侧——此时主弹窗通常已被 positionPopup 翻转，极难触发。
+ * 水平：左缘对齐；右侧放不下改右缘对齐主弹窗右缘。
+ */
+function positionDictPopup(innerWin: Window, mainPopup: HTMLElement): void {
+  try {
+    const doc = innerWin.document;
+    const dict = doc.getElementById(DICT_POPUP_ID) as HTMLElement | null;
+    if (!dict) return;
+    const vw = innerWin.innerWidth || 0;
+    const vh = innerWin.innerHeight || 0;
+    const GAP = 6; // 与主弹窗的垂直间距
+    const MIN_READABLE = 80; // 低于此高度宁可翻转（几乎贴边的极端场景）
+    const mr = mainPopup.getBoundingClientRect();
+
+    // 判定主弹窗在锚定单词的哪一侧 → 释义弹窗走外侧
+    let outerTop: boolean;
+    let wordRect: DOMRect | null = null;
+    try {
+      const r = (mainPopup as any).__hteRange as Range | undefined;
+      const rects = r?.getClientRects?.() ?? [];
+      if (rects.length > 0) {
+        let top = Infinity, bottom = -Infinity;
+        for (const rr of Array.from(rects)) {
+          top = Math.min(top, rr.top);
+          bottom = Math.max(bottom, rr.bottom);
+        }
+        wordRect = { top, bottom } as DOMRect;
+      }
+    } catch { /* ignore */ }
+    if (wordRect) {
+      // 主弹窗整体在词上方 → 外侧=上方；否则外侧=下方
+      outerTop = mr.bottom > wordRect.top + 2 ? false : true;
+      if (mr.top >= wordRect.bottom - 2) outerTop = false;
+    } else {
+      // 无有效锚点几何时退回偏好方向
+      outerTop = getPref("popupPosition") !== "bottom";
+    }
+
+    // 外侧可用空间 → 收缩限高（像素值，zoom 安全）
+    const avail = outerTop
+      ? mr.top - GAP - 4
+      : vh - 4 - (mr.bottom + GAP);
+    const baseMaxH = Math.max(120, Math.min(Math.floor(vh * 0.3), 300));
+    if (avail < MIN_READABLE) {
+      // 极端贴边：回退主弹窗内侧（历史行为），尽量少遮挡
+      dict.style.maxHeight = `${baseMaxH}px`;
+    } else {
+      dict.style.maxHeight = `${Math.min(baseMaxH, Math.floor(avail))}px`;
+    }
+    // maxHeight 生效后再量实际尺寸（强制 reflow）
+    const dw = dict.offsetWidth || 240;
+    const dh = dict.offsetHeight || 80;
+
+    let x = mr.left;
+    if (x + dw > vw - 4 && mr.right - dw >= 4) x = mr.right - dw;
+    if (x + dw > vw - 4) x = Math.max(4, vw - dw - 4);
+    if (x < 4) x = 4;
+
+    let y: number;
+    const flipped = avail < MIN_READABLE;
+    const sideTop = flipped ? !outerTop : outerTop;
+    if (sideTop) {
+      y = mr.top - GAP - dh;
+    } else {
+      y = mr.bottom + GAP;
+    }
+    if (y + dh > vh - 4) y = Math.max(4, vh - dh - 4);
+    if (y < 4) y = 4;
+    dict.style.left = `${x}px`;
+    dict.style.top = `${y}px`;
+  } catch { /* ignore */ }
+}
+
+/**
+ * 双弹窗:创建/复用释义弹窗。惰性调用（词典查询成功后）——
+ * 简译模式与词典失败场景零开销，不产生空弹窗。
+ * 样式隔离四件套照抄主弹窗：zoom:normal / 显式字体栈 /
+ * line-height:normal / ensurePopupSpacingStyle 选择器扩展。
+ * 注意：applyThemeVars 必须在 cssText 赋值之后（cssText 整体替换 style）。
+ */
+function createDictPopup(innerWin: Window, word: string): HTMLElement | null {
+  try {
+    const doc = innerWin.document;
+    const existing = doc.getElementById(DICT_POPUP_ID) as HTMLElement | null;
+    if (existing) {
+      existing.dataset.word = word;
+      existing.textContent = "";
+      return existing;
+    }
+    // 字距/行高隔离规则必须在挂载前就位
+    try {
+      ensurePopupSpacingStyle(doc);
+    } catch { /* ignore */ }
+    const dict = doc.createElement("div");
+    dict.id = DICT_POPUP_ID;
+    dict.dataset.word = word;
+    dict.style.cssText = [
+      "position:fixed",
+      "zoom:normal", // SDT 模式 body > :not(#annotation-overlay) zoom 抵消
+      "z-index:2147483647",
+      "max-width:380px",
+      "overflow-y:auto", // 限高由 positionDictPopup 按视口写入像素值
+      "background:var(--hte-bg, #ffffff)",
+      "border:1px solid var(--hte-border, #d4d4d4)",
+      "border-radius:8px",
+      "box-shadow:var(--hte-shadow, 0 4px 12px rgba(0,0,0,0.15))",
+      "padding:6px 8px",
+      "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif",
+      "line-height:normal",
+      "transition:background-color .2s, border-color .2s, color .2s",
+    ].join(";");
+    applyThemeVars(dict, getThemeColors(innerWin));
+    // 滚轮事件隔离：阻止冒泡到 reader 触发 PDF 滚动（否则锚点漂移拖走弹窗）
+    dict.addEventListener("wheel", (e) => e.stopPropagation());
+    doc.body?.appendChild(dict);
+    bindDictHoverPause(innerWin, dict);
+    return dict;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 双弹窗:释义弹窗的悬停暂停绑定。与主弹窗的 bindPopupHoverPause 共享
+ * 同一窗口级标记 __htePopupHoverPaused——鼠标在任一弹窗上都续期倒计时。
+ * 移动路径 main→dict 时事件顺序恒为 leave(main)→enter(dict)，先 resume
+ * 再 cancel，净效果正确；_resumeAutoClose 的 paused 守卫以共享标记为准。
+ */
+function bindDictHoverPause(innerWin: Window, dict: HTMLElement) {
+  try {
+    dict.addEventListener("mouseenter", () => {
+      (innerWin as any).__htePopupHoverPaused = true;
+      _cancelAutoClose(innerWin);
+    });
+    dict.addEventListener("mouseleave", () => {
+      (innerWin as any).__htePopupHoverPaused = false;
+      _resumeAutoClose(innerWin);
+    });
+    // 初始检查：释义弹窗出现时鼠标可能恰好已在其区域内
+    const pos = (innerWin as any).__hoverLastPos as
+      | { x?: number; y?: number }
+      | undefined;
+    if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
+      const r = dict.getBoundingClientRect();
+      if (pos.x >= r.left && pos.x <= r.right && pos.y >= r.top && pos.y <= r.bottom) {
+        (innerWin as any).__htePopupHoverPaused = true;
+        _cancelAutoClose(innerWin);
+      }
+    }
+  } catch { /* ignore */ }
 }
 
 /* ----------------------------- wordbook button ----------------------------- */
@@ -3602,7 +3815,7 @@ function maybeAddWordButton(
 
   btn.addEventListener("click", async () => {
     _cancelAutoClose(innerWin);
-    btn.innerHTML = PLUS_ICON_SVG;
+    btn.innerHTML = LOADING_ICON_SVG; // 处理中：加载动画
     btn.setAttribute("disabled", "true");
 
     // 等待翻译加载完成（最多 WAIT_TRANSLATION_MS 毫秒）：
@@ -3725,6 +3938,8 @@ function maybeAddPronunciationButton(
   // pointer-events:none 防止 SVG 拦截 click。
   const svgIcon = `<svg viewBox="0 0 1219 1024" xmlns="http://www.w3.org/2000/svg" style="width:16px;height:16px;fill:currentColor;pointer-events:none"><path d="M542.637333 6.31047a140.407962 140.407962 0 0 1 140.407962 140.471067v728.796204a140.407962 140.407962 0 0 1-218.279164 116.806803l-174.358292-116.238861-162.557713-21.897331a140.407962 140.407962 0 0 1-121.413446-131.951932V327.702718a140.344857 140.344857 0 0 1 120.340666-138.830345l161.674247-23.34874L457.130462 35.654157A140.407962 140.407962 0 0 1 534.370617 6.689098z m0 100.967523a39.629753 39.629753 0 0 0-24.169101 8.203612L339.377088 253.428483l-10.412276 8.140507-13.125778 1.893141-174.86313 25.241881a39.629753 39.629753 0 0 0-33.950329 39.18802v387.399766a39.629753 39.629753 0 0 0 34.328958 39.18802l173.979663 23.474949 11.548161 1.514513 9.718124 6.31047 184.076416 122.738645a39.629753 39.629753 0 0 0 61.590189-33.003759V146.781537a39.629753 39.629753 0 0 0-39.629753-39.629753z m296.592099 167.416775a50.483762 50.483762 0 0 1 71.119 3.533863 364.745178 364.745178 0 0 1 86.453441 243.58415 348.779688 348.779688 0 0 1-116.806803 272.359894 50.483762 50.483762 0 0 1-63.104702-78.754668 249.957725 249.957725 0 0 0 79.007087-193.668331 265.039749 265.039749 0 0 0-60.3912-175.999014 50.483762 50.483762 0 0 1 3.596968-71.182103z" /><path d="M978.564615 113.146731a50.483762 50.483762 0 0 1 70.677266-9.213287c110.622543 84.81272 163.693597 242.763789 163.693597 417.879337 0 149.36883-77.113946 350.735934-163.441178 417.753128a50.483762 50.483762 0 1 1-61.842608-79.511925c58.750478-45.687804 124.505577-217.395699 124.505577-338.241203 0-146.970851-43.35293-275.893757-124.253159-337.988784a50.483762 50.483762 0 0 1-9.213286-70.614162z" /></svg>`;
   btn.innerHTML = svgIcon;
+  // 播放中状态切换需要恢复原始图标（setPronPlaying 读取）
+  (btn as any).__hteIcon = svgIcon;
 
   // 样式与「+」按钮完全一致（方框圆角参考+按钮）
   btn.style.cssText = [
@@ -3754,7 +3969,11 @@ function maybeAddPronunciationButton(
       urls = JSON.parse(btn.dataset.audioUrls || "[]");
     } catch { /* ignore */ }
     if (!urls.length) return;
-    playAudio(urls, innerWin);
+    // 播放中状态：开始播均衡器动画，结束/失败恢复喇叭图标
+    setPronPlaying(btn, true);
+    playAudio(urls, innerWin, null, (playing) => {
+      if (!playing) setPronPlaying(btn, false);
+    });
   });
 
   // 位置规则：
@@ -4480,7 +4699,7 @@ function ensurePopupSpacingStyle(doc: Document) {
   const style = doc.createElement("style");
   style.id = STYLE_ID;
   style.textContent =
-    `#${POPUP_ID}, #${POPUP_ID} * { letter-spacing: normal; word-spacing: normal; line-height: normal; }`;
+    `#${POPUP_ID}, #${POPUP_ID} *, #${DICT_POPUP_ID}, #${DICT_POPUP_ID} * { letter-spacing: normal; word-spacing: normal; line-height: normal; }`;
   (doc.head ?? doc.documentElement)?.appendChild(style);
 }
 
@@ -4577,23 +4796,28 @@ function clearHover(innerWin: Window) {
 
 function clearPopup(innerWin: Window) {
   const el = innerWin.document.getElementById(POPUP_ID);
-  if (!el) return;
-  // 问题2兜底:鼠标仍在弹窗上时销毁(mouseleave 不触发),清联动高亮
-  try {
-    (el as any).__hteAnchorClear?.();
-  } catch { /* ignore */ }
-  // 断开 ResizeObserver，避免移除后残留观察器
-  try {
-    const ro = (el as any).__hteResizeObserver as ResizeObserver | undefined;
-    ro?.disconnect();
-  } catch {
-    /* ignore */
+  // 双弹窗:释义弹窗独立清理——不能依赖主弹窗存在(原早退守卫会漏删)
+  const dictEl = innerWin.document.getElementById(DICT_POPUP_ID);
+  if (!el && !dictEl) return;
+  if (el) {
+    // 问题2兜底:鼠标仍在弹窗上时销毁(mouseleave 不触发),清联动高亮
+    try {
+      (el as any).__hteAnchorClear?.();
+    } catch { /* ignore */ }
+    // 断开 ResizeObserver，避免移除后残留观察器
+    try {
+      const ro = (el as any).__hteResizeObserver as ResizeObserver | undefined;
+      ro?.disconnect();
+    } catch {
+      /* ignore */
+    }
+    el.remove();
+    // 弹窗清除 → 发音快捷键失效（避免播放已关闭单词的发音）
+    try {
+      setActivePron(null);
+    } catch {
+      /* ignore */
+    }
   }
-  el.remove();
-  // 弹窗清除 → 发音快捷键失效（避免播放已关闭单词的发音）
-  try {
-    setActivePron(null);
-  } catch {
-    /* ignore */
-  }
+  if (dictEl) dictEl.remove();
 }

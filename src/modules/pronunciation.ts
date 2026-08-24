@@ -94,10 +94,24 @@ function ensureSharedAudio(win?: Window): any {
 let lastPlayAt = 0;
 let lastPlayKey = "";
 
+/** 当前播放中状态回调（单例：新播放取代旧播放时旧回调先置 false）。 */
+let playingStateCb: ((playing: boolean) => void) | null = null;
+
+/**
+ * 统一的播放状态通知入口（方案 1，对齐 +按钮模式）：播放成功立即亮均衡器、
+ * 跳过闪烁，一个状态一个图标，颜色全程平稳。false=立即恢复图标。
+ */
+function firePlaying(cb: ((playing: boolean) => void) | null | undefined, on: boolean): void {
+  if (!cb) return;
+  try { cb(on); } catch { /* ignore */ }
+}
+
 export function playAudio(
   urls: string | string[],
   win?: Window,
   flashBtn?: HTMLButtonElement | null,
+  /** 播放状态回调：true=开始播放，false=播放结束/全部失败/被新播放取代 */
+  onPlaying?: (playing: boolean) => void,
 ): void {
   const list = (Array.isArray(urls) ? urls : [urls]).filter((u) => !!u);
   if (list.length === 0) return;
@@ -111,6 +125,11 @@ export function playAudio(
   let idx = 0;
   let audio = ensureSharedAudio(win);
   let settled = false;
+  // 播放中状态回调管理：新播放取代旧播放时先把旧的置 false（单例化语义）
+  if (playingStateCb && playingStateCb !== onPlaying) {
+    firePlaying(playingStateCb, false);
+  }
+  playingStateCb = onPlaying ?? null;
   // 当前正在尝试的 URL。所有失败回调（error/abort/play-reject）都绑定
   // URL 身份：仅当 currentUrl 仍是触发失败的那个 URL 时才切换——防止
   // play() 被拒 + error 事件对同一 URL 双触发导致跳过下一个来源。
@@ -120,6 +139,8 @@ export function playAudio(
     if (settled) return;
     if (idx >= list.length) {
       settled = true;
+      firePlaying(playingStateCb, false);
+      playingStateCb = null;
       try {
         (globalThis as any).Zotero?.debug?.(
           `[hover-translate-eudic] playAudio: all ${list.length} source(s) failed` +
@@ -155,8 +176,18 @@ export function playAudio(
         p.then(() => {
           if (currentUrl === url) {
             settled = true; // 播放已开始
-            // 播放成功 → 按钮反馈（自动发音 / 快捷键场景；点击场景由 mousedown 反馈）
-            if (flashBtn) flashPronButton(flashBtn);
+            // 播放中状态：延迟300ms亮均衡器（先让闪烁反馈走完，见 firePlaying）
+            firePlaying(onPlaying, true);
+            try {
+              audio.onended = () => {
+                firePlaying(onPlaying, false);
+                playingStateCb = null;
+              };
+            } catch { /* ignore */ }
+            // 播放成功反馈（方案 1，对齐 +按钮模式）：有均衡器回调时跳过
+            // 闪烁——均衡器立即出场即"播放中"的确认，闪烁的 brightness
+            // 压暗会与 #ccc 竖条叠加造成颜色突跳。无回调场景保留闪烁。
+            if (flashBtn && !onPlaying) flashPronButton(flashBtn);
           }
         }).catch(() => {
           if (currentUrl === url) onFail("play-rejected");
@@ -249,11 +280,58 @@ export function installPronunciationShortcut(win: Window): () => void {
       ev.preventDefault();
       ev.stopPropagation();
       // 快捷键触发：播放成功时发音按钮做按下反馈（有按钮才传，避免误反馈）
-      playAudio(activePron.audioUrls, activePron.win, activePron.pronBtn || null);
+      const pronBtn = activePron.pronBtn || null;
+      playAudio(
+        activePron.audioUrls,
+        activePron.win,
+        pronBtn,
+        // 快捷键路径同样显示播放中均衡器动画（与点击/自动路径对齐）
+        (playing) => setPronPlaying(pronBtn, playing),
+      );
     } catch {
       /* never break the event chain */
     }
   };
   win.addEventListener("keydown", handler, true);
   return () => win.removeEventListener("keydown", handler, true);
+}
+
+/* ------------------------- 播放中状态（均衡器动画） ------------------------- */
+
+/** 均衡器动画样式（三竖条交替压缩，参考 loading-20，缩放至 28px 按钮内）。
+ *  只注入一次/文档；颜色 currentColor 跟随按钮 --hte-raw 灰色。 */
+export function ensureEqStyle(doc: Document): void {
+  const STYLE_ID = "hte-pron-eq-style";
+  if (doc.getElementById(STYLE_ID)) return;
+  const style = doc.createElement("style");
+  style.id = STYLE_ID;
+  style.textContent = `
+.hte-playing { width:18px; height:20px; display:inline-flex; align-items:center; justify-content:center; gap:3px; pointer-events:none; color:#cccccc; }
+.hte-playing span { width:3px; border-radius:2px; background:currentColor; display:block; animation:hte-eq .5s ease-in-out infinite alternate; }
+.hte-playing span:nth-child(1) { height:16px; animation-delay:0s; }
+.hte-playing span:nth-child(2) { height:8px;  animation-delay:.17s; }
+.hte-playing span:nth-child(3) { height:12px; animation-delay:.34s; }
+@keyframes hte-eq { from { height:16px; } to { height:4px; } }`;
+  (doc.head ?? doc.documentElement)?.appendChild(style);
+}
+
+/** 切换发音按钮的播放中图标（on=true 显示均衡器动画，false 恢复喇叭图标）。
+ *  原始图标在 maybeAddPronunciationButton 创建时存于 __hteIcon。 */
+export function setPronPlaying(
+  btn: HTMLButtonElement | null | undefined,
+  on: boolean,
+): void {
+  try {
+    if (!btn || !btn.isConnected) return;
+    const icon = (btn as any).__hteIcon as string | undefined;
+    if (!icon) return;
+    if (on) {
+      const doc = btn.ownerDocument;
+      if (doc) ensureEqStyle(doc);
+      btn.innerHTML =
+        `<span class="hte-playing"><span></span><span></span><span></span></span>`;
+    } else {
+      btn.innerHTML = icon;
+    }
+  } catch { /* ignore */ }
 }
