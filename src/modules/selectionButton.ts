@@ -194,11 +194,14 @@ function onRenderTextSelectionPopup(event: any) {
         }
       } catch { /* ignore */ }
       // When the wordbook platform is zotero/local (or annotation translate is
-      // enabled), fetch the full dictionary entry — it carries the phonetic
-      // (audio/text) that the short textarea translation lacks, so the note
-      // gets a 音标 line just like the hover path.
+      // enabled, or 同步至本地=本地/Zotero 笔记), fetch the full dictionary
+      // entry — it carries the phonetic (audio/text) that the short textarea
+      // translation lacks, so the note/CSV gets a 音标 line just like the
+      // hover path. (2026-08-24: 补 syncToLocal 场景，不再受注释开关限制)
       const platform = getPref("wordbookPlatform") as string;
+      const syncToLocal = getPref("syncToLocal") as string;
       if (trResult && reader && (platform === "zotero" || platform === "local" ||
+          syncToLocal === "local" || syncToLocal === "zotero" ||
           (getPref("enableAnnotationSync") && getPref("enableAnnotationTranslate")))) {
         try {
           (globalThis as any).Zotero?.debug?.(
@@ -391,10 +394,13 @@ function onRenderTextSelectionPopup(event: any) {
       } catch { /* ignore */ }
       if (trResult) {
         // When the wordbook platform is zotero/local (or annotation translate
-        // is enabled), fetch the full dictionary entry for the note/annotation
-        // content AND extract the phonetic from it.
+        // is enabled, or 同步至本地=本地/Zotero 笔记), fetch the full
+        // dictionary entry for the note/annotation content AND extract the
+        // phonetic from it. (2026-08-24: 补 syncToLocal 场景)
         const platform = getPref("wordbookPlatform") as string;
+        const syncToLocal = getPref("syncToLocal") as string;
         if (reader && (platform === "zotero" || platform === "local" ||
+            syncToLocal === "local" || syncToLocal === "zotero" ||
             (getPref("enableAnnotationSync") && getPref("enableAnnotationTranslate")))) {
           (globalThis as any).Zotero?.debug?.(
             `[hte-ann] selectionButton(auto): fetching dict result for wordbook/annotation, ` +

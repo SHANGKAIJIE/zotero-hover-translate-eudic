@@ -2733,8 +2733,14 @@ async function doTranslate(
   // dictionary entry instead of just the short translation.
   const needDictForAnnotation = getPref("enableAnnotationSync") &&
     getPref("enableAnnotationTranslate");
+  // 「同步至本地」场景同样需要完整字典释义（CSV / Zotero 笔记写入 exp+phon），
+  // 不应受注释同步开关限制（2026-08-24 修复：平台为云端 + 同步至本地时
+  // 完整释义依赖被错误绑定到注释开关，导致 CSV 缺音标/只有简译）。
+  const syncToLocal = getPref("syncToLocal") as string;
   if (wordBtn && (getPref("wordbookPlatform") === "local" ||
                   getPref("wordbookPlatform") === "zotero" ||
+                  syncToLocal === "local" ||
+                  syncToLocal === "zotero" ||
                   needDictForAnnotation)) {
     // Determine which word to query: when lemma mode is on, use the
     // headword so phon/exp match the stored word (not the inflected form).
