@@ -2864,7 +2864,7 @@ async function autoAddWordWithButton(
 ) {
   try {
     const win = btn.ownerDocument?.defaultView as Window | null;
-    if (win) _cancelAutoClose(win);
+    if (win) cancelPopupAutoClose(win);
     btn.innerHTML = LOADING_ICON_SVG; // 处理中：加载动画（灰色，跟随按钮 currentColor）
     btn.setAttribute("disabled", "true");
     // Build annotation context (same as manual click path).
@@ -2903,7 +2903,7 @@ async function autoAddWordWithButton(
       btn.style.color = "#ef4444";
       btn.style.borderColor = "#ef4444";
     }
-    if (win) _resumeAutoClose(win);
+    if (win) resumePopupAutoClose(win);
     setTimeout(() => {
       btn.innerHTML = PLUS_ICON_SVG;
       btn.style.color = "var(--hte-raw, #666666)";
@@ -2945,12 +2945,12 @@ function bindPopupHoverPause(innerWin: Window, popup: HTMLElement) {
     popup.addEventListener("mouseenter", () => {
       if (paused) return;
       setPaused(true);
-      _cancelAutoClose(innerWin);
+      cancelPopupAutoClose(innerWin);
     });
     popup.addEventListener("mouseleave", () => {
       if (!paused) return;
       setPaused(false);
-      _resumeAutoClose(innerWin);
+      resumePopupAutoClose(innerWin);
     });
     // 初始检查：弹窗刚创建时鼠标可能已在弹窗区域内（弹窗较大覆盖指针）
     const pos = (innerWin as any).__hoverLastPos as
@@ -2963,7 +2963,7 @@ function bindPopupHoverPause(innerWin: Window, popup: HTMLElement) {
         pos.y >= r.top && pos.y <= r.bottom
       ) {
         setPaused(true);
-        _cancelAutoClose(innerWin);
+        cancelPopupAutoClose(innerWin);
       }
     }
   } catch {
@@ -3095,8 +3095,8 @@ function _armCloseTimer(win: Window, expiry: number) {
 }
 
 /** Pause the auto-close timer (clear the timeout but keep the expiry
- *  so it can be resumed later). */
-function _cancelAutoClose(innerWin: Window) {
+ *  so it can be resumed later). 导出供 pronunciation 快捷键路径复用。 */
+export function cancelPopupAutoClose(innerWin: Window) {
   try {
     innerWin.clearTimeout((innerWin as any).__hoverCloseTimer);
   } catch {
@@ -3106,8 +3106,8 @@ function _cancelAutoClose(innerWin: Window) {
 
 /** Resume a paused auto-close timer. Uses the original expiry; the
  *  button-state guard inside _armCloseTimer may keep the popup alive
- *  even if the original deadline has passed. */
-function _resumeAutoClose(innerWin: Window) {
+ *  even if the original deadline has passed. 导出供 pronunciation 复用。 */
+export function resumePopupAutoClose(innerWin: Window) {
   const win = innerWin;
   // 鼠标仍在弹窗上（bindPopupHoverPause 暂停中）→ 不恢复倒计时，
   // 等鼠标真正移出（mouseleave 会置 false 并调用本函数）。
@@ -3696,11 +3696,11 @@ function bindDictHoverPause(innerWin: Window, dict: HTMLElement) {
   try {
     dict.addEventListener("mouseenter", () => {
       (innerWin as any).__htePopupHoverPaused = true;
-      _cancelAutoClose(innerWin);
+      cancelPopupAutoClose(innerWin);
     });
     dict.addEventListener("mouseleave", () => {
       (innerWin as any).__htePopupHoverPaused = false;
-      _resumeAutoClose(innerWin);
+      resumePopupAutoClose(innerWin);
     });
     // 初始检查：释义弹窗出现时鼠标可能恰好已在其区域内
     const pos = (innerWin as any).__hoverLastPos as
@@ -3710,7 +3710,7 @@ function bindDictHoverPause(innerWin: Window, dict: HTMLElement) {
       const r = dict.getBoundingClientRect();
       if (pos.x >= r.left && pos.x <= r.right && pos.y >= r.top && pos.y <= r.bottom) {
         (innerWin as any).__htePopupHoverPaused = true;
-        _cancelAutoClose(innerWin);
+        cancelPopupAutoClose(innerWin);
       }
     }
   } catch { /* ignore */ }
@@ -3814,7 +3814,7 @@ function maybeAddWordButton(
   applyBtnFeedback(btn);
 
   btn.addEventListener("click", async () => {
-    _cancelAutoClose(innerWin);
+    cancelPopupAutoClose(innerWin);
     btn.innerHTML = LOADING_ICON_SVG; // 处理中：加载动画
     btn.setAttribute("disabled", "true");
 
@@ -3881,7 +3881,7 @@ function maybeAddWordButton(
       btn.style.color = "#ef4444";
       btn.style.borderColor = "#ef4444";
     }
-    _resumeAutoClose(innerWin);
+    resumePopupAutoClose(innerWin);
     setTimeout(() => {
       btn.innerHTML = PLUS_ICON_SVG;
       btn.style.color = "var(--hte-raw, #666666)";
@@ -3969,10 +3969,16 @@ function maybeAddPronunciationButton(
       urls = JSON.parse(btn.dataset.audioUrls || "[]");
     } catch { /* ignore */ }
     if (!urls.length) return;
+    // 点击即暂停自动关闭倒计时（与 +按钮行为对齐）：播放期间弹窗不中途消失
+    cancelPopupAutoClose(innerWin);
     // 播放中状态：开始播均衡器动画，结束/失败恢复喇叭图标
+    // 并恢复自动关闭倒计时（_resumeAutoClose 自带悬停暂停守卫，安全）
     setPronPlaying(btn, true);
     playAudio(urls, innerWin, null, (playing) => {
-      if (!playing) setPronPlaying(btn, false);
+      if (!playing) {
+        setPronPlaying(btn, false);
+        resumePopupAutoClose(innerWin);
+      }
     });
   });
 

@@ -2,7 +2,7 @@
  * Preference panel script.
  *
  * Handles UI interactions that the static `preference=` binding cannot cover:
- *  - toggle modifier-key row enabled state based on triggerMode
+ *  - toggle modifier-key row / hover-delay row visibility based on triggerMode
  *  - toggle Eudic config box based on enableEudicSync
  *  - refresh wordbook category list from Eudic OpenAPI
  *  - sync eudicCategoryName when the target category changes
@@ -92,6 +92,13 @@ const DEFAULTS: Record<string, any> = {
   terminologyMarkType: "highlight",
   terminologyColor: "#ffd400",
   terminologyTagName: "术语",
+  terminologyAnnotationTranslate: false,
+  terminologyTranslatePosition: "comment",
+  terminologyTranslatePositionInBody: "before",
+  terminologySeparatorMode: "newline",
+  terminologySeparator: "\n\n",
+  terminologyWordPosition: "none",
+  terminologyAnnotationAutoTag: false,
   hideNoteIcon: false,
   hideNoteIconMode: "word",
   hideNoteIconNotes: false,
@@ -376,23 +383,12 @@ function syncAllMenulists(win: Window) {
 
 function updateModifierRowState(win: Window) {
   const mode = getPref("triggerMode");
+  // 修饰键组合：仅 triggerMode=modifier 时显示，其余模式直接隐藏（不再变灰）
   const modifierBox = $(`${ref}-modifierKeysBox`, win);
-  if (modifierBox) {
-    modifierBox.style.opacity = mode === "modifier" ? "1" : "0.45";
-    modifierBox.style.pointerEvents = mode === "modifier" ? "auto" : "none";
-  }
-  ["modifierCtrl", "modifierAlt", "modifierShift"].forEach((k) => {
-    const el = $(`zotero-prefpane-${ref}-${k}`, win);
-    if (el) el.disabled = mode !== "modifier";
-  });
-  // When triggerMode is "click", hover delay is irrelevant — gray it out.
-  const delayInput = $(`zotero-prefpane-${ref}-hoverDelay`, win);
-  if (delayInput) delayInput.disabled = mode !== "hover";
+  if (modifierBox) modifierBox.hidden = mode !== "modifier";
+  // 悬停触发延迟：仅 triggerMode=hover 时显示，其余模式直接隐藏
   const delayRow = $(`${ref}-hoverDelayRow`, win);
-  if (delayRow) {
-    delayRow.style.opacity = mode === "hover" ? "1" : "0.45";
-    delayRow.style.pointerEvents = mode === "hover" ? "auto" : "none";
-  }
+  if (delayRow) delayRow.hidden = mode !== "hover";
 }
 
 function updateHoverConfigState(win: Window) {
@@ -521,8 +517,21 @@ function updateTerminologyAnnotationVisibility(_win: Window) {
  * 注释配置区状态：按用户要求不再随「加入生词本时同步添加到注释」置灰，
  * 标注方式/颜色/标签/翻译位置等选项始终可操作（即使不同步注释也可预先配置）。
  */
-function updateAnnotationBoxState(_win: Window) {
-  // 不再置灰：保留空实现以兼容既有调用点。
+function updateAnnotationBoxState(win: Window) {
+  // 生词注释总开关：不勾选时框内其余设置置灰（参考悬停翻译总开关）
+  const annoSync = !!getPref("enableAnnotationSync");
+  const annoBox = $(`${ref}-annotationSyncBox`, win);
+  if (annoBox) {
+    annoBox.style.opacity = annoSync ? "1" : "0.45";
+    annoBox.style.pointerEvents = annoSync ? "auto" : "none";
+  }
+  // 术语注释总开关：不勾选时框内其余设置置灰
+  const termSync = !!getPref("enableTerminologyAnnotationSync");
+  const termBox = $(`${ref}-termAnnotationSyncBox`, win);
+  if (termBox) {
+    termBox.style.opacity = termSync ? "1" : "0.45";
+    termBox.style.pointerEvents = termSync ? "auto" : "none";
+  }
 }
 
 /**
@@ -552,65 +561,75 @@ function updateHideNoteIconState(win: Window) {
   }
 }
 
-/** Toggle annotation sub-rows based on annotationTranslatePosition,
- *  annotationWordPosition and annotationSeparatorMode.
+/** Toggle annotation sub-rows based on translate position / word position /
+ *  separator mode. 生词/术语两套控件完全独立：
+ *  - 生词组（ID 后缀 ""）读 annotation* pref
+ *  - 术语组（ID 后缀 "Term"）读 terminology* pref
  *  - position=body: show "翻译保存顺序" row + "分隔方式(body)" row
- *  - position=comment: show "单词保存位置" row
+ *  - position=comment: show "原文保存位置" row
  *    - wordPosition=comment: show "分隔方式(comment)" row
- *  - separatorMode=newline: hide separator input in the relevant row
- *  - separatorMode=separator: show separator input in the relevant row
- *  - Both separator inputs are synced (same pref: annotationSeparator).
+ *  - separatorMode=newline: hide separator input; separator: show input
  */
 function updateAnnotationTranslatePositionState(win: Window) {
-  const position = getPref("annotationTranslatePosition") as string;
-  const wordPosition = getPref("annotationWordPosition") as string;
-  const sepMode = getPref("annotationSeparatorMode") as string;
-  const showBody = position === "body";
-  const showComment = position === "comment";
-  const showWordPosRow = showComment;
-  const showCommentSepRow = showComment && wordPosition === "comment";
-  const showSeparatorInput = sepMode === "separator";
+  const groups = [
+    { suf: "", p: "annotation" },
+    { suf: "Term", p: "terminology" },
+  ];
+  for (const { suf, p } of groups) {
+    const position = getPref((p + "TranslatePosition") as any) as string;
+    const wordPosition = getPref((p + "WordPosition") as any) as string;
+    const sepMode = getPref((p + "SeparatorMode") as any) as string;
+    const showBody = position === "body";
+    const showComment = position === "comment";
+    const showWordPosRow = showComment;
+    const showCommentSepRow = showComment && wordPosition === "comment";
+    const showSeparatorInput = sepMode === "separator";
+    const q = (id: string) => $(`zotero-prefpane-${ref}-${id}${suf}`, win) as any;
 
-  // 1. 翻译保存顺序 row (only when position=body)
-  const orderMl = $(`zotero-prefpane-${ref}-annotationTranslatePositionInBody`, win) as any;
-  const orderHbox = orderMl?.closest?.("hbox") || orderMl?.parentElement;
-  if (orderHbox) orderHbox.hidden = !showBody;
-  if (orderMl) orderMl.disabled = !showBody;
+    // 1. 翻译保存顺序 row (only when position=body)
+    const orderMl = q("annotationTranslatePositionInBody");
+    const orderHbox = orderMl?.closest?.("hbox") || orderMl?.parentElement;
+    if (orderHbox) orderHbox.hidden = !showBody;
+    if (orderMl) orderMl.disabled = !showBody;
 
-  // 2. 分隔方式 (body) row (only when position=body)
-  const bodySepModeMl = $(`zotero-prefpane-${ref}-annotationSeparatorModeBody`, win) as any;
-  const bodySepHbox = bodySepModeMl?.closest?.("hbox") || bodySepModeMl?.parentElement;
-  if (bodySepHbox) bodySepHbox.hidden = !showBody;
-  if (bodySepModeMl) bodySepModeMl.disabled = !showBody;
-  // Toggle body separator input visibility
-  const bodySepInput = $(`zotero-prefpane-${ref}-annotationSeparatorBody`, win) as any;
-  if (bodySepInput) {
-    bodySepInput.hidden = !showSeparatorInput;
-    bodySepInput.disabled = !showBody || !showSeparatorInput;
+    // 2. 分隔方式 (body) row (only when position=body)
+    const bodySepModeMl = q("annotationSeparatorModeBody");
+    const bodySepHbox = bodySepModeMl?.closest?.("hbox") || bodySepModeMl?.parentElement;
+    if (bodySepHbox) bodySepHbox.hidden = !showBody;
+    if (bodySepModeMl) bodySepModeMl.disabled = !showBody;
+    const bodySepInput = q("annotationSeparatorBody");
+    if (bodySepInput) {
+      bodySepInput.hidden = !showSeparatorInput;
+      bodySepInput.disabled = !showBody || !showSeparatorInput;
+    }
+
+    // 3. 原文保存位置 row (only when position=comment)
+    const wordPosMl = q("annotationWordPosition");
+    const wordPosHbox = wordPosMl?.closest?.("hbox") || wordPosMl?.parentElement;
+    if (wordPosHbox) wordPosHbox.hidden = !showWordPosRow;
+    if (wordPosMl) wordPosMl.disabled = !showWordPosRow;
+
+    // 4. 分隔方式 (comment) row (only when position=comment && wordPosition=comment)
+    const commentSepModeMl = q("annotationSeparatorModeComment");
+    const commentSepHbox = commentSepModeMl?.closest?.("hbox") || commentSepModeMl?.parentElement;
+    if (commentSepHbox) commentSepHbox.hidden = !showCommentSepRow;
+    if (commentSepModeMl) commentSepModeMl.disabled = !showCommentSepRow;
+    const commentSepInput = q("annotationSeparatorComment");
+    if (commentSepInput) {
+      commentSepInput.hidden = !showSeparatorInput;
+      commentSepInput.disabled = !showCommentSepRow || !showSeparatorInput;
+    }
+
+    // 5. Sync the two separator menulists within this group
+    if (bodySepModeMl && bodySepModeMl.value !== sepMode) bodySepModeMl.value = sepMode;
+    if (commentSepModeMl && commentSepModeMl.value !== sepMode) commentSepModeMl.value = sepMode;
+
+    // 6. Sync translate position / word position menulists from pref
+    const posMl = q("annotationTranslatePosition");
+    if (posMl && posMl.value !== position) posMl.value = position;
+    const wPosMl = q("annotationWordPosition");
+    if (wPosMl && wPosMl.value !== wordPosition) wPosMl.value = wordPosition;
   }
-
-  // 3. 单词保存位置 row (only when position=comment)
-  const wordPosMl = $(`zotero-prefpane-${ref}-annotationWordPosition`, win) as any;
-  const wordPosHbox = wordPosMl?.closest?.("hbox") || wordPosMl?.parentElement;
-  if (wordPosHbox) wordPosHbox.hidden = !showWordPosRow;
-  if (wordPosMl) wordPosMl.disabled = !showWordPosRow;
-
-  // 4. 分隔方式 (comment) row (only when position=comment && wordPosition=comment)
-  const commentSepModeMl = $(`zotero-prefpane-${ref}-annotationSeparatorModeComment`, win) as any;
-  const commentSepHbox = commentSepModeMl?.closest?.("hbox") || commentSepModeMl?.parentElement;
-  if (commentSepHbox) commentSepHbox.hidden = !showCommentSepRow;
-  if (commentSepModeMl) commentSepModeMl.disabled = !showCommentSepRow;
-  // Toggle comment separator input visibility
-  const commentSepInput = $(`zotero-prefpane-${ref}-annotationSeparatorComment`, win) as any;
-  if (commentSepInput) {
-    commentSepInput.hidden = !showSeparatorInput;
-    commentSepInput.disabled = !showCommentSepRow || !showSeparatorInput;
-  }
-
-  // 5. Sync the two separator mode menulists (they share the same pref, but
-  //    we need to keep their displayed value in sync when toggling).
-  if (bodySepModeMl && bodySepModeMl.value !== sepMode) bodySepModeMl.value = sepMode;
-  if (commentSepModeMl && commentSepModeMl.value !== sepMode) commentSepModeMl.value = sepMode;
 }
 
 /** Reflect the currently saved eudicCategoryId in the menulist UI. */
@@ -776,17 +795,26 @@ function bindPrefEvents(win: Window) {
     setTimeout(() => updateAnnotationBoxState(win), 0);
   });
 
-  // annotationTranslatePosition -> toggle sub-rows
-  const annoPos = $(`zotero-prefpane-${ref}-annotationTranslatePosition`, win);
-  annoPos?.addEventListener("command", () => {
-    setTimeout(() => updateAnnotationTranslatePositionState(win), 0);
+  // enableTerminologyAnnotationSync -> toggle term annotation config box
+  const enableTermSync = $(`zotero-prefpane-${ref}-enableTerminologyAnnotationSync`, win);
+  enableTermSync?.addEventListener("command", () => {
+    setTimeout(() => updateAnnotationBoxState(win), 0);
   });
 
-  // annotationWordPosition -> toggle "分隔方式(comment)" row
-  const wordPos = $(`zotero-prefpane-${ref}-annotationWordPosition`, win);
-  wordPos?.addEventListener("command", () => {
-    setTimeout(() => updateAnnotationTranslatePositionState(win), 0);
-  });
+  // annotationTranslatePosition -> toggle sub-rows（生词/术语两套下拉共用 pref，
+  // 任一改变都刷新两套子行的显示状态）
+  for (const suf of ["", "Term"]) {
+    const annoPos = $(`zotero-prefpane-${ref}-annotationTranslatePosition${suf}`, win);
+    annoPos?.addEventListener("command", () => {
+      setTimeout(() => updateAnnotationTranslatePositionState(win), 0);
+    });
+
+    // annotationWordPosition -> toggle "分隔方式(comment)" row
+    const wordPos = $(`zotero-prefpane-${ref}-annotationWordPosition${suf}`, win);
+    wordPos?.addEventListener("command", () => {
+      setTimeout(() => updateAnnotationTranslatePositionState(win), 0);
+    });
+  }
 
   // hideNoteIcon -> toggle hide-note-icon sub-rows
   const hideNoteIcon = $(`zotero-prefpane-${ref}-hideNoteIcon`, win);
@@ -807,40 +835,45 @@ function bindPrefEvents(win: Window) {
     setPref("hideNoteIconNotes", hideNoteIconNotes.value === "true");
   });
 
-  // annotationSeparatorMode (both menulists) -> toggle separator input visibility
-  const sepModeBody = $(`zotero-prefpane-${ref}-annotationSeparatorModeBody`, win);
-  sepModeBody?.addEventListener("command", () => {
-    // Sync the comment menulist value
-    const sepModeComment = $(`zotero-prefpane-${ref}-annotationSeparatorModeComment`, win) as any;
-    if (sepModeComment && sepModeComment.value !== (sepModeBody as any).value) {
-      sepModeComment.value = (sepModeBody as any).value;
+  // annotationSeparatorMode（生词/术语各一组，组内 body↔comment 联动；
+  // 两组独立，互不同步）-> toggle separator input visibility
+  const sepGroups = [
+    ["annotationSeparatorModeBody", "annotationSeparatorModeComment"],
+    ["annotationSeparatorModeBodyTerm", "annotationSeparatorModeCommentTerm"],
+  ];
+  for (const ids of sepGroups) {
+    for (const id of ids) {
+      const ml = $(`zotero-prefpane-${ref}-${id}`, win) as any;
+      ml?.addEventListener("command", () => {
+        const v = ml.value;
+        for (const other of ids) {
+          if (other === id) continue;
+          const el = $(`zotero-prefpane-${ref}-${other}`, win) as any;
+          if (el && el.value !== v) el.value = v;
+        }
+        setTimeout(() => updateAnnotationTranslatePositionState(win), 0);
+      });
     }
-    setTimeout(() => updateAnnotationTranslatePositionState(win), 0);
-  });
-  const sepModeComment = $(`zotero-prefpane-${ref}-annotationSeparatorModeComment`, win);
-  sepModeComment?.addEventListener("command", () => {
-    // Sync the body menulist value
-    const sepModeBody2 = $(`zotero-prefpane-${ref}-annotationSeparatorModeBody`, win) as any;
-    if (sepModeBody2 && sepModeBody2.value !== (sepModeComment as any).value) {
-      sepModeBody2.value = (sepModeComment as any).value;
-    }
-    setTimeout(() => updateAnnotationTranslatePositionState(win), 0);
-  });
+  }
 
-  // Sync the two separator text inputs (they share the same pref, but we
-  // also sync their displayed value when either changes).
-  const sepInputBody = $(`zotero-prefpane-${ref}-annotationSeparatorBody`, win) as any;
-  const sepInputComment = $(`zotero-prefpane-${ref}-annotationSeparatorComment`, win) as any;
-  sepInputBody?.addEventListener("input", () => {
-    if (sepInputComment && sepInputComment.value !== sepInputBody.value) {
-      sepInputComment.value = sepInputBody.value;
+  // Separator text inputs：组内 body↔comment 同步（两组独立）
+  const sepInputGroups = [
+    ["annotationSeparatorBody", "annotationSeparatorComment"],
+    ["annotationSeparatorBodyTerm", "annotationSeparatorCommentTerm"],
+  ];
+  for (const ids of sepInputGroups) {
+    for (const id of ids) {
+      const input = $(`zotero-prefpane-${ref}-${id}`, win) as any;
+      input?.addEventListener("input", () => {
+        const v = input.value;
+        for (const other of ids) {
+          if (other === id) continue;
+          const el = $(`zotero-prefpane-${ref}-${other}`, win) as any;
+          if (el && el.value !== v) el.value = v;
+        }
+      });
     }
-  });
-  sepInputComment?.addEventListener("input", () => {
-    if (sepInputBody && sepInputBody.value !== sepInputComment.value) {
-      sepInputBody.value = sepInputComment.value;
-    }
-  });
+  }
 
   // export choose directory button
   const chooseBtn = $(`${ref}-chooseExportDirBtn`, win);

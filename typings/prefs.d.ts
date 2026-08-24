@@ -71,6 +71,13 @@ declare namespace _ZoteroTypes {
       "terminologyMarkType": string;
       "terminologyColor": string;
       "terminologyTagName": string;
+      "terminologyAnnotationTranslate": boolean;
+      "terminologyTranslatePosition": string;
+      "terminologyTranslatePositionInBody": string;
+      "terminologySeparatorMode": string;
+      "terminologySeparator": string;
+      "terminologyWordPosition": string;
+      "terminologyAnnotationAutoTag": boolean;
       "hideNoteIcon": boolean;
       "hideNoteIconMode": string;
       "hideNoteIconNotes": boolean;

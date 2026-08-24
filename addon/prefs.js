@@ -82,6 +82,14 @@ pref("enableTerminologyAnnotationSync", false);   // 加入术语库时同步添
 pref("terminologyMarkType", "highlight");          // 术语标注方式：highlight | underline
 pref("terminologyColor", "#ffd400");               // 术语标注颜色（hex 格式）
 pref("terminologyTagName", "术语");                // 术语标签名称
+// 术语注释的翻译设置（与生词注释完全独立，两框互不干扰）
+pref("terminologyAnnotationTranslate", false);     // 术语注释：自动翻译
+pref("terminologyTranslatePosition", "comment");   // comment | body（翻译保存位置）
+pref("terminologyTranslatePositionInBody", "before"); // before | after（翻译保存顺序）
+pref("terminologySeparatorMode", "newline");       // newline | separator（分隔方式）
+pref("terminologySeparator", "\n\n");              // 分隔符
+pref("terminologyWordPosition", "none");           // none | comment（原文保存位置）
+pref("terminologyAnnotationAutoTag", false);       // 术语注释：翻译后自动添加标签
 pref("hideNoteIcon", false);                      // 隐藏便签图标（总开关）
 pref("hideNoteIconMode", "word");                 // word | all（隐藏范围：仅隐藏单词文本 / 仅隐藏全部文本）
 pref("hideNoteIconNotes", false);                 // 独立便签图标：是否隐藏（不受隐藏范围限制）

@@ -24,6 +24,8 @@
  */
 import { getPref } from "../utils/prefs";
 import { parseKeybinding, matchesKeybinding } from "./addWordShortcut";
+// 复用 hoverTranslate 的弹窗自动关闭暂停/恢复（快捷键播放期间弹窗不中途消失）
+import { cancelPopupAutoClose, resumePopupAutoClose } from "./hoverTranslate";
 
 /**
  * 构建 TTS 兜底 URL 链：有道优先（国内可达，英文词 type=1 英音），
@@ -279,14 +281,21 @@ export function installPronunciationShortcut(win: Window): () => void {
       if (!activePron || !activePron.audioUrls?.length) return; // no current word
       ev.preventDefault();
       ev.stopPropagation();
+      // 快捷键触发：暂停弹窗自动关闭倒计时（与点击发音按钮行为对齐），
+      // 播放结束/失败恢复（resume 自带悬停暂停守卫，安全）
+      const win = activePron.win;
+      cancelPopupAutoClose(win);
       // 快捷键触发：播放成功时发音按钮做按下反馈（有按钮才传，避免误反馈）
       const pronBtn = activePron.pronBtn || null;
       playAudio(
         activePron.audioUrls,
-        activePron.win,
+        win,
         pronBtn,
         // 快捷键路径同样显示播放中均衡器动画（与点击/自动路径对齐）
-        (playing) => setPronPlaying(pronBtn, playing),
+        (playing) => {
+          setPronPlaying(pronBtn, playing);
+          if (!playing) resumePopupAutoClose(win);
+        },
       );
     } catch {
       /* never break the event chain */

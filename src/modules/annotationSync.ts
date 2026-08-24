@@ -226,19 +226,31 @@ export async function syncWordAnnotation(
     ].join("|");
     annLog(`sortIndex=${sortIndex} (top=${top})`);
 
-    // ---- 6. 读取注释相关偏好（术语注释用术语专用标注方式/颜色） ----
+    // ---- 6. 读取注释相关偏好（术语注释用术语专用整套 pref，与生词完全独立） ----
     const markType = isTerm
       ? (getPref("terminologyMarkType") as string) || "highlight"
       : (getPref("annotationMarkType") as string) || "highlight";
     const color = isTerm
       ? (getPref("terminologyColor") as string) || "#ffd400"
       : (getPref("annotationColor") as string) || "#ffd400";
-    const separator = (getPref("annotationSeparator") as string) ?? "\n\n";
-    const position = (getPref("annotationTranslatePosition") as string) || "comment";
-    const posInBody = (getPref("annotationTranslatePositionInBody") as string) || "before";
-    const sepMode = (getPref("annotationSeparatorMode") as string) || "newline";
-    const wordPosition = (getPref("annotationWordPosition") as string) || "none";
-    const enableTranslate = getPref("enableAnnotationTranslate");
+    const separator = isTerm
+      ? (getPref("terminologySeparator") as string) ?? "\n\n"
+      : (getPref("annotationSeparator") as string) ?? "\n\n";
+    const position = isTerm
+      ? (getPref("terminologyTranslatePosition") as string) || "comment"
+      : (getPref("annotationTranslatePosition") as string) || "comment";
+    const posInBody = isTerm
+      ? (getPref("terminologyTranslatePositionInBody") as string) || "before"
+      : (getPref("annotationTranslatePositionInBody") as string) || "before";
+    const sepMode = isTerm
+      ? (getPref("terminologySeparatorMode") as string) || "newline"
+      : (getPref("annotationSeparatorMode") as string) || "newline";
+    const wordPosition = isTerm
+      ? (getPref("terminologyWordPosition") as string) || "none"
+      : (getPref("annotationWordPosition") as string) || "none";
+    const enableTranslate = isTerm
+      ? getPref("terminologyAnnotationTranslate")
+      : getPref("enableAnnotationTranslate");
     annLog(`prefs(${kind}): markType=${markType}, color=${color}, separator=${dump(separator)}, ` +
       `position=${position}, posInBody=${posInBody}, sepMode=${sepMode}, ` +
       `wordPosition=${wordPosition}, enableTranslate=${enableTranslate}`);
@@ -252,7 +264,9 @@ export async function syncWordAnnotation(
     annLog(`translation trimmed: len=${tr.length}, text=${dump(tr.slice(0, 60))}`);
 
     // 自动标签：读取设置（供 json.tags 使用，saveFromJSON 的 setTags 会覆盖式设置）
-    const enableAutoTag = getPref("enableAnnotationAutoTag");
+    const enableAutoTag = isTerm
+      ? getPref("terminologyAnnotationAutoTag")
+      : getPref("enableAnnotationAutoTag");
     const autoTagName = isTerm
       ? (getPref("terminologyTagName") as string) || "术语"
       : (getPref("annotationTagName") as string) || "单词";
