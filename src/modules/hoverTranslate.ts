@@ -2580,7 +2580,7 @@ async function doTranslate(
 
   // +生词本 button — create immediately with the popup shell, before
   // translation completes.  Keep a ref so auto-add can drive states.
-  const wordBtn = maybeAddWordButton(innerWin, row, word, "hover", reader, range);
+  const wordBtn = maybeAddWordButton(innerWin, row, word, "hover", reader, range, contextLineRef.get());
   // 发音按钮 — 与 +按钮 同时创建（出现时机参考+按钮）。音频 URL 翻译完成后填充。
   const pronBtn = maybeAddPronunciationButton(innerWin, row, wordBtn);
 
@@ -2855,7 +2855,7 @@ async function doTranslate(
     isSingleEnglishWord(word) &&
     wordBtn
   ) {
-    void autoAddWordWithButton(word, wordBtn, expText, phonText, reader, range);
+    void autoAddWordWithButton(word, wordBtn, expText, phonText, reader, range, contextLineRef.get());
   }
 }
 
@@ -2867,6 +2867,8 @@ async function autoAddWordWithButton(
   phonText?: string,
   reader?: _ZoteroTypes.ReaderInstance,
   range?: Range,
+  /** 例句原文（PDF 上下文句子），成功加词后写入记忆 JSON ctx（M2）。 */
+  contextLine?: string,
 ) {
   try {
     const win = btn.ownerDocument?.defaultView as Window | null;
@@ -2899,7 +2901,7 @@ async function autoAddWordWithButton(
         `hasReader=${!!reader}, hasRange=${!!range}`,
       );
     } catch { /* ignore */ }
-    const ok = await addWordToEudic(word, trResult || "", phonText || "", annotationCtx);
+    const ok = await addWordToEudic(word, trResult || "", phonText || "", annotationCtx, contextLine);
     if (ok) {
       btn.textContent = "✓";
       btn.style.color = "#22c55e";
@@ -3776,6 +3778,8 @@ function maybeAddWordButton(
   scene: "hover" | "selection",
   reader?: _ZoteroTypes.ReaderInstance,
   range?: Range,
+  /** 例句原文（PDF 上下文句子），点击加词后写入记忆 JSON ctx（M2）。 */
+  contextLine?: string,
 ): HTMLButtonElement | null {
   if (!getPref("enableEudicSync")) return null;
   const scenePref = getPref("buttonShowScene");
@@ -3877,7 +3881,7 @@ function maybeAddWordButton(
         `hasReader=${!!reader}, hasRange=${!!range}`,
       );
     } catch { /* ignore */ }
-    const ok = await addWordToEudic(word, trResult, phon, annotationCtx);
+    const ok = await addWordToEudic(word, trResult, phon, annotationCtx, contextLine);
     if (ok) {
       btn.textContent = "✓";
       btn.style.color = "#22c55e";
@@ -4323,6 +4327,8 @@ async function addWordToEudic(
     /** 取词高亮实际命中的词（复合词分段后为鼠标所在段，如 "Multi-View" → "Multi"）。 */
     annotatedWord?: string;
   },
+  /** 例句原文（PDF 上下文句子）；成功加词后写入记忆 JSON ctx（M2）。 */
+  contextLine?: string,
 ): Promise<boolean> {
   // Lemmatise inflected forms to dictionary headwords before API call
   // when lemmaMode is "lemma"; skip lemmatisation when "inflected".
@@ -4517,6 +4523,33 @@ async function addWordToEudic(
         `[hte-ann] hoverTranslate: skip sync (ok=${ok}, hasCtx=${!!annotationCtx})`,
       );
     } catch { /* ignore */ }
+  }
+  // 例句原文写入记忆（M2）：词已成功加入词表时记录 ctx 供背诵弹窗背面
+  // 展示「原文」例句。优先用 locate 子系统取完整句子（跨 textLayer 节点，
+  // 句子完整）；失败回退 mousemove 时捕获的单节点 contextLine。best-effort。
+  if (ok) {
+    let finalCtx = contextLine || "";
+    try {
+      const rd = (annotationCtx as any)?.reader;
+      const pg = (annotationCtx as any)?.pageIndex;
+      const rects = (annotationCtx as any)?.pdfRects;
+      if (rd && pg != null && rects?.length) {
+        const { sentenceForWordRect } = await import("../locate/sentence-locator");
+        const { getReaderInnerWindow } = await import("../utils/window");
+        const iw = getReaderInnerWindow(rd);
+        if (iw) {
+          const s = await sentenceForWordRect(rd as object, iw, pg, rects);
+          if (s) finalCtx = s;
+        }
+      }
+    } catch { /* keep fallback */ }
+    if (finalCtx) {
+      try {
+        const { setWordCtx } = await import("./reciteMemory");
+        // 取词高亮命中的词形（可能含变形），记录供精确高亮
+        void setWordCtx(lemma, finalCtx, (annotationCtx as any)?.annotatedWord);
+      } catch { /* ignore */ }
+    }
   }
   return ok;
 }
@@ -4732,7 +4765,8 @@ function getThemeColors(innerWin?: Window) {
       btnBg: "rgba(255,255,255,0.06)",
       btnBorder: "rgba(180,180,180,0.3)",
       divider: "rgba(255,255,255,0.1)",
-      shadow: "0 4px 16px rgba(0,0,0,0.4)",
+      shadow:
+        "0 4px 12px rgba(0,0,0,0.15), 0 0 0 1px rgba(255,255,255,0.30)",
     };
   }
   return {

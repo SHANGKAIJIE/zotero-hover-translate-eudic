@@ -63,25 +63,41 @@ let sharedAudio: any = null;
 
 /** 获取/重建单例 audio 元素（原 playAudio 内三级创建逻辑上移）。 */
 function ensureSharedAudio(win?: Window): any {
-  if (
-    sharedAudio &&
-    typeof sharedAudio.pause === "function" &&
-    sharedAudio.isConnected !== false
-  ) {
-    return sharedAudio;
-  }
+  // 每次播放用全新 audio 元素：复用单例时，设置新 src 会触发旧加载的 abort
+  // 事件，被 onFail 误判为「当前 URL 加载失败」而连锁跳过所有来源
+  // （Debug Output 实测 "all 2 source(s) failed (last: abort)"）。新元素无
+  // 旧加载，从根源杜绝 abort 误判。
+  try {
+    if (sharedAudio) {
+      sharedAudio.onerror = null;
+      sharedAudio.onabort = null;
+      if (typeof sharedAudio.pause === "function") sharedAudio.pause();
+      if (sharedAudio.parentNode) {
+        sharedAudio.parentNode.removeChild(sharedAudio);
+      }
+    }
+  } catch { /* ignore */ }
   sharedAudio = null;
   try {
     const mainWin = (globalThis as any).Zotero?.getMainWindow?.();
     if (mainWin?.document) {
       sharedAudio = mainWin.document.createElement("audio");
       sharedAudio.style.display = "none";
+      // 挂载到 DOM：保证 isConnected 且浏览器允许后续无手势自动播放
+      try {
+        (mainWin.document.body || mainWin.document.documentElement)?.append(
+          sharedAudio,
+        );
+      } catch { /* ignore */ }
     }
   } catch { /* ignore */ }
   if (!sharedAudio && win?.document) {
     try {
       sharedAudio = win.document.createElement("audio");
       sharedAudio.style.display = "none";
+      try {
+        (win.document.body || win.document.documentElement)?.append(sharedAudio);
+      } catch { /* ignore */ }
     } catch { /* ignore */ }
   }
   if (!sharedAudio) {
@@ -114,6 +130,8 @@ export function playAudio(
   flashBtn?: HTMLButtonElement | null,
   /** 播放状态回调：true=开始播放，false=播放结束/全部失败/被新播放取代 */
   onPlaying?: (playing: boolean) => void,
+  /** 播放速率（0.5-2.0，默认 1.0；背诵弹窗按 reciteSpeakRate 传入） */
+  rate?: number,
 ): void {
   const list = (Array.isArray(urls) ? urls : [urls]).filter((u) => !!u);
   if (list.length === 0) return;
@@ -172,7 +190,11 @@ export function playAudio(
       audio.onabort = () => onFail("abort");
       currentUrl = url;
       audio.src = url;
-      audio.load();
+      // 不显式 load()：src 赋值已触发资源加载；再 load() 会 abort 首次加载并
+      // fire abort 事件，被 onFail 误判为当前 URL 失败而连锁切换来源。
+      if (rate != null && rate > 0) {
+        try { audio.playbackRate = rate; } catch { /* ignore */ }
+      }
       const p: any = audio.play();
       if (p && typeof p.catch === "function") {
         p.then(() => {

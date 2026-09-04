@@ -251,7 +251,7 @@ function onRenderTextSelectionPopup(event: any) {
           annotationCtx = { attachmentID, reader, pdfRects, pageIndex };
         }
       } catch { /* ignore */ }
-      const ok = await addWordToEudic(selectedText, trResult, phon, annotationCtx);
+      const ok = await addWordToEudic(selectedText, trResult, phon, annotationCtx, contextLine);
       wordBtn!.textContent = ok
         ? getString("wordbtn-added")
         : getString("wordbtn-failed");
@@ -427,15 +427,15 @@ function onRenderTextSelectionPopup(event: any) {
               if (!phon) phon = extractPhonetic(dict.result || "");
               if (phon) phon = "/" + phon + "/";
             }
-            void addWordToEudic(selectedText, trResult, phon, autoAnnotationCtx);
+            void addWordToEudic(selectedText, trResult, phon, autoAnnotationCtx, contextLine);
           }).catch((e) => {
             (globalThis as any).Zotero?.debug?.(
               `[hte-ann] selectionButton(auto): fetchDictResult error: ${String(e)}`,
             );
-            void addWordToEudic(selectedText, trResult, phon, autoAnnotationCtx);
+            void addWordToEudic(selectedText, trResult, phon, autoAnnotationCtx, contextLine);
           });
         } else {
-          void addWordToEudic(selectedText, trResult, phon, autoAnnotationCtx);
+          void addWordToEudic(selectedText, trResult, phon, autoAnnotationCtx, contextLine);
         }
       } else if (attempt < 3) {
         // Retry with progressive delay: 150ms → 400ms
@@ -443,7 +443,7 @@ function onRenderTextSelectionPopup(event: any) {
         setTimeout(() => tryAutoAdd(attempt + 1), delay);
       } else {
         // Fallback: add word without phon/exp
-        void addWordToEudic(selectedText, "", "", autoAnnotationCtx);
+        void addWordToEudic(selectedText, "", "", autoAnnotationCtx, contextLine);
       }
     };
     tryAutoAdd(1);
@@ -460,6 +460,8 @@ async function addWordToEudic(
     pdfRects?: [number, number, number, number][];
     pageIndex?: number;
   },
+  /** 例句原文（PDF 上下文句子）；成功加词后写入记忆 JSON ctx（M2）。 */
+  contextLine?: string,
 ): Promise<boolean> {
   // Lemmatise inflected forms to dictionary headwords before API call
   // when lemmaMode is "lemma"; skip lemmatisation when "inflected".
@@ -620,6 +622,31 @@ async function addWordToEudic(
         `[hte-ann] selectionButton: skip sync (ok=${ok}, hasCtx=${!!annotationCtx})`,
       );
     } catch { /* ignore */ }
+  }
+  // 例句原文写入记忆（M2）：词已成功加入词表时记录 ctx 供背诵弹窗背面
+  // 展示「原文」例句。优先用 locate 子系统取完整句子；失败回退单节点逻辑。
+  if (ok) {
+    let finalCtx = contextLine || "";
+    try {
+      const rd = (annotationCtx as any)?.reader;
+      const pg = (annotationCtx as any)?.pageIndex;
+      const rects = (annotationCtx as any)?.pdfRects;
+      if (rd && pg != null && rects?.length) {
+        const { sentenceForWordRect } = await import("../locate/sentence-locator");
+        const iw = getReaderInnerWindow(rd);
+        if (iw) {
+          const s = await sentenceForWordRect(rd as object, iw, pg, rects);
+          if (s) finalCtx = s;
+        }
+      }
+    } catch { /* keep fallback */ }
+    if (finalCtx) {
+      try {
+        const { setWordCtx } = await import("./reciteMemory");
+        // 划词选中的文本即命中词形（可能含变形），记录供精确高亮
+        void setWordCtx(lemma, finalCtx, word);
+      } catch { /* ignore */ }
+    }
   }
   return ok;
 }

@@ -36,6 +36,12 @@ textarea.hte-term-input{min-height:76px;resize:vertical;}
 .hte-term-save[disabled]{opacity:.6;cursor:default;}
 .hte-term-danger{border:none;background:#d9534f;color:#fff;}
 .hte-term-danger:hover{background:#c9433f;}
+/* 暗色模式：弹窗外圈描边跟随 Zotero 主题变量 --color-border（仅当变量
+   不存在时回退浅灰 #e0e0e0）。添加术语弹窗与生词本面板编辑弹窗共用
+   .hte-term-dlg；阴影保持原有黑色投影不变。 */
+@media (prefers-color-scheme: dark){
+.hte-term-dlg{border:1px solid var(--color-border,#e0e0e0);box-shadow:0 8px 24px rgba(0,0,0,.18);}
+}
 `;
 
 /**

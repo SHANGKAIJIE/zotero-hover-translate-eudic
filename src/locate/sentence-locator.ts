@@ -15,7 +15,7 @@
  */
 
 import type { CharAnchor, PageBundle, PdfRect, WordSpan } from "./types";
-import { closestAnchorIndex, rectsForAnchors } from "./page-bundle";
+import { closestAnchorIndex, getPageBundle, rectsForAnchors } from "./page-bundle";
 import { splitSentences, type SplitOptions } from "./sentence-splitter";
 
 export interface LocatedSentence {
@@ -130,6 +130,34 @@ export function sentenceAtIndex(
 ): LocatedSentence | null {
   const segment = sentenceSegmentsForPage(bundle, splitOptions)[sentenceIndex];
   return segment ? locatedSentenceFromSegment(bundle, segment) : null;
+}
+
+/**
+ * 高层入口：给定单词的 PDF rect（用户空间坐标）→ 所在完整句子文本。
+ * 供加词流程取「原文例句」用——走整页文本断句，跨 textLayer 节点，句子完整。
+ * 任一步失败返回 ""（调用方回退旧逻辑）。
+ */
+export async function sentenceForWordRect(
+  reader: object,
+  innerWin: Window,
+  pageIndex: number,
+  rects?: [number, number, number, number][],
+): Promise<string> {
+  try {
+    if (pageIndex == null || pageIndex < 0) return "";
+    const bundle = await getPageBundle(reader, innerWin, pageIndex);
+    if (!bundle) return "";
+    let point: { x: number; y: number } | null = null;
+    if (rects && rects.length > 0) {
+      const r = rects[0];
+      point = { x: (r[0] + r[2]) / 2, y: (r[1] + r[3]) / 2 };
+    }
+    if (!point) return "";
+    const s = sentenceAtPoint(bundle, point);
+    return s?.text ?? "";
+  } catch {
+    return "";
+  }
 }
 
 function locatedSentenceFromSegment(

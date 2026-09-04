@@ -188,6 +188,14 @@ export async function registerPrefsScripts(win: Window) {
   updateHideNoteIconState(win);
   updateSyncToLocalState(win);
   updateTerminologyState(win);
+  // 每日固定时间提醒选项已移除：若旧值残留 daily，重置为关闭（none）
+  try {
+    if ((getPref("reciteRemind" as any) as string) === "daily") {
+      setPref("reciteRemind", "none");
+    }
+  } catch { /* ignore */ }
+  updateAutoSpeakState(win);
+  updateSentenceBoxState(win);
   bindPrefEvents(win);
   // Auto-fetch categories on panel open if token is configured for the active platform.
   const platform = getPref("wordbookPlatform") as string;
@@ -667,7 +675,60 @@ function syncCategorySelectionUI(win: Window) {
 
 /* ----------------------------- events ----------------------------- */
 
+function updateAutoSpeakState(win: Window) {
+  // 单词自动发音勾选时才显示：显示释义前/后（缩进子行）、单词发音类型、单词发音速度
+  const on = getPref("reciteAutoSpeakWord" as any) as boolean;
+  const row = $(`zotero-prefpane-${ref}-reciteAutoSpeakRow`, win);
+  if (row) row.hidden = !on;
+  const accentRow = $(`zotero-prefpane-${ref}-reciteAccentRow`, win);
+  if (accentRow) accentRow.hidden = !on;
+  const rateRow = $(`zotero-prefpane-${ref}-reciteSpeakRateRow`, win);
+  if (rateRow) rateRow.hidden = !on;
+}
+
+function updateSentenceBoxState(win: Window) {
+  const show = getPref("reciteShowSentence" as any) as boolean;
+  const autoSpeakSentence = getPref("reciteAutoSpeakSentence" as any) as boolean;
+  // 例句自动发音、例句来源、词典例句：随「显示例句」显隐
+  const autoSpeak = $(`zotero-prefpane-${ref}-reciteAutoSpeakSentence`, win);
+  if (autoSpeak) autoSpeak.hidden = !show;
+  const sourceRow = $(`zotero-prefpane-${ref}-reciteSentenceSourceRow`, win);
+  if (sourceRow) sourceRow.hidden = !show;
+  // 词典例句：仅「显示例句」且「例句来源=词典」时显示
+  const dictRow = $(`zotero-prefpane-${ref}-reciteDictSourceRow`, win);
+  if (dictRow) {
+    dictRow.hidden = !show || (getPref("reciteSentenceSource" as any) as string) !== "dict";
+  }
+  // 例句发音速度：仅「显示例句」且「例句自动发音」勾选时显示
+  const rateRow = $(`zotero-prefpane-${ref}-reciteSentenceSpeakRateRow`, win);
+  if (rateRow) rateRow.hidden = !show || !autoSpeakSentence;
+}
+
 function bindPrefEvents(win: Window) {
+  // reciteAutoSpeakWord -> toggle 前后自动发音子勾选项
+  const autoSpeakWord = $(`zotero-prefpane-${ref}-reciteAutoSpeakWord`, win);
+  autoSpeakWord?.addEventListener("command", () => {
+    setTimeout(() => updateAutoSpeakState(win), 0);
+  });
+
+  // reciteShowSentence -> toggle 例句相关子项（自动发音/发音速度/来源/词典例句）
+  const showSentence = $(`zotero-prefpane-${ref}-reciteShowSentence`, win);
+  showSentence?.addEventListener("command", () => {
+    setTimeout(() => updateSentenceBoxState(win), 0);
+  });
+
+  // reciteAutoSpeakSentence -> toggle 例句发音速度行
+  const autoSpeakSentence = $(`zotero-prefpane-${ref}-reciteAutoSpeakSentence`, win);
+  autoSpeakSentence?.addEventListener("command", () => {
+    setTimeout(() => updateSentenceBoxState(win), 0);
+  });
+
+  // reciteSentenceSource -> toggle 词典例句行（仅「词典」时显示）
+  const sentenceSource = $(`zotero-prefpane-${ref}-reciteSentenceSource`, win);
+  sentenceSource?.addEventListener("command", () => {
+    setTimeout(() => updateSentenceBoxState(win), 0);
+  });
+
   // triggerMode -> toggle modifier row
   const triggerMode = $(`zotero-prefpane-${ref}-triggerMode`, win);
   triggerMode?.addEventListener("command", () => {

@@ -65,6 +65,25 @@ pref("panelWordScope", "current");   // 面板生词范围：all=所有条目 | 
 pref("panelSortMode", "reverse");    // 面板排序：reverse=倒序(默认,最新在前) | forward=顺序 | alpha=字母序
 pref("panelContentMode", "wordbook"); // 侧边栏面板内容：wordbook=生词本 | terminology=术语库
 
+// ---- 3.2.6 复习设置（背诵功能）----
+pref("reciteAutoSpeakWord", true);        // 单词自动发音（总开关）
+pref("reciteAutoSpeakBefore", true);      // 显示答案前自动发音（单词正面）
+pref("reciteAutoSpeakAfter", false);      // 显示答案后自动发音（单词翻面）
+pref("reciteAutoSpeakSentence", false);   // 例句自动发音（翻面后念例句）
+pref("reciteShowSentence", true);         // 显示例句（总开关，控制例句区显示）
+pref("reciteSentenceSpeakRate", "normal");// 例句发音速度：slow | normal | fast
+pref("reciteSyllableSplit", true);        // 音节拆分（显示答案后自动拆分音节）
+pref("reciteOrder", "reviewFirst");       // 学习顺序：reviewFirst=复习优先 | mixed=混合学习 | newFirst=新词优先
+pref("reciteAccent", "us");               // 单词口音：us=美音 | uk=英音
+pref("reciteSpeakRate", "normal");        // 单词发音速度：slow | normal | fast
+pref("reciteMode", "recognition");        // 学习模式：recognition=再认 | spelling=拼写
+pref("reciteSentenceSource", "original"); // 例句来源：original=原文 | dict=词典
+pref("reciteDictSentenceSource", "bing"); // 词典例句通道：bing=必应双语 | youdao=有道词典双语
+pref("reciteDailyNew", 20);                // 每日新词数
+pref("reciteDailyLimit", 50);             // 每日复习上限
+pref("reciteDesiredRetention", 0.9);      // 目标留存率（FSRS）
+pref("reciteRemind", "none");             // 背单词提醒：none | firstOpen | everyOpen
+
 // ---- 3.3 注释设置 ----
 pref("enableAnnotationSync", false);              // 加入生词本时同步添加到注释（总开关）
 pref("enableAnnotationTranslate", false);         // 自动翻译注释

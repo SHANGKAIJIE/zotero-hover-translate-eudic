@@ -77,7 +77,7 @@ const ICON_URI = `chrome://${ref}/content/icons/icon-20.png`;
  *   2. Google TTS（最终兜底，语言取 eudicLanguage pref）
  * playAudio 依次尝试，前一来源加载失败自动切换下一个；失败静默。
  */
-function playPronunciation(word: string): void {
+export function playPronunciation(word: string): void {
   const lang = (getPref("eudicLanguage") as string) || "en";
   playAudio(buildTtsFallbackUrls(word, lang));
 }
@@ -433,7 +433,7 @@ function escapeHtml(s: unknown): string {
 /*  Data access                                                        */
 /* ------------------------------------------------------------------ */
 
-interface PanelWord {
+export interface PanelWord {
   word: string;
   phon: string;
   exp: string;
@@ -483,7 +483,7 @@ function wordSource(): "local" | "zotero" | null {
   return null;
 }
 
-async function loadWords(): Promise<{ platform: "local" | "zotero" | null; words: PanelWord[] }> {
+export async function loadWords(): Promise<{ platform: "local" | "zotero" | null; words: PanelWord[] }> {
   const platform = wordSource();
   if (platform === "local") {
     const rows = await getLocalWords();
@@ -536,6 +536,9 @@ async function loadTerms(): Promise<{ platform: "local" | "zotero" | null; words
 function panelContentMode(): "wordbook" | "terminology" {
   return getPref("panelContentMode") === "terminology" ? "terminology" : "wordbook";
 }
+
+/** 批量操作模式：开启后卡片出现勾选框、底部出现操作条。跨刷新保留，退出时复位。 */
+let batchModeActive = false;
 
 /* ------------------------------------------------------------------ */
 /*  Panel render                                                       */
@@ -631,7 +634,7 @@ async function renderPanel(doc: Document, body: HTMLElement, itemID: number): Pr
     scope === "current"
       ? "点击切换到所有条目"
       : "点击切换到当前条目",
-    scope === "current" ? "当前条目" : "所有条目",
+    scope === "current" ? "当前" : "全部",
     () => {
       setPref("panelWordScope", scope === "current" ? "all" : "current");
       refreshPanel(itemID);
@@ -645,7 +648,7 @@ async function renderPanel(doc: Document, body: HTMLElement, itemID: number): Pr
     mode === "wordbook"
       ? "切换到术语库"
       : "切换到生词本",
-    mode === "wordbook" ? "词" : "语",
+    mode === "wordbook" ? "生词" : "术语",
     () => {
       setPref("panelContentMode", mode === "wordbook" ? "terminology" : "wordbook");
       refreshPanel(itemID);
@@ -696,10 +699,12 @@ async function renderPanel(doc: Document, body: HTMLElement, itemID: number): Pr
     class: hidePlay ? `${ref}-panel-toolbar-btn ${ref}-panel-toolbar-btn-active` : `${ref}-panel-toolbar-btn`,
     style: "border-radius:6px;cursor:pointer;padding:2px 8px;font-size:12px;display:inline-flex;align-items:center;",
   });
+  // 隐藏播放图标：与翻译弹窗发音按钮同款 SVG（喇叭+声波），尺寸/颜色沿用原按钮
+  // 规格（width/height=16，fill=currentColor 跟随主题色）
   hidePlayBtn.innerHTML =
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">' +
-    '<path d="M3 9v6h4l5 5V4L7 9H3z"/>' +
-    '<path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>' +
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1219 1024" width="16" height="16" fill="currentColor" aria-hidden="true">' +
+    '<path d="M542.637333 6.31047a140.407962 140.407962 0 0 1 140.407962 140.471067v728.796204a140.407962 140.407962 0 0 1-218.279164 116.806803l-174.358292-116.238861-162.557713-21.897331a140.407962 140.407962 0 0 1-121.413446-131.951932V327.702718a140.344857 140.344857 0 0 1 120.340666-138.830345l161.674247-23.34874L457.130462 35.654157A140.407962 140.407962 0 0 1 534.370617 6.689098z m0 100.967523a39.629753 39.629753 0 0 0-24.169101 8.203612L339.377088 253.428483l-10.412276 8.140507-13.125778 1.893141-174.86313 25.241881a39.629753 39.629753 0 0 0-33.950329 39.18802v387.399766a39.629753 39.629753 0 0 0 34.328958 39.18802l173.979663 23.474949 11.548161 1.514513 9.718124 6.31047 184.076416 122.738645a39.629753 39.629753 0 0 0 61.590189-33.003759V146.781537a39.629753 39.629753 0 0 0-39.629753-39.629753z m296.592099 167.416775a50.483762 50.483762 0 0 1 71.119 3.533863 364.745178 364.745178 0 0 1 86.453441 243.58415 348.779688 348.779688 0 0 1-116.806803 272.359894 50.483762 50.483762 0 0 1-63.104702-78.754668 249.957725 249.957725 0 0 0 79.007087-193.668331 265.039749 265.039749 0 0 0-60.3912-175.999014 50.483762 50.483762 0 0 1 3.596968-71.182103z"/>' +
+    '<path d="M978.564615 113.146731a50.483762 50.483762 0 0 1 70.677266-9.213287c110.622543 84.81272 163.693597 242.763789 163.693597 417.879337 0 149.36883-77.113946 350.735934-163.441178 417.753128a50.483762 50.483762 0 1 1-61.842608-79.511925c58.750478-45.687804 124.505577-217.395699 124.505577-338.241203 0-146.970851-43.35293-275.893757-124.253159-337.988784a50.483762 50.483762 0 0 1-9.213286-70.614162z"/>' +
     "</svg>";
   hidePlayBtn.addEventListener("click", () => {
     setPref("panelHidePlay", !getPref("panelHidePlay"));
@@ -740,8 +745,42 @@ async function renderPanel(doc: Document, body: HTMLElement, itemID: number): Pr
     setPref("panelFontSize", Math.max(FONT_MIN, (Number(getPref("panelFontSize")) || 15) - 1));
     refreshPanel(itemID);
   });
-  const clearBtn = mkBtn("清空", "清空", () => void confirmClear(doc, body, itemID, platform, mode));
-  right.append(contentToggleBtn, scopeToggleBtn, hideExpBtn, hidePhonBtn, hidePlayBtn, sortBtn, zoomInBtn, zoomOutBtn, clearBtn);
+  // 批量操作按钮（替代原「清空」）：勾选框图标，点击进入/退出批量模式。
+  // 进入后卡片出现勾选框、面板底部出现「全选/取消/删除」操作条。
+  const batchBtn = el(doc, "button", {
+    type: "button",
+    title: batchModeActive ? "退出批量操作" : "批量操作",
+    class: batchModeActive
+      ? `${ref}-panel-toolbar-btn ${ref}-panel-toolbar-btn-active`
+      : `${ref}-panel-toolbar-btn`,
+    style: "border-radius:6px;cursor:pointer;padding:2px 8px;font-size:12px;display:inline-flex;align-items:center;justify-content:center;",
+  });
+  batchBtn.innerHTML =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="15" height="15" fill="currentColor" aria-hidden="true">' +
+    '<path d="M196.923077 0h630.153846a196.923077 196.923077 0 0 1 196.923077 196.923077v630.153846a196.923077 196.923077 0 0 1-196.923077 196.923077H196.923077a196.923077 196.923077 0 0 1-196.923077-196.923077V196.923077a196.923077 196.923077 0 0 1 196.923077-196.923077z m0 78.769231a118.153846 118.153846 0 0 0-118.153846 118.153846v630.153846a118.153846 118.153846 0 0 0 118.153846 118.153846h630.153846a118.153846 118.153846 0 0 0 118.153846-118.153846V196.923077a118.153846 118.153846 0 0 0-118.153846-118.153846H196.923077z m584.900923 258.205538a36.509538 36.509538 0 0 1 1.260308 51.633231l-299.480616 313.107692c-0.118154 0.157538-0.393846 0.236308-0.630154 0.472616l-0.393846 0.551384c-2.166154 2.126769-4.726154 3.229538-7.207384 4.726154-1.575385 0.866462-2.796308 2.166154-4.411077 2.835692a35.800615 35.800615 0 0 1-27.490462 0.07877c-1.260308-0.512-2.284308-1.614769-3.544615-2.284308-2.756923-1.457231-5.592615-2.835692-8.034462-5.12-0.196923-0.157538-0.275692-0.433231-0.512-0.669538-0.196923-0.118154-0.393846-0.196923-0.551384-0.354462l-150.843077-156.593231a36.430769 36.430769 0 0 1 0.945231-51.633231 36.391385 36.391385 0 0 1 51.63323 0.945231l124.455385 129.102769 273.092923-285.61723a36.548923 36.548923 0 0 1 51.712-1.181539z"/>' +
+    "</svg>";
+  batchBtn.addEventListener("click", () => {
+    batchModeActive = !batchModeActive;
+    refreshPanel(itemID);
+  });
+  // 背诵按钮（仅生词本模式显示，点击打开背诵弹窗）。放入 right 容器最前，
+  // 与其他工具栏按钮同一行（flex-wrap 按按钮逐个换行，而非整组换行）。
+  let reciteBtn: HTMLElement | null = null;
+  if (mode === "wordbook") {
+    reciteBtn = mkBtn("开始背诵", "背", () => {
+      void import("./reciteDialog").then((m) => m.openReciteDialog());
+    });
+    // 异步填充待复习角标「背·N」
+    void import("./reciteMemory").then(async ({ loadMemory, todayDueCount }) => {
+      try {
+        const mem = await loadMemory();
+        const n = todayDueCount(mem);
+        if (n > 0 && reciteBtn) reciteBtn.textContent = `背·${n}`;
+      } catch { /* ignore */ }
+    });
+  }
+  if (reciteBtn) right.append(reciteBtn);
+  right.append(contentToggleBtn, scopeToggleBtn, hideExpBtn, hidePhonBtn, hidePlayBtn, sortBtn, zoomInBtn, zoomOutBtn, batchBtn);
   header.append(right);
   body.append(header);
 
@@ -771,13 +810,74 @@ async function renderPanel(doc: Document, body: HTMLElement, itemID: number): Pr
       style: "font-size:12px;padding:6px 4px;",
     }, [emptyMsg]));
   } else {
+    const inBatch = batchModeActive && !!platform;
     sortedVisible.forEach(({ w, origIdx }) => {
       if (mode === "terminology") {
-        list.append(renderTermCard(doc, body, itemID, platform!, w, origIdx, fontSize, hideExp, hideAbbr));
+        list.append(renderTermCard(doc, body, itemID, platform!, w, origIdx, fontSize, hideExp, hideAbbr, inBatch));
       } else {
-        list.append(renderCard(doc, body, itemID, platform!, w, origIdx, fontSize, hidePhon, hideExp, hidePlay));
+        list.append(renderCard(doc, body, itemID, platform!, w, origIdx, fontSize, hidePhon, hideExp, hidePlay, inBatch));
       }
     });
+  }
+  // ---------- 批量操作条：位于顶部工具栏下方、卡片列表上方 ----------
+  if (batchModeActive && platform && visibleWords.length > 0) {
+    const bar = el(doc, "div", {
+      class: `${ref}-panel-batch-bar`,
+      style:
+        "display:flex;align-items:center;justify-content:flex-start;gap:6px;margin-top:8px;margin-bottom:8px;padding:5px 8px;" +
+        "border:1px solid var(--color-border,#ccc);border-radius:8px;box-sizing:border-box;",
+    });
+    // 操作条按钮使用独立类（不挂 -panel-toolbar-btn）：避免暗色模式主题规则
+    // （如 color/background !important）干扰文字颜色与居中。
+    const mkBarBtn = (text: string): HTMLElement => {
+      return el(doc, "button", {
+        type: "button",
+        class: `${ref}-panel-batch-bar-btn`,
+      }, [text]);
+    };
+    const getBoxes = (): HTMLInputElement[] =>
+      Array.from(list.querySelectorAll("input[data-hte-batch-idx]")) as HTMLInputElement[];
+    let allSelected = false;
+    const selectAllBtn = mkBarBtn("全选");
+    const syncSelectAllLabel = () => {
+      // 以实际勾选状态为准（点击卡片也会改变勾选），全部勾中→显示「取消全选」
+      const boxes = getBoxes();
+      allSelected = boxes.length > 0 && boxes.every((cb) => cb.checked);
+      selectAllBtn.textContent = allSelected ? "取消全选" : "全选";
+    };
+    selectAllBtn.addEventListener("click", () => {
+      allSelected = !allSelected;
+      getBoxes().forEach((cb) => { cb.checked = allSelected; });
+      selectAllBtn.textContent = allSelected ? "取消全选" : "全选";
+    });
+    // 点击卡片勾选/取消后同步「全选 ↔ 取消全选」文案（list 每次渲染重建，无监听泄漏）
+    list.addEventListener("click", () => syncSelectAllLabel());
+    const cancelBtn = mkBarBtn("取消");
+    cancelBtn.addEventListener("click", () => {
+      batchModeActive = false;
+      refreshPanel(itemID);
+    });
+    // 删除按钮红色：与清空术语库弹窗确定按钮（.hte-term-danger #d9534f）一致
+    const delSelBtn = mkBarBtn("删除");
+    delSelBtn.classList.add(`${ref}-panel-batch-bar-del`);
+    delSelBtn.addEventListener("click", () => {
+      const checkedIdxs = new Set<number>();
+      list.querySelectorAll<HTMLInputElement>("input[data-hte-batch-idx]").forEach((cb: HTMLInputElement) => {
+        if (cb.checked) checkedIdxs.add(Number(cb.dataset.hteBatchIdx));
+      });
+      if (checkedIdxs.size === 0) return;
+      const targets = sortedVisible.filter(({ origIdx }) => checkedIdxs.has(origIdx)).map(({ w }) => w);
+      // 二次确认：复用卡片删除的确认弹窗（showConfirm），标题与卡片删除一致
+      showConfirm(
+        doc,
+        body,
+        getString("hte-panel-del-title"),
+        `确定删除选中的 ${targets.length} 个${mode === "terminology" ? "术语" : "单词"}吗？此操作不可撤销。`,
+        () => void batchDeleteSelected(itemID, platform!, mode, targets),
+      );
+    });
+    bar.append(selectAllBtn, cancelBtn, delSelBtn);
+    body.append(bar);
   }
   body.append(list);
   injectStyle(body);
@@ -795,6 +895,7 @@ function renderCard(
   hidePhon: boolean,
   hideExp: boolean,
   hidePlay: boolean,
+  batch = false,
 ): HTMLElement {
   const card = el(doc, "div", {
     class: `${ref}-panel-card`,
@@ -802,6 +903,26 @@ function renderCard(
       "position:relative;padding:6px 8px;" +
       "border-radius:8px;width:100%;box-sizing:border-box;",
   });
+
+  // 批量模式：卡片右侧出现勾选框（替代右上角编辑/删除按钮）；
+  // 点击卡片任意位置均可切换勾选（勾选框自身与内部链接/按钮除外）
+  if (batch) {
+    const cb = el(doc, "input", {
+      type: "checkbox",
+      title: "勾选该条目",
+      class: `${ref}-panel-batch-check`,
+      style: "position:absolute;top:9px;right:8px;",
+    }) as HTMLInputElement;
+    cb.dataset.hteBatchIdx = String(idx);
+    card.append(cb);
+    card.style.cursor = "pointer";
+    card.addEventListener("click", (ev) => {
+      const target = ev.target as HTMLElement;
+      if (target === cb || target.tagName === "INPUT" || target.tagName === "A" || target.tagName === "BUTTON") return;
+      cb.checked = !cb.checked;
+      ev.preventDefault();
+    });
+  }
 
   // 文本区：占满卡片整个宽度；不设 padding-right（否则译文行右侧也会留白）。
   // 按钮占位只在第一行（row1）单独处理。
@@ -922,7 +1043,9 @@ function renderCard(
   });
   btnGroup.append(editBtn, delBtn);
 
-  card.append(textWrap, btnGroup);
+  // 批量模式：隐藏右上角编辑/删除按钮，仅保留勾选框
+  if (!batch) card.append(btnGroup);
+  card.append(textWrap);
   return card;
 }
 
@@ -937,6 +1060,7 @@ function renderTermCard(
   fontSize: number,
   hideExp: boolean,
   hideAbbr: boolean,
+  batch = false,
 ): HTMLElement {
   const card = el(doc, "div", {
     class: `${ref}-panel-card`,
@@ -944,6 +1068,26 @@ function renderTermCard(
       "position:relative;padding:6px 8px;" +
       "border-radius:8px;width:100%;box-sizing:border-box;",
   });
+
+  // 批量模式：卡片右侧出现勾选框（替代右上角编辑/删除按钮）；
+  // 点击卡片任意位置均可切换勾选（勾选框自身与内部链接/按钮除外）
+  if (batch) {
+    const cb = el(doc, "input", {
+      type: "checkbox",
+      title: "勾选该条目",
+      class: `${ref}-panel-batch-check`,
+      style: "position:absolute;top:9px;right:8px;",
+    }) as HTMLInputElement;
+    cb.dataset.hteBatchIdx = String(idx);
+    card.append(cb);
+    card.style.cursor = "pointer";
+    card.addEventListener("click", (ev) => {
+      const target = ev.target as HTMLElement;
+      if (target === cb || target.tagName === "INPUT" || target.tagName === "A" || target.tagName === "BUTTON") return;
+      cb.checked = !cb.checked;
+      ev.preventDefault();
+    });
+  }
 
   const textWrap = el(doc, "div", {
     style: `width:100%;box-sizing:border-box;font-size:${fontSize}px;line-height:1.5;user-select:text;overflow-wrap:anywhere;`,
@@ -1026,7 +1170,9 @@ function renderTermCard(
   });
   btnGroup.append(editBtn, delBtn);
 
-  card.append(textWrap, btnGroup);
+  // 批量模式：隐藏右上角编辑/删除按钮，仅保留勾选框
+  if (!batch) card.append(btnGroup);
+  card.append(textWrap);
   return card;
 }
 
@@ -1160,7 +1306,7 @@ function confirmDeleteTerm(
  * 将 overlay 挂载到主窗口 documentElement，确保遮罩覆盖整个窗口
  * （含 Item Pane 信息栏图标与搜索框），而非仅面板 body 区域。
  */
-function mountOverlay(doc: Document, overlay: HTMLElement): void {
+export function mountOverlay(doc: Document, overlay: HTMLElement): void {
   try {
     const mainWin = Zotero.getMainWindow();
     const rootEl = mainWin.document.documentElement;
@@ -1289,6 +1435,11 @@ function confirmDelete(
       ok = await deleteWordFromNote(getNoteTitle(), w.word);
     }
     if (ok) {
+      // 同步删除背诵记忆（FSRS 状态一并清理，避免重新添加该词时恢复旧记忆）
+      try {
+        const { forgetWord } = await import("./reciteMemory");
+        await forgetWord(w.word);
+      } catch { /* ignore */ }
       // 同步删除注释：加入生词本时同步添加到注释的（词形还原感知匹配，容错不抛错）
       try {
         await deleteAnnotationsForWord(w.word);
@@ -1381,6 +1532,13 @@ function confirmClear(
         await deleteWordFromNote(getNoteTitle(), w.word);
       }
     }
+    // 同步清理背诵记忆（FSRS 状态一并删除，避免重新添加时恢复旧记忆）
+    try {
+      const { forgetWord } = await import("./reciteMemory");
+      for (const w of targets) {
+        await forgetWord(w.word);
+      }
+    } catch { /* ignore */ }
     // 同步删除注释：清空的每个单词若有匹配注释一并删除（容错不抛错）
     try {
       for (const w of targets) {
@@ -1390,6 +1548,80 @@ function confirmClear(
     // 刷新所有面板（主窗口 + PDF reader 侧），避免一侧不同步
     refreshAllPanels();
   });
+}
+
+/** 批量删除勾选的卡片（生词本/术语通用）。删除完成后退出批量模式并刷新。 */
+async function batchDeleteSelected(
+  itemID: number,
+  platform: "local" | "zotero",
+  mode: "wordbook" | "terminology",
+  targets: PanelWord[],
+): Promise<void> {
+  if (targets.length === 0) return;
+  if (mode === "terminology") {
+    // 术语库：与 confirmClear 同思路——local 平台按全量快照匹配行索引后倒序删除
+    try {
+      const { getTerminologyTerms, deleteTerminologyEntry } = await import("./terminology");
+      const { platform: termPlatform } = await getTerminologyTerms();
+      if (termPlatform === "local") {
+        const all = await (await import("./terminology")).getTerms();
+        const idxs = all
+          .map((r, i) => ({ r, i }))
+          .filter(({ r }) =>
+            targets.some(
+              (t) => t.word.toLowerCase() === r.term.toLowerCase() && t.src === r.src,
+            ),
+          )
+          .map(({ i }) => i)
+          .sort((a, b) => b - a); // 倒序，避免索引错位
+        for (const idx of idxs) {
+          await deleteTerminologyEntry("local", idx, all[idx].term);
+        }
+      } else {
+        for (const t of targets) {
+          await deleteTerminologyEntry("zotero", -1, t.word);
+        }
+      }
+    } catch { /* ignore */ }
+    // 术语注释同步删除（容错不抛错）
+    try {
+      if (getPref("enableTerminologyAnnotationSync")) {
+        const termTag = (getPref("terminologyTagName") as string) || "术语";
+        for (const t of targets) {
+          await deleteAnnotationsForWord(t.word, termTag);
+        }
+      }
+    } catch { /* ignore */ }
+  } else {
+    if (platform === "local") {
+      for (const w of targets) {
+        const rows = await getLocalWords();
+        const idx = rows.findIndex(
+          (r) => r.word.toLowerCase() === w.word.toLowerCase() && r.src === w.src,
+        );
+        if (idx >= 0) await deleteLocalWordByIndex(idx);
+      }
+    } else {
+      for (const w of targets) {
+        await deleteWordFromNote(getNoteTitle(), w.word);
+      }
+    }
+    // 同步清理背诵记忆（FSRS 状态一并删除，避免重新添加时恢复旧记忆）
+    try {
+      const { forgetWord } = await import("./reciteMemory");
+      for (const w of targets) {
+        await forgetWord(w.word);
+      }
+    } catch { /* ignore */ }
+    // 同步删除对应注释（容错不抛错）
+    try {
+      for (const w of targets) {
+        await deleteAnnotationsForWord(w.word);
+      }
+    } catch { /* ignore */ }
+  }
+  batchModeActive = false;
+  refreshAllPanels();
 }
 
 function showConfirm(
@@ -1598,6 +1830,44 @@ function injectStyle(body: HTMLElement): void {
       border: 1px solid var(--color-border, rgba(0,0,0,0.12));
       color: var(--fill-primary, #1a1a1a);
     }
+    /* 批量操作条背景与卡片一致 */
+    .${ref}-panel-batch-bar { background: #fafafa; }
+    /* 批量勾选框：加粗轮廓的自定义样式（原生勾选框边框不可控） */
+    .${ref}-panel-batch-check {
+      appearance: none; -moz-appearance: none;
+      width: 14px; height: 14px; margin: 0;
+      border: 2px solid #888888; border-radius: 3px;
+      background: #ffffff; cursor: pointer; flex-shrink: 0;
+    }
+    .${ref}-panel-batch-check:checked {
+      border-color: #1e88e5;
+      background-color: #1e88e5;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='%23ffffff' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' d='M5 12.5 10 17.5 19 7'/></svg>");
+      background-size: 11px 11px; background-position: center; background-repeat: no-repeat;
+    }
+    /* 操作条按钮（独立类，几何/颜色不随暗色主题规则变化，保证文字居中）。
+       line-height 用 1：垂直居中完全交给 flex，避免固定行高在无边框按钮上偏移 */
+    .${ref}-panel-batch-bar-btn {
+      height: 24px; box-sizing: border-box; padding: 0 12px; font-size: 13px;
+      line-height: 1; text-align: center;
+      display: inline-flex; align-items: center; justify-content: center;
+      vertical-align: middle;
+      border: 1px solid var(--color-border, #ccc); border-radius: 6px;
+      background: transparent; color: #333; cursor: pointer;
+    }
+    .${ref}-panel-batch-bar-btn:hover { background: rgba(0,0,0,0.06); }
+    .${ref}-panel-batch-bar-del,
+    .${ref}-panel-batch-bar-del:hover {
+      height: 24px !important; box-sizing: border-box !important;
+      padding: 0 12px !important; font-size: 13px !important;
+      min-width: 0 !important;
+      line-height: 1 !important; text-align: center !important;
+      display: inline-flex !important; align-items: center !important; justify-content: center !important;
+      vertical-align: middle !important;
+      border: none !important; border-radius: 6px !important;
+      background: #d9534f; color: #fff !important; cursor: pointer;
+    }
+    .${ref}-panel-batch-bar-del:hover { background: #c9433f; }
     .${ref}-panel-card-word { color: #1e88e5; }
     .${ref}-panel-card-phon { color: var(--fill-secondary, #888888); }
     .${ref}-panel-card-exp { color: var(--fill-primary, #333333); }
@@ -1606,7 +1876,7 @@ function injectStyle(body: HTMLElement): void {
     .${ref}-panel-toolbar-btn {
       border: 1px solid var(--color-border, #ccc);
       background: transparent;
-      color: var(--fill-secondary, #555);
+      color: #333;
     }
     .${ref}-panel-toolbar-btn:hover { background: rgba(0,0,0,0.06); }
     .${ref}-panel-toolbar-btn-active {
@@ -1647,10 +1917,21 @@ function injectStyle(body: HTMLElement): void {
       .${ref}-panel-body { color: #e6e6e6; }
       .${ref}-panel-body button:hover { background: rgba(255,255,255,0.1); }
       .${ref}-panel-card {
-        background: #2c323e;
+        background: #1e1e1e;
         border-color: rgba(255,255,255,0.15);
-        color: #e6e6e6;
       }
+      .${ref}-panel-batch-bar { background: #1e1e1e; }
+      /* 操作条普通按钮文字与顶部按钮一致（#e6e6e6） */
+      .${ref}-panel-batch-bar-btn { border-color: rgba(255,255,255,0.25); color: #e6e6e6; }
+      .${ref}-panel-batch-bar-btn:hover { background: rgba(255,255,255,0.1); }
+      .${ref}-panel-batch-bar-del {
+        background: #d9534f !important; color: #fff !important;
+      }
+      /* hover 保持红色系（压过暗色通用 button:hover 背景） */
+      .${ref}-panel-batch-bar-del:hover {
+        background: #c9433f !important; color: #fff !important;
+      }
+      .${ref}-panel-batch-check { border-color: #aaaaaa; background-color: #1e1e1e; }
       .${ref}-panel-card-word { color: #6db3f2; }
       .${ref}-panel-card-phon { color: #9aa0aa; }
       .${ref}-panel-card-exp { color: #d0d0d0; }
@@ -1666,7 +1947,8 @@ function injectStyle(body: HTMLElement): void {
         border-color: rgba(100,160,255,0.6) !important;
       }
       .${ref}-panel-icon-btn { color: #9aa0aa; }
-      .${ref}-panel-icon-btn:hover { color: #fff; background: rgba(255,255,255,0.1); }
+      /* 编辑/删除按钮 hover 统一变亮（!important 压过兜底块的固定 color） */
+      .${ref}-panel-icon-btn:hover { color: #fff !important; background: rgba(255,255,255,0.1) !important; }
       .${ref}-panel-play-btn { color: #9aa0aa; }
       .${ref}-panel-play-btn:hover { color: #6db3f2; background: rgba(255,255,255,0.1); }
       .${ref}-panel-hint { color: #9aa0aa; }
@@ -1689,9 +1971,24 @@ function injectStyle(body: HTMLElement): void {
     .${ref}-panel-body[data-hte-theme="dark"] { color: #e6e6e6; }
     .${ref}-panel-body[data-hte-theme="dark"] button:hover { background: rgba(255,255,255,0.1); }
     .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-card {
-      background: #2c323e;
+      background: #1e1e1e;
       border-color: rgba(255,255,255,0.15);
       color: #e6e6e6;
+    }
+    /* 暗色下批量操作条背景与卡片一致 */
+    .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-batch-bar { background: #1e1e1e; }
+    /* 暗色下勾选框：未选中轮廓提亮、底色同卡片 */
+    .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-batch-check {
+      border-color: #aaaaaa; background-color: #1e1e1e;
+    }
+    .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-batch-bar-btn {
+      border-color: rgba(255,255,255,0.25); color: #e6e6e6;
+    }
+    .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-batch-bar-del {
+      background: #d9534f !important; color: #fff !important;
+    }
+    .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-batch-bar-del:hover {
+      background: #c9433f !important; color: #fff !important;
     }
     .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-card-word { color: #6db3f2; }
     .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-card-phon { color: #9aa0aa; }
@@ -1710,7 +2007,7 @@ function injectStyle(body: HTMLElement): void {
       border-color: rgba(100,160,255,0.6) !important;
     }
     .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-icon-btn { color: #9aa0aa; }
-    .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-icon-btn:hover { color: #fff; background: rgba(255,255,255,0.1); }
+    .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-icon-btn:hover { color: #fff !important; background: rgba(255,255,255,0.1) !important; }
     .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-play-btn { color: #9aa0aa; }
     .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-play-btn:hover { color: #6db3f2; background: rgba(255,255,255,0.1); }
     .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-hint { color: #9aa0aa; }
@@ -1729,7 +2026,17 @@ function injectStyle(body: HTMLElement): void {
     .${ref}-panel-body[data-hte-theme="dark"] .${ref}-panel-overlay { background: rgba(0,0,0,0.45); }
 
     /* 辅助兜底 2：window[theme="dark"]（zotero-style 老式属性） */
-    window[theme="dark"] .${ref}-panel-card { background: #2c323e; }
+    window[theme="dark"] .${ref}-panel-card { background: #1e1e1e; }
+    window[theme="dark"] .${ref}-panel-batch-bar { background: #1e1e1e; }
+    window[theme="dark"] .${ref}-panel-batch-check { border-color: #aaaaaa; background-color: #1e1e1e; }
+    window[theme="dark"] .${ref}-panel-batch-bar-btn { border-color: rgba(255,255,255,0.25); color: #e6e6e6; }
+    window[theme="dark"] .${ref}-panel-batch-bar-del {
+      background: #d9534f !important; color: #fff !important;
+    }
+    window[theme="dark"] .${ref}-panel-batch-bar-del:hover {
+      background: #c9433f !important; color: #fff !important;
+    }
+    window[theme="dark"] .${ref}-panel-icon-btn:hover { color: #fff !important; background: rgba(255,255,255,0.1) !important; }
     window[theme="dark"] .${ref}-panel-card-exp { color: #d0d0d0; }
     window[theme="dark"] .${ref}-panel-card-phon { color: #9aa0aa; }
     window[theme="dark"] .${ref}-panel-body button { color: #bbb; }

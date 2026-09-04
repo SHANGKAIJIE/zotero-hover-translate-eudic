@@ -185,6 +185,9 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
       })
       .show();
   }
+
+  // 背单词提醒：根据 reciteRemind 决定是否自动弹出背诵弹窗
+  void import("./modules/reciteDialog").then((m) => m.maybeAutoOpenRecite());
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {
